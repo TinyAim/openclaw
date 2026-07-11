@@ -7,8 +7,9 @@
  * At-least-once HTTP fencing:
  * - job key = workspaceId + renderId
  * - identical (epoch, attemptId) → idempotent accepted (no restart)
- * - older fence → rejected
- * - newer attempt → replace active, then abort prior job
+ * - older epoch → rejected (stale)
+ * - newer epoch → install replacement, then abort prior job
+ * - same epoch, different attemptId → conflict (fail closed; attemptId is opaque)
  * - finally deletes only when map still holds the same job object
  * - cancel must match active fence (missing token on fenced job fails closed)
  */
@@ -53,32 +54,38 @@ function fenceTuple(d: {
   };
 }
 
-/** -1 = incoming older; 0 = same; 1 = incoming newer / replaces. */
+/**
+ * Four-state fence compare.
+ * - older: incoming epoch strictly less (or missing when active is fenced)
+ * - same: identical epoch+attempt (or both unfenced) — idempotent retry
+ * - newer: incoming epoch strictly greater (or active unfenced and incoming fenced)
+ * - conflict: same epoch with different opaque attemptId (cannot order)
+ */
 function compareFence(
   active: { epoch: number | undefined; attemptId: string | undefined },
   incoming: { epoch: number | undefined; attemptId: string | undefined },
-): -1 | 0 | 1 {
+): "older" | "same" | "newer" | "conflict" {
   const aEpoch = active.epoch;
   const bEpoch = incoming.epoch;
   if (aEpoch !== undefined && bEpoch !== undefined) {
-    if (bEpoch < aEpoch) return -1;
-    if (bEpoch > aEpoch) return 1;
+    if (bEpoch < aEpoch) return "older";
+    if (bEpoch > aEpoch) return "newer";
   } else if (aEpoch !== undefined && bEpoch === undefined) {
-    return -1;
+    return "older";
   } else if (aEpoch === undefined && bEpoch !== undefined) {
-    return 1;
+    return "newer";
   }
   const aAttempt = active.attemptId;
   const bAttempt = incoming.attemptId;
   if (aAttempt !== undefined && bAttempt !== undefined) {
-    if (bAttempt === aAttempt) return 0;
-    // Distinct attempt ids at same epoch: treat as replacement (newer dispatch).
-    return 1;
+    if (bAttempt === aAttempt) return "same";
+    // Opaque attempt ids have no ordering at equal epoch — fail closed.
+    return "conflict";
   }
-  if (aAttempt !== undefined && bAttempt === undefined) return -1;
-  if (aAttempt === undefined && bAttempt !== undefined) return 1;
+  if (aAttempt !== undefined && bAttempt === undefined) return "older";
+  if (aAttempt === undefined && bAttempt !== undefined) return "newer";
   // Both unfenced (no epoch/attempt): treat as exact retry of active.
-  return 0;
+  return "same";
 }
 
 export function createMediaStudioAssemblyRenderExecutor(
@@ -222,8 +229,10 @@ export function createMediaStudioAssemblyRenderExecutor(
           ...fencing,
         });
       } catch (completeErr) {
-        // Handoff already registered an Artifact; complete failed → orphan
-        // reconciliation receipt for ops (Control API remains terminal authority).
+        // Handoff already registered an Artifact; complete failed.
+        // Detection + fail callback carries artifactId/checksum so Control API
+        // can mark the render failed with an orphan pointer. Full durable
+        // orphan-receipt reconcile remains a control-plane follow-up.
         options.log?.warn?.(
           `assembly-render orphan_master_handoff renderId=${dispatch.renderId} artifactId=${artifactId} err=${String(completeErr)}`,
         );
@@ -235,6 +244,8 @@ export function createMediaStudioAssemblyRenderExecutor(
             runtimeId,
             failed: true,
             errorCode: "media_studio.render.complete_after_handoff_failed",
+            orphanArtifactId: artifactId,
+            orphanChecksum: encoded.sha256,
             ...fencing,
           });
         } catch (failErr) {
@@ -295,20 +306,23 @@ export function createMediaStudioAssemblyRenderExecutor(
       const prior = jobs.get(key);
       if (prior) {
         const cmp = compareFence(fenceTuple(prior.dispatch), fenceTuple(input));
-        if (cmp === 0) {
+        if (cmp === "same") {
           // Exact retry of the active attempt — do not abort / restart.
           return { accepted: true };
         }
-        if (cmp === -1) {
+        if (cmp === "older") {
           return {
             accepted: false,
             messageKey: "media_studio.render.stale_dispatch",
           };
         }
-        // Newer attempt: install replacement first, then abort prior so prior
-        // finally cannot delete the new map entry.
-        prior.cancelled = true;
-        prior.controller.abort();
+        if (cmp === "conflict") {
+          return {
+            accepted: false,
+            messageKey: "media_studio.render.dispatch_fence_conflict",
+          };
+        }
+        // cmp === "newer": install replacement first, then abort prior.
       }
       const controller = new AbortController();
       const state: JobState = {
@@ -316,7 +330,13 @@ export function createMediaStudioAssemblyRenderExecutor(
         controller,
         dispatch: input,
       };
+      // Install replacement before aborting prior so prior finally cannot
+      // delete the new map entry (matches fencing contract).
       jobs.set(key, state);
+      if (prior) {
+        prior.cancelled = true;
+        prior.controller.abort();
+      }
       // Fire-and-forget encode loop; Control API owns terminal truth via callbacks.
       void runJob(key, input, state);
       return { accepted: true };
@@ -338,7 +358,7 @@ export function createMediaStudioAssemblyRenderExecutor(
       }
       const active = fenceTuple(job.dispatch);
       const incoming = fenceTuple(input);
-      // Fenced active job requires matching cancel tokens (fail closed).
+      // Fenced active job requires exact epoch+attempt match (fail closed).
       if (active.epoch !== undefined || active.attemptId !== undefined) {
         if (incoming.epoch === undefined && incoming.attemptId === undefined) {
           return {
@@ -346,7 +366,7 @@ export function createMediaStudioAssemblyRenderExecutor(
             messageKey: "media_studio.render.cancel_fence_required",
           };
         }
-        if (compareFence(active, incoming) !== 0) {
+        if (compareFence(active, incoming) !== "same") {
           return {
             cancelled: false,
             messageKey: "media_studio.render.stale_cancel",

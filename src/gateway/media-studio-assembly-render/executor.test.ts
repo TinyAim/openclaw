@@ -255,7 +255,78 @@ describe("Gate 1E dispatch/cancel fencing", () => {
     );
   });
 
-  it("stale dispatch and cancel are rejected; newer attempt replaces", async () => {
+  it("same epoch different attemptId is conflict; active job is not aborted", async () => {
+    let encodeCalls = 0;
+    let firstCompleted = false;
+    const executor = createMediaStudioAssemblyRenderExecutor({
+      bridge: {
+        runtimeId: "rt-1",
+        postProgress: async () => undefined,
+        postComplete: async () => undefined,
+        postFail: async () => undefined,
+        handoffMaster: async () => ({ artifactId: "art_conflict" }),
+      } as any,
+      encode: async ({ signal }) => {
+        encodeCalls += 1;
+        await new Promise<void>((resolve, reject) => {
+          const t = setTimeout(() => resolve(), 80);
+          signal.addEventListener("abort", () => {
+            clearTimeout(t);
+            reject(new Error("cancelled"));
+          });
+        });
+        firstCompleted = true;
+        return {
+          bytes: new Uint8Array([1]),
+          mimeType: "video/mp4",
+          durationSec: 1,
+          resolution: "1280x720",
+          codec: "h264",
+          sha256: "cc".repeat(32),
+        };
+      },
+    });
+    const first = baseDispatch({
+      renderId: "r_conflict",
+      dispatchEpoch: 3,
+      dispatchAttemptId: "rda_A",
+    });
+    expect((await executor.dispatch(first)).accepted).toBe(true);
+    for (let i = 0; i < 40 && encodeCalls < 1; i++) {
+      await wait(5);
+    }
+    expect(encodeCalls).toBe(1);
+
+    const conflict = await executor.dispatch(
+      baseDispatch({
+        renderId: "r_conflict",
+        dispatchEpoch: 3,
+        dispatchAttemptId: "rda_B",
+      }),
+    );
+    expect(conflict.accepted).toBe(false);
+    expect(conflict.messageKey).toBe(
+      "media_studio.render.dispatch_fence_conflict",
+    );
+    expect(encodeCalls).toBe(1);
+
+    // Wrong attempt cancel is rejected; exact match can cancel.
+    const badCancel = await executor.cancel?.({
+      kind: "media_studio.assembly_render.cancel",
+      workspaceId: "ws1",
+      renderId: "r_conflict",
+      dispatchEpoch: 3,
+      dispatchAttemptId: "rda_B",
+    });
+    expect(badCancel?.cancelled).toBe(false);
+
+    for (let i = 0; i < 40 && !firstCompleted; i++) {
+      await wait(10);
+    }
+    expect(firstCompleted).toBe(true);
+  });
+
+  it("stale dispatch and cancel are rejected; greater epoch replaces", async () => {
     const posts: Array<Record<string, unknown>> = [];
     const fetchImpl = vi.fn(async (_url: string, init: { body?: string }) => {
       posts.push(init.body ? JSON.parse(init.body) : {});
@@ -410,7 +481,9 @@ describe("Gate 1E complete-after-handoff failure", () => {
       posts.some(
         (p) =>
           p.failed === true &&
-          p.errorCode === "media_studio.render.complete_after_handoff_failed",
+          p.errorCode === "media_studio.render.complete_after_handoff_failed" &&
+          p.orphanArtifactId === "art_orphan" &&
+          typeof p.orphanChecksum === "string",
       ),
     ).toBe(true);
     expect(warns.some((w) => w.includes("orphan_master_handoff"))).toBe(true);

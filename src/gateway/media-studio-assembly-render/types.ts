@@ -56,6 +56,12 @@ export type AssemblyRenderFailCallback = {
   dispatchEpoch?: number;
   dispatchAttemptId?: string;
   cancelAcknowledged?: boolean;
+  /**
+   * When complete fails after Artifact handoff, carry the orphan pointer so
+   * Control API can record detection evidence (not yet a full reconcile receipt).
+   */
+  orphanArtifactId?: string;
+  orphanChecksum?: string;
 };
 
 export type AssemblyRenderControlApiBridge = {

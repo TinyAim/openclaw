@@ -210,6 +210,12 @@ export function createAssemblyRenderControlApiBridge(options: {
           ...(input.dispatchAttemptId
             ? { dispatchAttemptId: input.dispatchAttemptId }
             : {}),
+          ...(input.orphanArtifactId
+            ? { orphanArtifactId: input.orphanArtifactId }
+            : {}),
+          ...(input.orphanChecksum
+            ? { orphanChecksum: input.orphanChecksum }
+            : {}),
         },
         "assembly-render fail",
       );
