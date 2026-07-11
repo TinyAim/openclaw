@@ -1135,6 +1135,49 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     expect(result.sessionEntry.verboseLevel).toBeUndefined();
     expect(result.sessionEntry.thinkingLevel).toBeUndefined();
   });
+
+  it("preserves pinned model policy across idle-based session renewal", async () => {
+    const storePath = await createStorePath("openclaw-idle-model-pin-");
+    const sessionKey = "agent:main:telegram:dm:pinned-user";
+    await writeSessionStoreFast(storePath, {
+      [sessionKey]: {
+        sessionId: "stale-pinned-session",
+        updatedAt: Date.now() - 120_000,
+        verboseLevel: "on",
+        providerOverride: "ollama",
+        modelOverride: "gpt-oss:120b-cloud",
+        modelFallbackPolicy: "disabled",
+      },
+    });
+
+    const cfg = {
+      session: { store: storePath, idleMinutes: 1 },
+    } as OpenClawConfig;
+
+    const result = await initSessionState({
+      ctx: {
+        Body: "hello",
+        RawBody: "hello",
+        CommandBody: "hello",
+        From: "pinned-user",
+        To: "bot",
+        ChatType: "direct",
+        SessionKey: sessionKey,
+        Provider: "telegram",
+        Surface: "telegram",
+      },
+      cfg,
+      commandAuthorized: true,
+    });
+
+    expect(result.isNewSession).toBe(true);
+    expect(result.resetTriggered).toBe(false);
+    expect(result.sessionEntry.sessionId).not.toBe("stale-pinned-session");
+    expect(result.sessionEntry.providerOverride).toBe("ollama");
+    expect(result.sessionEntry.modelOverride).toBe("gpt-oss:120b-cloud");
+    expect(result.sessionEntry.modelFallbackPolicy).toBe("disabled");
+    expect(result.sessionEntry.verboseLevel).toBeUndefined();
+  });
 });
 
 describe("buildQueuedSystemPrompt", () => {

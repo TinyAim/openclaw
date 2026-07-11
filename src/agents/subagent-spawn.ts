@@ -59,6 +59,12 @@ export type SpawnSubagentParams = {
   label?: string;
   agentId?: string;
   model?: string;
+  /**
+   * Wisclaw Tier B task routing (problem 6b): explicitly-declared task class
+   * (e.g. "code-script"). When set and no explicit `model` is given, the spawn
+   * model is resolved from `agents.defaults.subagents.taskRouting.<class>`.
+   */
+  taskClass?: string;
   thinking?: string;
   runTimeoutSeconds?: number;
   thread?: boolean;
@@ -390,6 +396,7 @@ export async function spawnSubagentDirect(
     cfg,
     agentId: targetAgentId,
     modelOverride,
+    taskClass: params.taskClass,
   });
 
   const resolvedThinkingDefaultRaw =
@@ -796,6 +803,7 @@ export async function spawnSubagentDirect(
       cleanup,
       label: label || undefined,
       model: resolvedModel,
+      taskClass: params.taskClass,
       runTimeoutSeconds,
       expectsCompletionMessage,
       spawnMode,

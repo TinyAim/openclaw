@@ -3,12 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import type { GetReplyOptions } from "../auto-reply/types.js";
+import { drainSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { __setMaxChatHistoryMessagesBytesForTest } from "./server-constants.js";
 import {
   connectOk,
   getReplyFromConfig,
   installGatewayTestHooks,
   onceMessage,
+  piSdkMock,
   rpcReq,
   startServerWithClient,
   testState,
@@ -173,6 +175,56 @@ describe("gateway server chat", () => {
         expect(capturedOpts?.disableBlockStreaming).toBeUndefined();
       } finally {
         testState.agentConfig = undefined;
+      }
+    });
+  });
+
+  test("chat.send applies an explicit model through the session override path", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      const spy = getReplyFromConfig;
+      await connectOk(ws);
+
+      await createSessionDir();
+      await writeMainSessionStore();
+      resetSystemEventsForTest();
+      piSdkMock.enabled = true;
+      piSdkMock.models = [
+        {
+          id: "gpt-oss:120b-cloud",
+          name: "gpt-oss cloud",
+          provider: "ollama",
+        },
+      ];
+      try {
+        spy.mockClear();
+        const sendRes = await rpcReq(ws, "chat.send", {
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-explicit-model",
+          model: "ollama/gpt-oss:120b-cloud",
+        });
+        expect(sendRes.ok).toBe(true);
+
+        await vi.waitFor(() => {
+          expect(spy.mock.calls.length).toBeGreaterThan(0);
+        }, FAST_WAIT_OPTS);
+
+        const storePath = testState.sessionStorePath;
+        expect(storePath).toBeTruthy();
+        const stored = JSON.parse(await fs.readFile(storePath!, "utf-8")) as Record<
+          string,
+          { modelOverride?: string; providerOverride?: string } | undefined
+        >;
+        expect(stored["agent:main:main"]?.modelOverride).toBe("gpt-oss:120b-cloud");
+        expect(stored["agent:main:main"]?.providerOverride).toBe("ollama");
+        expect(
+          drainSystemEvents("agent:main:main").some((event) =>
+            event.includes("Model switched to ollama/gpt-oss:120b-cloud."),
+          ),
+        ).toBe(true);
+      } finally {
+        piSdkMock.enabled = false;
+        piSdkMock.models = [];
       }
     });
   });

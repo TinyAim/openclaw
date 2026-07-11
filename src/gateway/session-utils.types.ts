@@ -26,6 +26,13 @@ export type GatewaySessionRow = {
   space?: string;
   chatType?: ChatType;
   origin?: SessionEntry["origin"];
+  /**
+   * Wisclaw collaboration branches — parent session key for `subagent:*`
+   * sessions (mirrors `SessionEntry.spawnedBy`, already accepted by
+   * `sessions.list`/`sessions.patch` params). Exposed on the row so
+   * operator surfaces can re-parent child runs without key parsing.
+   */
+  spawnedBy?: string;
   updatedAt: number | null;
   sessionId?: string;
   systemSent?: boolean;

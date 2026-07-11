@@ -70,6 +70,16 @@ export const SessionsPatchParamsSchema = Type.Object(
     execAsk: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     execNode: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     model: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+    modelFallbackPolicy: Type.Optional(
+      Type.Union([
+        Type.Literal("default"),
+        Type.Literal("disabled"),
+        Type.Literal("transient_only"),
+        Type.Literal("continuity"),
+        Type.Null(),
+      ]),
+    ),
+    modelFallbacks: Type.Optional(Type.Union([Type.Array(NonEmptyString), Type.Null()])),
     spawnedBy: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
     spawnDepth: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
     sendPolicy: Type.Optional(

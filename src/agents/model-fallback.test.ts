@@ -207,6 +207,60 @@ describe("runWithModelFallback", () => {
     expect(result.attempts[0].reason).toBe("unknown");
   });
 
+  it("transient_only keeps unknown/configuration errors fail-closed", async () => {
+    const cfg = makeCfg();
+    const run = vi.fn().mockRejectedValueOnce(new Error("bad request")).mockResolvedValueOnce("ok");
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        fallbackPolicy: "transient_only",
+        run,
+      }),
+    ).rejects.toThrow("bad request");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("transient_only falls back for rate limits", async () => {
+    const cfg = makeCfg();
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("rate limited"), { status: 429 }))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-4.1-mini",
+      fallbackPolicy: "transient_only",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  it("transient_only does not cross providers for auth failures", async () => {
+    const cfg = makeCfg();
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(Object.assign(new Error("unauthorized"), { status: 401 }))
+      .mockResolvedValueOnce("ok");
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        fallbackPolicy: "transient_only",
+        run,
+      }),
+    ).rejects.toMatchObject({ reason: "auth" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("passes original unknown errors to onError during fallback", async () => {
     const cfg = makeCfg();
     const unknownError = new Error("provider misbehaved");

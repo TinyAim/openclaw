@@ -170,6 +170,20 @@ export const AgentDefaultsSchema = z
           ),
         archiveAfterMinutes: z.number().int().positive().optional(),
         model: AgentModelSchema.optional(),
+        taskRouting: z
+          .record(
+            z.string(),
+            z
+              .object({
+                primary: z.string().optional(),
+                fallbacks: z.array(z.string()).optional(),
+              })
+              .strict(),
+          )
+          .optional()
+          .describe(
+            "Wisclaw Tier B task routing: subagent task class → model ref chain (problem 6b). Resolved at spawn only when sessions_spawn declares a taskClass.",
+          ),
         thinking: z.string().optional(),
         runTimeoutSeconds: z.number().int().min(0).optional(),
         announceTimeoutMs: z.number().int().positive().optional(),

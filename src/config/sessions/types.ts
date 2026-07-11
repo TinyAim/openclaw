@@ -22,6 +22,16 @@ export type SessionOrigin = {
   threadId?: string | number;
 };
 
+export type SessionWisclawScope = {
+  tenantId?: string;
+  workspaceId?: string;
+  runtimeId?: string;
+  seatId?: string;
+  ownerUserId?: string;
+  teamId?: string;
+  sessionScope?: "self" | "team" | "global";
+};
+
 export type SessionAcpIdentitySource = "ensure" | "status" | "event";
 
 export type SessionAcpIdentityState = "pending" | "resolved";
@@ -105,6 +115,17 @@ export type SessionEntry = {
   responseUsage?: "on" | "off" | "tokens" | "full";
   providerOverride?: string;
   modelOverride?: string;
+  /**
+   * Runtime fallback behavior for explicit session model overrides.
+   * `disabled` means the session-pinned model must fail closed instead of
+   * falling through to the configured default/fallback chain.
+   */
+  modelFallbackPolicy?: "disabled" | "transient_only" | "continuity";
+  /**
+   * Optional session-scoped fallback refs for explicit model overrides.
+   * When present, this replaces agents.defaults.model.fallbacks for the run.
+   */
+  modelFallbacksOverride?: string[];
   authProfileOverride?: string;
   authProfileOverrideSource?: "auto" | "user";
   authProfileOverrideCompactionCount?: number;
@@ -164,6 +185,7 @@ export type SessionEntry = {
   skillsSnapshot?: SessionSkillSnapshot;
   systemPromptReport?: SessionSystemPromptReport;
   acp?: SessionAcpMeta;
+  wisclawScope?: SessionWisclawScope;
 };
 
 function normalizeRuntimeField(value: string | undefined): string | undefined {

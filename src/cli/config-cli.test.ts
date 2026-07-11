@@ -202,6 +202,95 @@ describe("config cli", () => {
     });
   });
 
+  describe("config patch - Wisclaw per-agent model (object-array merge by id)", () => {
+    it("merges a per-agent model into agents.list by id without clobbering other fields", async () => {
+      const resolved: OpenClawConfig = {
+        agents: {
+          defaults: { model: { primary: "ollama/gpt-oss:120b-cloud" } },
+          list: [
+            { id: "main", workspace: "~/main-ws", skills: ["fs"] },
+            { id: "ops", workspace: "~/ops-ws", identity: { name: "Ops" } },
+          ],
+        } as never,
+        gateway: { port: 18789 },
+      };
+      setSnapshot(resolved, resolved);
+
+      await runConfigCommand([
+        "config",
+        "patch",
+        JSON.stringify({
+          agents: { list: [{ id: "ops", model: { primary: "deepseek/deepseek-chat" } }] },
+        }),
+      ]);
+
+      expect(mockWriteConfigFile).toHaveBeenCalledTimes(1);
+      const written = mockWriteConfigFile.mock.calls[0]?.[0] as OpenClawConfig;
+      const list = (written.agents as never as { list: Array<Record<string, unknown>> }).list;
+      const ops = list.find((a) => a.id === "ops")!;
+      const main = list.find((a) => a.id === "main")!;
+      // ops gained the per-agent model, kept workspace + identity.
+      expect(ops.model).toEqual({ primary: "deepseek/deepseek-chat" });
+      expect(ops.workspace).toBe("~/ops-ws");
+      expect(ops.identity).toEqual({ name: "Ops" });
+      // main is untouched, no per-agent model → falls back to defaults at runtime.
+      expect(main).toEqual({ id: "main", workspace: "~/main-ws", skills: ["fs"] });
+      // workspace defaults preserved.
+      expect((written.agents as never as { defaults: unknown }).defaults).toEqual({
+        model: { primary: "ollama/gpt-oss:120b-cloud" },
+      });
+      expect(written.gateway?.port).toBe(18789);
+    });
+
+    it("appends a new agent entry when the patched id is not present", async () => {
+      const resolved: OpenClawConfig = {
+        agents: { list: [{ id: "main" }] } as never,
+      };
+      setSnapshot(resolved, resolved);
+
+      await runConfigCommand([
+        "config",
+        "patch",
+        JSON.stringify({ agents: { list: [{ id: "test1", model: { primary: "openai/gpt-5.2" } }] } }),
+      ]);
+
+      const written = mockWriteConfigFile.mock.calls[0]?.[0] as OpenClawConfig;
+      const list = (written.agents as never as { list: Array<Record<string, unknown>> }).list;
+      expect(list).toHaveLength(2);
+      expect(list.find((a) => a.id === "test1")?.model).toEqual({ primary: "openai/gpt-5.2" });
+    });
+
+    it("clears a per-agent model override when patched with null (falls back to defaults)", async () => {
+      const resolved: OpenClawConfig = {
+        agents: {
+          list: [{ id: "ops", workspace: "~/ops-ws", model: { primary: "deepseek/deepseek-chat" } }],
+        } as never,
+      };
+      setSnapshot(resolved, resolved);
+
+      await runConfigCommand([
+        "config",
+        "patch",
+        JSON.stringify({ agents: { list: [{ id: "ops", model: null }] } }),
+      ]);
+
+      const written = mockWriteConfigFile.mock.calls[0]?.[0] as OpenClawConfig;
+      const ops = (written.agents as never as { list: Array<Record<string, unknown>> }).list.find(
+        (a) => a.id === "ops",
+      )!;
+      expect(ops).not.toHaveProperty("model");
+      expect(ops.workspace).toBe("~/ops-ws");
+    });
+
+    it("rejects a non-object patch payload", async () => {
+      await expect(runConfigCommand(["config", "patch", "[1,2,3]"])).rejects.toThrow("__exit__:1");
+      expect(mockWriteConfigFile).not.toHaveBeenCalled();
+      expect(mockError).toHaveBeenCalledWith(
+        expect.stringContaining("config patch value must be a JSON object"),
+      );
+    });
+  });
+
   describe("config get", () => {
     it("redacts sensitive values", async () => {
       const resolved: OpenClawConfig = {

@@ -9,11 +9,21 @@ import { createMockTypingController } from "./test-helpers.js";
 const runEmbeddedPiAgentMock = vi.fn();
 const routeReplyMock = vi.fn();
 const isRoutableChannelMock = vi.fn();
+const resolveRunModelFallbacksOverrideMock = vi.fn();
 
 vi.mock(
   "../../agents/model-fallback.js",
   async () => await import("../../test-utils/model-fallback.mock.js"),
 );
+
+vi.mock("../../agents/agent-scope.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/agent-scope.js")>();
+  return {
+    ...actual,
+    resolveRunModelFallbacksOverride: (...args: unknown[]) =>
+      resolveRunModelFallbacksOverrideMock(...args),
+  };
+});
 
 vi.mock("../../agents/pi-embedded.js", () => ({
   runEmbeddedPiAgent: (params: unknown) => runEmbeddedPiAgentMock(params),
@@ -47,6 +57,8 @@ beforeEach(() => {
   isRoutableChannelMock.mockImplementation((ch: string | undefined) =>
     Boolean(ch?.trim() && ROUTABLE_TEST_CHANNELS.has(ch.trim().toLowerCase())),
   );
+  resolveRunModelFallbacksOverrideMock.mockReset();
+  resolveRunModelFallbacksOverrideMock.mockReturnValue(undefined);
 });
 
 const baseQueuedRun = (messageProvider = "whatsapp"): FollowupRun =>
@@ -481,6 +493,49 @@ describe("createFollowupRunner typing cleanup", () => {
 
     expect(onBlockReply).toHaveBeenCalled();
     expectTypingCleanup(typing);
+  });
+});
+
+describe("createFollowupRunner model fallback policy", () => {
+  function createPolicyRunner(onBlockReply: (payload: unknown) => Promise<void>) {
+    return createFollowupRunner({
+      opts: { onBlockReply },
+      typing: createMockTypingController(),
+      typingMode: "instant",
+      defaultModel: "anthropic/claude-opus-4-5",
+    });
+  }
+
+  it("resolves session fallbacks for a default-policy run", async () => {
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {},
+    });
+    const runner = createPolicyRunner(createAsyncReplySpy());
+
+    await runner(createQueuedRun());
+
+    expect(resolveRunModelFallbacksOverrideMock).toHaveBeenCalledWith({
+      cfg: {},
+      agentId: undefined,
+      sessionKey: "main",
+    });
+  });
+
+  it("skips fallback resolution when modelFallbackPolicy is disabled", async () => {
+    runEmbeddedPiAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "hello world!" }],
+      meta: {},
+    });
+    const runner = createPolicyRunner(createAsyncReplySpy());
+
+    await runner(
+      createQueuedRun({
+        run: { modelFallbackPolicy: "disabled" },
+      }),
+    );
+
+    expect(resolveRunModelFallbacksOverrideMock).not.toHaveBeenCalled();
   });
 });
 

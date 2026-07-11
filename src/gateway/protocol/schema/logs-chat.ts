@@ -35,6 +35,9 @@ export const ChatSendParamsSchema = Type.Object(
   {
     sessionKey: NonEmptyString,
     message: Type.String(),
+    // Optional provider-qualified model ref. When present the gateway applies
+    // the same session model override path as sessions.patch before dispatch.
+    model: Type.Optional(NonEmptyString),
     thinking: Type.Optional(Type.String()),
     deliver: Type.Optional(Type.Boolean()),
     attachments: Type.Optional(Type.Array(Type.Unknown())),

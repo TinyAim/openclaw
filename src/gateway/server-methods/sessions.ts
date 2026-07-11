@@ -50,6 +50,7 @@ import {
   type SessionsPreviewEntry,
   type SessionsPreviewResult,
 } from "../session-utils.js";
+import { enqueueModelSwitchSystemEvent } from "../session-model-system-event.js";
 import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
 import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.js";
@@ -416,8 +417,14 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
 
     const { cfg, target, storePath } = resolveGatewaySessionTargetFromKey(key);
+    let previousModelRef: { provider?: string; model?: string } | undefined;
+    let eventSessionKey = target.canonicalKey ?? key;
     const applied = await updateSessionStore(storePath, async (store) => {
       const { primaryKey } = migrateAndPruneSessionStoreKey({ cfg, key, store });
+      eventSessionKey = primaryKey;
+      const parsed = parseAgentSessionKey(primaryKey);
+      const agentId = normalizeAgentId(parsed?.agentId ?? resolveDefaultAgentId(cfg));
+      previousModelRef = resolveSessionModelRef(cfg, store[primaryKey], agentId);
       return await applySessionsPatchToStore({
         cfg,
         store,
@@ -443,6 +450,13 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         model: resolved.model,
       },
     };
+    if (typeof p.model === "string" && p.model.trim()) {
+      enqueueModelSwitchSystemEvent({
+        sessionKey: eventSessionKey,
+        previous: previousModelRef,
+        next: resolved,
+      });
+    }
     respond(true, result, undefined);
   },
   "sessions.reset": async ({ params, respond }) => {

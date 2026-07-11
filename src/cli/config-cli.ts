@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import JSON5 from "json5";
 import { readConfigFileSnapshot, writeConfigFile } from "../config/config.js";
 import { formatConfigIssueLines, normalizeConfigIssues } from "../config/issue-format.js";
+import { applyMergePatch } from "../config/merge-patch.js";
 import { CONFIG_PATH } from "../config/paths.js";
 import { isBlockedObjectKey } from "../config/prototype-keys.js";
 import { redactConfigObject } from "../config/redact-snapshot.js";
@@ -330,6 +331,52 @@ export async function runConfigUnset(opts: { path: string; runtime?: RuntimeEnv 
   }
 }
 
+/**
+ * Wisclaw extension — RFC-7386-style merge patch with object-array merge by
+ * `id`. Wisclaw's Control API needs to set per-agent model overrides
+ * (`agents.list[<id>].model`) without clobbering the rest of each agent entry,
+ * but `config set` only addresses arrays by numeric INDEX (fragile) and
+ * `config get` returns a REDACTED view (read-merge-write would corrupt
+ * secrets). This reuses the same `applyMergePatch({ mergeObjectArraysById })`
+ * the gateway `config.patch` RPC uses, operating on `snapshot.resolved` (the
+ * un-redacted user config after $include/${ENV} but before runtime defaults),
+ * so secrets are preserved and other agent fields survive the merge.
+ *
+ * Semantics (mirrors gateway `config.patch`):
+ * - patch must be a JSON object (not array/scalar);
+ * - object arrays that are fully `id`-keyed merge by `id` (new ids append);
+ * - `null` deletes a key (e.g. `{agents:{list:[{id,model:null}]}}` clears one
+ *   agent's per-agent model override → it falls back to `agents.defaults`).
+ *
+ * NOTE: must stay byte-compatible with the gateway path; covered by the
+ * model-provider sync verification.
+ */
+export async function runConfigPatch(opts: { raw: string; runtime?: RuntimeEnv }) {
+  const runtime = opts.runtime ?? defaultRuntime;
+  try {
+    let parsed: unknown;
+    try {
+      parsed = JSON5.parse(opts.raw.trim());
+    } catch (err) {
+      throw new Error(`Failed to parse JSON5 patch value: ${String(err)}`, { cause: err });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("config patch value must be a JSON object");
+    }
+    const snapshot = await loadValidConfig(runtime);
+    // Use snapshot.resolved (un-redacted user config before runtime defaults)
+    // to avoid leaking defaults / corrupting redacted secrets (issue #6070).
+    const next = applyMergePatch(structuredClone(snapshot.resolved), parsed, {
+      mergeObjectArraysById: true,
+    }) as Record<string, unknown>;
+    await writeConfigFile(next);
+    runtime.log(info(`Patched config. Restart the gateway to apply.`));
+  } catch (err) {
+    runtime.error(danger(String(err)));
+    runtime.exit(1);
+  }
+}
+
 export async function runConfigFile(opts: { runtime?: RuntimeEnv }) {
   const runtime = opts.runtime ?? defaultRuntime;
   try {
@@ -457,6 +504,16 @@ export function registerConfigCli(program: Command) {
     .argument("<path>", "Config path (dot or bracket notation)")
     .action(async (path: string) => {
       await runConfigUnset({ path });
+    });
+
+  cmd
+    .command("patch")
+    .description(
+      "Merge-patch the config from a JSON object (RFC-7386 + object-array merge by id; null deletes)",
+    )
+    .argument("<json>", "JSON5 object to merge into the config")
+    .action(async (json: string) => {
+      await runConfigPatch({ raw: json });
     });
 
   cmd

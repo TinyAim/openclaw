@@ -263,6 +263,44 @@ describe("createModelSelectionState respects session model override", () => {
     expect(state.provider).toBe(defaultProvider);
     expect(state.model).toBe("deepseek-v3-4bit-mlx");
   });
+
+  it("keeps a strict pinned session override even when it is absent from the current allowlist", async () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "inferencer/deepseek-v3-4bit-mlx": {},
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const sessionKey = "agent:main:main";
+    const sessionEntry = makeEntry({
+      providerOverride: "ollama",
+      modelOverride: "gpt-oss:120b-cloud",
+      modelFallbackPolicy: "disabled",
+    });
+    const sessionStore = { [sessionKey]: sessionEntry };
+
+    const state = await createModelSelectionState({
+      cfg,
+      agentCfg: cfg.agents?.defaults,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      defaultProvider,
+      defaultModel,
+      provider: defaultProvider,
+      model: defaultModel,
+      hasModelDirective: false,
+    });
+
+    expect(state.provider).toBe("ollama");
+    expect(state.model).toBe("gpt-oss:120b-cloud");
+    expect(sessionEntry.providerOverride).toBe("ollama");
+    expect(sessionEntry.modelOverride).toBe("gpt-oss:120b-cloud");
+    expect(state.resetModelOverride).toBe(false);
+  });
 });
 
 describe("createModelSelectionState resolveDefaultReasoningLevel", () => {

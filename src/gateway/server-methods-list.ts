@@ -58,6 +58,10 @@ const BASE_METHODS = [
   "sessions.reset",
   "sessions.delete",
   "sessions.compact",
+  // Wisclaw collaboration branches — operator-plane subagent orchestration.
+  "subagents.list",
+  "subagents.spawn",
+  "subagents.kill",
   "last-heartbeat",
   "set-heartbeats",
   "wake",

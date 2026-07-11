@@ -1,4 +1,7 @@
-import { resolveRunModelFallbacksOverride } from "../../agents/agent-scope.js";
+import {
+  resolveRunModelFallbackPolicy,
+  resolveRunModelFallbacksOverride,
+} from "../../agents/agent-scope.js";
 import type { NormalizedUsage } from "../../agents/usage.js";
 import { getChannelDock } from "../../channels/dock.js";
 import type { ChannelId, ChannelThreadingToolContext } from "../../channels/plugins/types.js";
@@ -146,16 +149,38 @@ export const resolveEnforceFinalTag = (run: FollowupRun["run"], provider: string
   Boolean(run.enforceFinalTag || isReasoningTagProvider(provider));
 
 export function resolveModelFallbackOptions(run: FollowupRun["run"]) {
+  if (run.modelFallbackPolicy === "disabled") {
+    return {
+      cfg: run.config,
+      provider: run.provider,
+      model: run.model,
+      agentDir: run.agentDir,
+      fallbacksOverride: [],
+      fallbackPolicy: "strict" as const,
+    };
+  }
   return {
     cfg: run.config,
     provider: run.provider,
     model: run.model,
     agentDir: run.agentDir,
-    fallbacksOverride: resolveRunModelFallbacksOverride({
-      cfg: run.config,
-      agentId: run.agentId,
-      sessionKey: run.sessionKey,
-    }),
+    fallbackPolicy:
+      run.modelFallbackPolicy === "transient_only"
+        ? ("transient_only" as const)
+        : run.modelFallbackPolicy === "continuity"
+          ? ("continuity" as const)
+          : resolveRunModelFallbackPolicy({
+              cfg: run.config,
+              agentId: run.agentId,
+              sessionKey: run.sessionKey,
+            }),
+    fallbacksOverride: Array.isArray(run.modelFallbacksOverride)
+      ? run.modelFallbacksOverride
+      : resolveRunModelFallbacksOverride({
+          cfg: run.config,
+          agentId: run.agentId,
+          sessionKey: run.sessionKey,
+        }),
   };
 }
 

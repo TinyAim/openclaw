@@ -404,6 +404,34 @@ async function moveToTrashBestEffort(pathname: string): Promise<void> {
   }
 }
 
+function resolveAgentStateDirForDelete(params: {
+  agentId: string;
+  agentDir: string;
+  sessionsDir: string;
+}): string | null {
+  const agentParent = path.dirname(path.resolve(params.agentDir));
+  const sessionsParent = path.dirname(path.resolve(params.sessionsDir));
+  if (agentParent !== sessionsParent) {
+    return null;
+  }
+  if (path.basename(agentParent) !== normalizeAgentId(params.agentId)) {
+    return null;
+  }
+  return agentParent;
+}
+
+function uniqueDeletionTargets(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const pathname of paths) {
+    const resolved = path.resolve(pathname);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+    result.push(pathname);
+  }
+  return result;
+}
+
 function respondWorkspaceFileInvalid(respond: RespondFn, name: string, reason: string): void {
   respond(
     false,
@@ -616,16 +644,16 @@ export const agentsHandlers: GatewayRequestHandlers = {
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
     const agentDir = resolveAgentDir(cfg, agentId);
     const sessionsDir = resolveSessionTranscriptsDirForAgent(agentId);
+    const agentStateDir = resolveAgentStateDirForDelete({ agentId, agentDir, sessionsDir });
 
     const result = pruneAgentConfig(cfg, agentId);
     await writeConfigFile(result.config);
 
     if (deleteFiles) {
-      await Promise.all([
-        moveToTrashBestEffort(workspaceDir),
-        moveToTrashBestEffort(agentDir),
-        moveToTrashBestEffort(sessionsDir),
-      ]);
+      const targets = agentStateDir
+        ? [workspaceDir, agentStateDir]
+        : [workspaceDir, agentDir, sessionsDir];
+      await Promise.all(uniqueDeletionTargets(targets).map(moveToTrashBestEffort));
     }
 
     respond(true, { ok: true, agentId, removedBindings: result.removedBindings }, undefined);

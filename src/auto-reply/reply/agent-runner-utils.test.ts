@@ -3,12 +3,18 @@ import type { FollowupRun } from "./queue.js";
 
 const hoisted = vi.hoisted(() => {
   const resolveRunModelFallbacksOverrideMock = vi.fn();
-  return { resolveRunModelFallbacksOverrideMock };
+  const resolveRunModelFallbackPolicyMock = vi.fn();
+  return {
+    resolveRunModelFallbacksOverrideMock,
+    resolveRunModelFallbackPolicyMock,
+  };
 });
 
 vi.mock("../../agents/agent-scope.js", () => ({
   resolveRunModelFallbacksOverride: (...args: unknown[]) =>
     hoisted.resolveRunModelFallbacksOverrideMock(...args),
+  resolveRunModelFallbackPolicy: (...args: unknown[]) =>
+    hoisted.resolveRunModelFallbackPolicyMock(...args),
 }));
 
 const {
@@ -45,6 +51,7 @@ function makeRun(overrides: Partial<FollowupRun["run"]> = {}): FollowupRun["run"
 describe("agent-runner-utils", () => {
   beforeEach(() => {
     hoisted.resolveRunModelFallbacksOverrideMock.mockClear();
+    hoisted.resolveRunModelFallbackPolicyMock.mockReset();
   });
 
   it("resolves model fallback options from run context", () => {
@@ -63,6 +70,7 @@ describe("agent-runner-utils", () => {
       provider: run.provider,
       model: run.model,
       agentDir: run.agentDir,
+      fallbackPolicy: undefined,
       fallbacksOverride: ["fallback-model"],
     });
   });
@@ -79,6 +87,38 @@ describe("agent-runner-utils", () => {
       sessionKey: run.sessionKey,
     });
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
+  });
+
+  it("uses session-scoped model fallbacks before agent/default fallbacks", () => {
+    hoisted.resolveRunModelFallbacksOverrideMock.mockReturnValue(["agent-fallback"]);
+    const run = makeRun({
+      modelFallbacksOverride: ["anthropic/claude-sonnet-4-6"],
+    });
+
+    const resolved = resolveModelFallbackOptions(run);
+
+    expect(hoisted.resolveRunModelFallbacksOverrideMock).not.toHaveBeenCalled();
+    expect(resolved.fallbacksOverride).toEqual(["anthropic/claude-sonnet-4-6"]);
+  });
+
+  it("disables model fallbacks when the session policy requires the pinned model", () => {
+    hoisted.resolveRunModelFallbacksOverrideMock.mockReturnValue(["fallback-model"]);
+    const run = makeRun({
+      modelFallbackPolicy: "disabled",
+      modelFallbacksOverride: ["anthropic/claude-sonnet-4-6"],
+    });
+
+    const resolved = resolveModelFallbackOptions(run);
+
+    expect(hoisted.resolveRunModelFallbacksOverrideMock).not.toHaveBeenCalled();
+    expect(resolved).toEqual({
+      cfg: run.config,
+      provider: run.provider,
+      model: run.model,
+      agentDir: run.agentDir,
+      fallbackPolicy: "strict",
+      fallbacksOverride: [],
+    });
   });
 
   it("builds embedded run base params with auth profile and run metadata", () => {

@@ -11,6 +11,8 @@ export type AgentModelConfig =
       primary?: string;
       /** Per-agent model fallbacks (provider/model). */
       fallbacks?: string[];
+      /** Wisclaw guard for when the ordered fallback chain may run. */
+      fallbackPolicy?: "strict" | "transient_only" | "continuity";
     };
 
 export type AgentSandboxConfig = {

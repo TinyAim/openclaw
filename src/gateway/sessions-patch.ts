@@ -286,6 +286,8 @@ export async function applySessionsPatchToStore(params: {
           isDefault: true,
         },
       });
+      delete next.modelFallbackPolicy;
+      delete next.modelFallbacksOverride;
     } else if (raw !== undefined) {
       const trimmed = String(raw).trim();
       if (!trimmed) {
@@ -319,6 +321,41 @@ export async function applySessionsPatchToStore(params: {
           isDefault,
         },
       });
+    }
+  }
+
+  if ("modelFallbackPolicy" in patch) {
+    const raw = patch.modelFallbackPolicy;
+    if (raw === null || raw === undefined || raw === "default") {
+      delete next.modelFallbackPolicy;
+    } else if (raw === "disabled") {
+      next.modelFallbackPolicy = "disabled";
+      delete next.modelFallbacksOverride;
+    } else if (raw === "transient_only") {
+      next.modelFallbackPolicy = "transient_only";
+    } else if (raw === "continuity") {
+      next.modelFallbackPolicy = "continuity";
+    } else {
+      return invalid(
+        'invalid modelFallbackPolicy (use "default"|"disabled"|"transient_only"|"continuity")',
+      );
+    }
+  }
+
+  if ("modelFallbacks" in patch) {
+    const raw = patch.modelFallbacks;
+    if (raw === null || raw === undefined) {
+      delete next.modelFallbacksOverride;
+    } else if (Array.isArray(raw)) {
+      const fallbacks = raw
+        .map((item) => String(item ?? "").trim())
+        .filter((item) => item.length > 0);
+      next.modelFallbacksOverride = fallbacks;
+      if (fallbacks.length > 0 && next.modelFallbackPolicy === "disabled") {
+        delete next.modelFallbackPolicy;
+      }
+    } else {
+      return invalid("invalid modelFallbacks (use string[]|null)");
     }
   }
 

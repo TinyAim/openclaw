@@ -113,6 +113,8 @@ export async function initSessionState(params: {
   let persistedTtsAuto: TtsAutoMode | undefined;
   let persistedModelOverride: string | undefined;
   let persistedProviderOverride: string | undefined;
+  let persistedModelFallbackPolicy: SessionEntry["modelFallbackPolicy"] | undefined;
+  let persistedModelFallbacksOverride: SessionEntry["modelFallbacksOverride"] | undefined;
   let persistedLabel: string | undefined;
 
   const normalizedChatType = normalizeChatType(ctx.ChatType);
@@ -212,6 +214,10 @@ export async function initSessionState(params: {
   const freshEntry = entry
     ? evaluateSessionFreshness({ updatedAt: entry.updatedAt, now, policy: resetPolicy }).fresh
     : false;
+  const storedModelOverride = entry?.modelOverride;
+  const storedProviderOverride = entry?.providerOverride;
+  const storedModelFallbackPolicy = entry?.modelFallbackPolicy;
+  const storedModelFallbacksOverride = entry?.modelFallbacksOverride;
 
   if (!isNewSession && freshEntry) {
     sessionId = entry.sessionId;
@@ -223,6 +229,8 @@ export async function initSessionState(params: {
     persistedTtsAuto = entry.ttsAuto;
     persistedModelOverride = entry.modelOverride;
     persistedProviderOverride = entry.providerOverride;
+    persistedModelFallbackPolicy = entry.modelFallbackPolicy;
+    persistedModelFallbacksOverride = entry.modelFallbacksOverride;
     persistedLabel = entry.label;
   } else {
     sessionId = crypto.randomUUID();
@@ -239,6 +247,8 @@ export async function initSessionState(params: {
       persistedTtsAuto = entry.ttsAuto;
       persistedModelOverride = entry.modelOverride;
       persistedProviderOverride = entry.providerOverride;
+      persistedModelFallbackPolicy = entry.modelFallbackPolicy;
+      persistedModelFallbacksOverride = entry.modelFallbacksOverride;
       persistedLabel = entry.label;
     }
   }
@@ -288,8 +298,14 @@ export async function initSessionState(params: {
     reasoningLevel: persistedReasoning ?? baseEntry?.reasoningLevel,
     ttsAuto: persistedTtsAuto ?? baseEntry?.ttsAuto,
     responseUsage: baseEntry?.responseUsage,
-    modelOverride: persistedModelOverride ?? baseEntry?.modelOverride,
-    providerOverride: persistedProviderOverride ?? baseEntry?.providerOverride,
+    modelOverride: persistedModelOverride ?? baseEntry?.modelOverride ?? storedModelOverride,
+    providerOverride: persistedProviderOverride ?? baseEntry?.providerOverride ?? storedProviderOverride,
+    modelFallbackPolicy:
+      persistedModelFallbackPolicy ?? baseEntry?.modelFallbackPolicy ?? storedModelFallbackPolicy,
+    modelFallbacksOverride:
+      persistedModelFallbacksOverride ??
+      baseEntry?.modelFallbacksOverride ??
+      storedModelFallbacksOverride,
     label: persistedLabel ?? baseEntry?.label,
     sendPolicy: baseEntry?.sendPolicy,
     queueMode: baseEntry?.queueMode,

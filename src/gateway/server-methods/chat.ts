@@ -9,7 +9,7 @@ import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.j
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
-import { resolveSessionFilePath } from "../../config/sessions.js";
+import { resolveSessionFilePath, updateSessionStore } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import {
@@ -41,9 +41,13 @@ import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import {
   capArrayByJsonBytes,
   loadSessionEntry,
+  pruneLegacyStoreKeys,
   readSessionMessages,
+  resolveGatewaySessionStoreTarget,
   resolveSessionModelRef,
 } from "../session-utils.js";
+import { enqueueModelSwitchSystemEvent } from "../session-model-system-event.js";
+import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { formatForLog } from "../ws-log.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./attachment-normalize.js";
@@ -726,6 +730,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         fileName?: string;
         content?: unknown;
       }>;
+      model?: string;
       timeoutMs?: number;
       idempotencyKey: string;
     };
@@ -766,7 +771,56 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const loadedSession = loadSessionEntry(rawSessionKey);
+    const { cfg, storePath, canonicalKey: sessionKey } = loadedSession;
+    let entry = loadedSession.entry;
+    if (typeof p.model === "string" && p.model.trim()) {
+      let previousModelRef: { provider?: string; model?: string } | undefined;
+      let nextModelRef: { provider?: string; model?: string } | undefined;
+      const applied = await updateSessionStore(storePath, async (store) => {
+        const target = resolveGatewaySessionStoreTarget({
+          cfg,
+          key: rawSessionKey,
+          store,
+        });
+        const primaryKey = target.canonicalKey;
+        if (!store[primaryKey]) {
+          const existingKey = target.storeKeys.find((candidate) => Boolean(store[candidate]));
+          if (existingKey) {
+            store[primaryKey] = store[existingKey];
+          }
+        }
+        pruneLegacyStoreKeys({
+          store,
+          canonicalKey: primaryKey,
+          candidates: target.storeKeys,
+        });
+        const agentId = resolveSessionAgentId({
+          sessionKey: primaryKey,
+          config: cfg,
+        });
+        previousModelRef = resolveSessionModelRef(cfg, store[primaryKey], agentId);
+        return await applySessionsPatchToStore({
+          cfg,
+          store,
+          storeKey: primaryKey,
+          patch: { key: primaryKey, model: p.model },
+          loadGatewayModelCatalog: context.loadGatewayModelCatalog,
+        });
+      });
+      if (!applied.ok) {
+        respond(false, undefined, applied.error);
+        return;
+      }
+      entry = applied.entry;
+      const agentId = resolveSessionAgentId({ sessionKey, config: cfg });
+      nextModelRef = resolveSessionModelRef(cfg, entry, agentId);
+      enqueueModelSwitchSystemEvent({
+        sessionKey,
+        previous: previousModelRef,
+        next: nextModelRef,
+      });
+    }
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,

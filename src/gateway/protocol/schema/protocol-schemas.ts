@@ -142,6 +142,11 @@ import {
 } from "./sessions.js";
 import { PresenceEntrySchema, SnapshotSchema, StateVersionSchema } from "./snapshot.js";
 import {
+  SubagentsKillParamsSchema,
+  SubagentsListParamsSchema,
+  SubagentsSpawnParamsSchema,
+} from "./subagents.js";
+import {
   WizardCancelParamsSchema,
   WizardNextParamsSchema,
   WizardNextResultSchema,
@@ -197,6 +202,9 @@ export const ProtocolSchemas = {
   SessionsDeleteParams: SessionsDeleteParamsSchema,
   SessionsCompactParams: SessionsCompactParamsSchema,
   SessionsUsageParams: SessionsUsageParamsSchema,
+  SubagentsListParams: SubagentsListParamsSchema,
+  SubagentsSpawnParams: SubagentsSpawnParamsSchema,
+  SubagentsKillParams: SubagentsKillParamsSchema,
   ConfigGetParams: ConfigGetParamsSchema,
   ConfigSetParams: ConfigSetParamsSchema,
   ConfigApplyParams: ConfigApplyParamsSchema,

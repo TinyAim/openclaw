@@ -61,4 +61,54 @@ describe("runtime config snapshot writes", () => {
       }
     });
   });
+
+  it("refreshes the runtime snapshot after config mutations", async () => {
+    await withTempHome("openclaw-config-runtime-refresh-", async (home) => {
+      const configPath = path.join(home, ".openclaw", "openclaw.json");
+      const sourceConfig: OpenClawConfig = {
+        agents: {
+          list: [{ id: "main" }, { id: "111" }, { id: "112" }],
+        },
+      };
+      const runtimeConfig: OpenClawConfig = {
+        agents: {
+          list: [{ id: "main" }, { id: "111" }, { id: "112" }],
+        },
+      };
+
+      await fs.mkdir(path.dirname(configPath), { recursive: true });
+      await fs.writeFile(configPath, `${JSON.stringify(sourceConfig, null, 2)}\n`, "utf8");
+
+      try {
+        setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
+
+        await writeConfigFile({
+          agents: {
+            list: [{ id: "main" }, { id: "112" }],
+          },
+        });
+        expect(loadConfig().agents?.list?.map((agent) => agent.id)).toEqual([
+          "main",
+          "112",
+        ]);
+
+        await writeConfigFile({
+          agents: {
+            list: [{ id: "main" }],
+          },
+        });
+        expect(loadConfig().agents?.list?.map((agent) => agent.id)).toEqual([
+          "main",
+        ]);
+
+        const persisted = JSON.parse(await fs.readFile(configPath, "utf8")) as OpenClawConfig;
+        expect(persisted.agents?.list?.map((agent) => agent.id)).toEqual([
+          "main",
+        ]);
+      } finally {
+        clearRuntimeConfigSnapshot();
+        clearConfigCache();
+      }
+    });
+  });
 });

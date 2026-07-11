@@ -15,18 +15,27 @@ vi.mock("./embeddings.js", () => {
     return [alpha, beta];
   };
   return {
-    createEmbeddingProvider: async (options: { model?: string }) => ({
-      requestedProvider: "openai",
-      provider: {
-        id: "mock",
-        model: options.model ?? "mock-embed",
-        embedQuery: async (text: string) => embedText(text),
-        embedBatch: async (texts: string[]) => {
-          embedBatchCalls += 1;
-          return texts.map(embedText);
+    createEmbeddingProvider: async (options: { model?: string; provider?: string }) => {
+      if (options.provider === "none") {
+        return {
+          requestedProvider: "none",
+          provider: null,
+          providerUnavailableReason: "test provider unavailable",
+        };
+      }
+      return {
+        requestedProvider: "openai",
+        provider: {
+          id: "mock",
+          model: options.model ?? "mock-embed",
+          embedQuery: async (text: string) => embedText(text),
+          embedBatch: async (texts: string[]) => {
+            embedBatchCalls += 1;
+            return texts.map(embedText);
+          },
         },
-      },
-    }),
+      };
+    },
   };
 });
 
@@ -38,6 +47,7 @@ describe("memory index", () => {
   let indexVectorPath = "";
   let indexMainPath = "";
   let indexExtraPath = "";
+  let indexFtsOnlyPath = "";
   let indexStatusPath = "";
   let indexSourceChangePath = "";
   let indexModelPath = "";
@@ -71,6 +81,7 @@ describe("memory index", () => {
     indexMainPath = path.join(workspaceDir, "index-main.sqlite");
     indexVectorPath = path.join(workspaceDir, "index-vector.sqlite");
     indexExtraPath = path.join(workspaceDir, "index-extra.sqlite");
+    indexFtsOnlyPath = path.join(workspaceDir, "index-fts-only.sqlite");
     indexStatusPath = path.join(workspaceDir, "index-status.sqlite");
     indexSourceChangePath = path.join(workspaceDir, "index-source-change.sqlite");
     indexModelPath = path.join(workspaceDir, "index-model-change.sqlite");
@@ -123,6 +134,7 @@ describe("memory index", () => {
     vectorEnabled?: boolean;
     cacheEnabled?: boolean;
     minScore?: number;
+    provider?: string;
     hybrid?: { enabled: boolean; vectorWeight?: number; textWeight?: number };
   }): TestCfg {
     return {
@@ -130,7 +142,7 @@ describe("memory index", () => {
         defaults: {
           workspace: workspaceDir,
           memorySearch: {
-            provider: "openai",
+            provider: params.provider ?? "openai",
             model: params.model ?? "mock-embed",
             store: { path: params.storePath, vector: { enabled: params.vectorEnabled ?? false } },
             // Perf: keep test indexes to a single chunk to reduce sqlite work.
@@ -215,6 +227,35 @@ describe("memory index", () => {
         }),
       ]),
     );
+  });
+
+  it("indexes memory files for FTS-only search when no embedding provider is available", async () => {
+    const cfg = createCfg({
+      storePath: indexFtsOnlyPath,
+      provider: "none",
+    });
+    const manager = await getPersistentManager(cfg);
+    await manager.sync({ reason: "test", force: true });
+
+    const afterSync = manager.status();
+    expect(afterSync.sourceCounts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          source: "memory",
+          files: expect.any(Number),
+          chunks: expect.any(Number),
+        }),
+      ]),
+    );
+    expect(afterSync.files).toBeGreaterThan(0);
+    expect(afterSync.chunks).toBeGreaterThan(0);
+    expect(embedBatchCalls).toBe(0);
+
+    if (afterSync.fts?.available) {
+      const results = await manager.search("zebra");
+      expect(results.length).toBeGreaterThan(0);
+      expect(results[0]?.path).toContain("memory/2026-01-12.md");
+    }
   });
 
   it("keeps dirty false in status-only manager after prior indexing", async () => {

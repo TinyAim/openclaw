@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
+import { drainSystemEvents, resetSystemEventsForTest } from "../infra/system-events.js";
 import { GATEWAY_CLIENT_IDS, GATEWAY_CLIENT_MODES } from "./protocol/client-info.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
@@ -418,7 +419,7 @@ describe("gateway server sessions", () => {
     expect(resolvedByLabel.payload?.key).toBe("agent:main:subagent:one");
 
     const spawnedOnly = await rpcReq<{
-      sessions: Array<{ key: string }>;
+      sessions: Array<{ key: string; spawnedBy?: string }>;
     }>(ws, "sessions.list", {
       includeGlobal: true,
       includeUnknown: true,
@@ -426,6 +427,9 @@ describe("gateway server sessions", () => {
     });
     expect(spawnedOnly.ok).toBe(true);
     expect(spawnedOnly.payload?.sessions.map((s) => s.key)).toEqual(["agent:main:subagent:one"]);
+    // Wisclaw collaboration branches — the row itself must expose spawnedBy so
+    // operator surfaces can re-parent child runs without key parsing.
+    expect(spawnedOnly.payload?.sessions[0]?.spawnedBy).toBe("agent:main:main");
 
     const spawnedPatched = await rpcReq<{
       ok: true;
@@ -445,6 +449,7 @@ describe("gateway server sessions", () => {
 
     piSdkMock.enabled = true;
     piSdkMock.models = [{ id: "gpt-test-a", name: "A", provider: "openai" }];
+    resetSystemEventsForTest();
     const modelPatched = await rpcReq<{
       ok: true;
       entry: {
@@ -465,6 +470,11 @@ describe("gateway server sessions", () => {
     expect(modelPatched.payload?.entry.modelProvider).toBeUndefined();
     expect(modelPatched.payload?.resolved?.modelProvider).toBe("openai");
     expect(modelPatched.payload?.resolved?.model).toBe("gpt-test-a");
+    expect(
+      drainSystemEvents("agent:main:main").some((event) =>
+        event.includes("Model switched to openai/gpt-test-a."),
+      ),
+    ).toBe(true);
 
     const listAfterModelPatch = await rpcReq<{
       sessions: Array<{ key: string; modelProvider?: string; model?: string }>;

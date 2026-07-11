@@ -66,6 +66,8 @@ async function expectSpawnUsesConfiguredModel(params: {
   runId: string;
   callId: string;
   expectedModel: string;
+  /** Extra execute() params (e.g. Tier B `taskClass`, explicit `model`). */
+  extraParams?: Record<string, unknown>;
 }) {
   if (params.config) {
     setSessionsSpawnConfigOverride(params.config);
@@ -82,6 +84,7 @@ async function expectSpawnUsesConfiguredModel(params: {
 
   const result = await tool.execute(params.callId, {
     task: "do thing",
+    ...(params.extraParams ?? {}),
   });
   expect(result.details).toMatchObject({
     status: "accepted",
@@ -274,6 +277,70 @@ describe("openclaw-tools: subagents (sessions_spawn model + thinking)", () => {
     });
     expect(String((result.details as { error?: string }).error ?? "")).toContain("invalid model");
     expect(calls.some((call) => call.method === "agent")).toBe(false);
+  });
+
+  // ── Wisclaw Tier B (problem 6b) real product-entry smoke ──
+  // These exercise the ACTUAL `sessions_spawn` tool (the entry a command /
+  // skill / subagent uses), not just the resolver, to prove the WHOLE wiring:
+  // an explicit `taskClass` → `agents.defaults.subagents.taskRouting.<class>`
+  // → the child session is patched with the expected model. They also pin the
+  // honest contract: routing is by EXPLICIT declaration, never inferred.
+  const tierBConfig = {
+    session: { mainKey: "main", scope: "per-sender" },
+    agents: {
+      defaults: {
+        subagents: {
+          taskRouting: {
+            "code-script": {
+              primary: "deepseek/deepseek-coder",
+              fallbacks: ["minimax/MiniMax-M2.5"],
+            },
+          },
+        },
+      },
+    },
+  } as SessionsSpawnConfigOverride;
+
+  it("sessions_spawn routes to the Tier B taskRouting model when a taskClass is declared", async () => {
+    await expectSpawnUsesConfiguredModel({
+      config: tierBConfig,
+      runId: "run-taskclass",
+      callId: "call-taskclass",
+      expectedModel: "deepseek/deepseek-coder",
+      extraParams: { taskClass: "code-script" },
+    });
+  });
+
+  it("an explicit model override wins over the declared taskClass", async () => {
+    await expectSpawnUsesConfiguredModel({
+      config: tierBConfig,
+      runId: "run-taskclass-override",
+      callId: "call-taskclass-override",
+      expectedModel: "claude-haiku-4-5",
+      extraParams: { taskClass: "code-script", model: "claude-haiku-4-5" },
+    });
+  });
+
+  it("does NOT auto-route to Tier B when no taskClass is declared (no content inference)", async () => {
+    // taskRouting is configured but the spawn declares no taskClass → it must
+    // fall back to the runtime default, NEVER the code-script route. This pins
+    // the SSOT contract that ordinary/undeclared spawns are not auto-classified.
+    await expectSpawnUsesConfiguredModel({
+      config: tierBConfig,
+      runId: "run-no-taskclass",
+      callId: "call-no-taskclass",
+      expectedModel: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`,
+    });
+  });
+
+  it("ignores an unknown taskClass and falls back to the runtime default", async () => {
+    await expectSpawnUsesConfiguredModel({
+      config: tierBConfig,
+      runId: "run-unknown-taskclass",
+      callId: "call-unknown-taskclass",
+      expectedModel: `${DEFAULT_PROVIDER}/${DEFAULT_MODEL}`,
+      extraParams: { taskClass: "definitely-not-a-class" },
+    });
   });
 
   it("sessions_spawn supports legacy timeoutSeconds alias", async () => {

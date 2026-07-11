@@ -19,6 +19,7 @@ export type AgentModelEntryConfig = {
 export type AgentModelListConfig = {
   primary?: string;
   fallbacks?: string[];
+  fallbackPolicy?: "strict" | "transient_only" | "continuity";
 };
 
 export type AgentContextPruningConfig = {
@@ -268,6 +269,20 @@ export type AgentDefaultsConfig = {
     archiveAfterMinutes?: number;
     /** Default model selection for spawned sub-agents (string or {primary,fallbacks}). */
     model?: AgentModelConfig;
+    /**
+     * Wisclaw Tier B task routing (problem 6b). Maps an explicitly-declared
+     * subagent task class (e.g. "code-script", "tool-execution", "long-context")
+     * to a model ref chain. Resolved at spawn ONLY when the caller declares a
+     * `taskClass` via the sessions_spawn tool — never inferred from content.
+     * Compiled by Control API from the model-provider routing slots.
+     */
+    taskRouting?: Record<
+      string,
+      {
+        primary?: string;
+        fallbacks?: string[];
+      }
+    >;
     /** Default thinking level for spawned sub-agents (e.g. "off", "low", "medium", "high"). */
     thinking?: string;
     /** Default run timeout in seconds for spawned sub-agents (0 = no timeout). */

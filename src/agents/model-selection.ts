@@ -362,10 +362,56 @@ export function resolveSubagentConfiguredModelSelection(params: {
   );
 }
 
+/**
+ * Wisclaw Tier B task routing (problem 6b). Closed whitelist mirrored from
+ * `@wisclaw/contracts` MODEL_TASK_ROUTING_CLASSES (OpenClaw is a vendored engine
+ * and cannot import the contracts package, so the list is duplicated here and
+ * kept in sync by the model-provider sync verification).
+ */
+export const SUBAGENT_TASK_ROUTING_CLASSES = [
+  "code-script",
+  "tool-execution",
+  "long-context",
+] as const;
+
+/**
+ * Resolve a subagent model from the declared task class, reading the Control-API
+ * compiled `agents.defaults.subagents.taskRouting.<class>` config. Returns the
+ * first non-empty ref in the chain (primary, then fallbacks), or `undefined`
+ * when the class is unknown / not configured. Never inferred from content — the
+ * caller MUST declare `taskClass`.
+ */
+export function resolveSubagentTaskRoutingSelection(params: {
+  cfg: OpenClawConfig;
+  taskClass?: string;
+}): string | undefined {
+  const taskClass = params.taskClass?.trim();
+  if (!taskClass) {
+    return undefined;
+  }
+  if (!(SUBAGENT_TASK_ROUTING_CLASSES as readonly string[]).includes(taskClass)) {
+    return undefined;
+  }
+  const entry = params.cfg.agents?.defaults?.subagents?.taskRouting?.[taskClass];
+  if (!entry) {
+    return undefined;
+  }
+  const chain = [entry.primary, ...(entry.fallbacks ?? [])];
+  for (const raw of chain) {
+    const ref = typeof raw === "string" ? raw.trim() : "";
+    if (ref) {
+      return ref;
+    }
+  }
+  return undefined;
+}
+
 export function resolveSubagentSpawnModelSelection(params: {
   cfg: OpenClawConfig;
   agentId: string;
   modelOverride?: unknown;
+  /** Wisclaw Tier B (problem 6b): explicitly-declared subagent task class. */
+  taskClass?: string;
 }): string {
   const runtimeDefault = resolveDefaultModelForAgent({
     cfg: params.cfg,
@@ -373,6 +419,10 @@ export function resolveSubagentSpawnModelSelection(params: {
   });
   return (
     normalizeModelSelection(params.modelOverride) ??
+    resolveSubagentTaskRoutingSelection({
+      cfg: params.cfg,
+      taskClass: params.taskClass,
+    }) ??
     resolveSubagentConfiguredModelSelection({
       cfg: params.cfg,
       agentId: params.agentId,

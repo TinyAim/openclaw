@@ -66,6 +66,8 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "sessions.preview",
     "sessions.resolve",
     "sessions.usage",
+    // Wisclaw collaboration branches — read-only child-run inventory.
+    "subagents.list",
     "sessions.usage.timeseries",
     "sessions.usage.logs",
     "cron.list",
@@ -116,6 +118,11 @@ const METHOD_SCOPE_GROUPS: Record<OperatorScope, readonly string[]> = {
     "sessions.reset",
     "sessions.delete",
     "sessions.compact",
+    // Wisclaw collaboration branches — spawning/killing child runs is an
+    // RCE-grade control-plane action; admin scope only (HTTP /tools/invoke
+    // deny list for `sessions_spawn` is intentionally untouched).
+    "subagents.spawn",
+    "subagents.kill",
     "connect",
     "chat.inject",
     "web.login.start",

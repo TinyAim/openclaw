@@ -242,6 +242,88 @@ describe("gateway sessions patch", () => {
     expect(entry.modelOverride).toBe("claude-sonnet-4-6");
   });
 
+  test("persists and clears the model fallback policy", async () => {
+    const patched = expectPatchOk(
+      await runPatch({
+        patch: {
+          key: MAIN_SESSION_KEY,
+          model: "openai/gpt-5.2",
+          modelFallbackPolicy: "disabled",
+        },
+        loadGatewayModelCatalog: async () => [
+          { provider: "openai", id: "gpt-5.2", name: "gpt-5.2" },
+        ],
+      }),
+    );
+    expect(patched.modelFallbackPolicy).toBe("disabled");
+
+    const cleared = expectPatchOk(
+      await runPatch({
+        store: {
+          [MAIN_SESSION_KEY]: {
+            ...patched,
+            providerOverride: "openai",
+            modelOverride: "gpt-5.2",
+            modelFallbackPolicy: "disabled",
+          },
+        },
+        patch: { key: MAIN_SESSION_KEY, modelFallbackPolicy: "default" },
+      }),
+    );
+    expect(cleared.modelFallbackPolicy).toBeUndefined();
+  });
+
+  test("persists explicit transient and continuity fallback policies", async () => {
+    for (const modelFallbackPolicy of ["transient_only", "continuity"] as const) {
+      const patched = expectPatchOk(
+        await runPatch({
+          patch: {
+            key: MAIN_SESSION_KEY,
+            model: "openai/gpt-5.2",
+            modelFallbackPolicy,
+          },
+          loadGatewayModelCatalog: async () => [
+            { provider: "openai", id: "gpt-5.2", name: "gpt-5.2" },
+          ],
+        }),
+      );
+      expect(patched.modelFallbackPolicy).toBe(modelFallbackPolicy);
+    }
+  });
+
+  test("persists session-scoped model fallbacks for explicit model overrides", async () => {
+    const patched = expectPatchOk(
+      await runPatch({
+        patch: {
+          key: MAIN_SESSION_KEY,
+          model: "openai/gpt-5.2",
+          modelFallbackPolicy: "default",
+          modelFallbacks: ["anthropic/claude-sonnet-4-6", " ollama/qwen2.5:7b "],
+        },
+        loadGatewayModelCatalog: async () => [
+          { provider: "openai", id: "gpt-5.2", name: "gpt-5.2" },
+        ],
+      }),
+    );
+
+    expect(patched.modelFallbackPolicy).toBeUndefined();
+    expect(patched.modelFallbacksOverride).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "ollama/qwen2.5:7b",
+    ]);
+
+    const disabled = expectPatchOk(
+      await runPatch({
+        store: {
+          [MAIN_SESSION_KEY]: patched,
+        },
+        patch: { key: MAIN_SESSION_KEY, modelFallbackPolicy: "disabled" },
+      }),
+    );
+    expect(disabled.modelFallbackPolicy).toBe("disabled");
+    expect(disabled.modelFallbacksOverride).toBeUndefined();
+  });
+
   test("sets spawnDepth for subagent sessions", async () => {
     const entry = expectPatchOk(
       await runPatch({

@@ -14,6 +14,9 @@ import {
   resolveConfiguredModelRef,
   resolveThinkingDefault,
   resolveModelRefFromString,
+  resolveSubagentTaskRoutingSelection,
+  resolveSubagentSpawnModelSelection,
+  SUBAGENT_TASK_ROUTING_CLASSES,
 } from "./model-selection.js";
 
 const EXPLICIT_ALLOWLIST_CONFIG = {
@@ -566,5 +569,99 @@ describe("normalizeModelSelection", () => {
     expect(normalizeModelSelection(undefined)).toBeUndefined();
     expect(normalizeModelSelection(null)).toBeUndefined();
     expect(normalizeModelSelection(42)).toBeUndefined();
+  });
+});
+
+// Wisclaw Tier B task routing (problem 6b) — runtime sink at subagent spawn.
+describe("resolveSubagentTaskRoutingSelection", () => {
+  const cfg = {
+    agents: {
+      defaults: {
+        subagents: {
+          taskRouting: {
+            "code-script": {
+              primary: "deepseek/deepseek-chat",
+              fallbacks: ["ollama/qwen2.5:7b"],
+            },
+            "long-context": { primary: "" as string, fallbacks: ["aliyun/qwen-long"] },
+          },
+        },
+      },
+    },
+  } as unknown as OpenClawConfig;
+
+  it("exposes the closed task class whitelist", () => {
+    expect([...SUBAGENT_TASK_ROUTING_CLASSES]).toEqual([
+      "code-script",
+      "tool-execution",
+      "long-context",
+    ]);
+  });
+
+  it("resolves the primary ref for a configured class", () => {
+    expect(resolveSubagentTaskRoutingSelection({ cfg, taskClass: "code-script" })).toBe(
+      "deepseek/deepseek-chat",
+    );
+  });
+
+  it("falls through to the first non-empty fallback when primary is blank", () => {
+    expect(resolveSubagentTaskRoutingSelection({ cfg, taskClass: "long-context" })).toBe(
+      "aliyun/qwen-long",
+    );
+  });
+
+  it("returns undefined for an unconfigured / non-whitelisted / missing class", () => {
+    expect(
+      resolveSubagentTaskRoutingSelection({ cfg, taskClass: "tool-execution" }),
+    ).toBeUndefined();
+    expect(resolveSubagentTaskRoutingSelection({ cfg, taskClass: "vision" })).toBeUndefined();
+    expect(resolveSubagentTaskRoutingSelection({ cfg, taskClass: undefined })).toBeUndefined();
+    expect(resolveSubagentTaskRoutingSelection({ cfg, taskClass: "" })).toBeUndefined();
+  });
+
+  it("never infers a route when taskRouting config is absent", () => {
+    const bare = { agents: { defaults: {} } } as OpenClawConfig;
+    expect(
+      resolveSubagentTaskRoutingSelection({ cfg: bare, taskClass: "code-script" }),
+    ).toBeUndefined();
+  });
+});
+
+describe("resolveSubagentSpawnModelSelection — task routing precedence", () => {
+  const cfg = {
+    agents: {
+      defaults: {
+        model: { primary: "anthropic/claude-sonnet-4-6" },
+        subagents: {
+          model: "openai/gpt-5.2",
+          taskRouting: {
+            "code-script": { primary: "deepseek/deepseek-chat", fallbacks: [] },
+          },
+        },
+      },
+    },
+  } as unknown as OpenClawConfig;
+
+  it("uses the declared task class route over the generic subagent default", () => {
+    expect(
+      resolveSubagentSpawnModelSelection({ cfg, agentId: "main", taskClass: "code-script" }),
+    ).toBe("deepseek/deepseek-chat");
+  });
+
+  it("explicit model override still wins over the task class route", () => {
+    expect(
+      resolveSubagentSpawnModelSelection({
+        cfg,
+        agentId: "main",
+        modelOverride: "google/gemini-2.5-pro",
+        taskClass: "code-script",
+      }),
+    ).toBe("google/gemini-2.5-pro");
+  });
+
+  it("falls back to the subagent default when the task class is not routed", () => {
+    expect(
+      resolveSubagentSpawnModelSelection({ cfg, agentId: "main", taskClass: "tool-execution" }),
+    ).toBe("openai/gpt-5.2");
   });
 });

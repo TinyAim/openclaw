@@ -25,6 +25,10 @@ const SessionsSpawnToolSchema = Type.Object({
   runtime: optionalStringEnum(SESSIONS_SPAWN_RUNTIMES),
   agentId: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  // Wisclaw Tier B task routing (problem 6b): declare a task class so the spawn
+  // resolves agents.defaults.subagents.taskRouting.<class> when no explicit
+  // model is given. Ignored for runtime=acp.
+  taskClass: Type.Optional(Type.String()),
   thinking: Type.Optional(Type.String()),
   cwd: Type.Optional(Type.String()),
   runTimeoutSeconds: Type.Optional(Type.Number({ minimum: 0 })),
@@ -91,6 +95,7 @@ export function createSessionsSpawnTool(opts?: {
       const runtime = params.runtime === "acp" ? "acp" : "subagent";
       const requestedAgentId = readStringParam(params, "agentId");
       const modelOverride = readStringParam(params, "model");
+      const taskClass = readStringParam(params, "taskClass");
       const thinkingOverrideRaw = readStringParam(params, "thinking");
       const cwd = readStringParam(params, "cwd");
       const mode = params.mode === "run" || params.mode === "session" ? params.mode : undefined;
@@ -154,6 +159,7 @@ export function createSessionsSpawnTool(opts?: {
           label: label || undefined,
           agentId: requestedAgentId,
           model: modelOverride,
+          taskClass,
           thinking: thinkingOverrideRaw,
           runTimeoutSeconds,
           thread,

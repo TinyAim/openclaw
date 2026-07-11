@@ -62,6 +62,8 @@ export type FollowupRun = {
     skillsSnapshot?: SkillSnapshot;
     provider: string;
     model: string;
+    modelFallbackPolicy?: "disabled" | "transient_only" | "continuity";
+    modelFallbacksOverride?: string[];
     authProfileId?: string;
     authProfileIdSource?: "auto" | "user";
     thinkLevel?: ThinkLevel;

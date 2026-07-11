@@ -310,6 +310,30 @@ describe("gateway session utils", () => {
       `data:image/png;base64,${Buffer.from("avatar").toString("base64")}`,
     );
   });
+
+  test("listAgentsForGateway ignores empty stale agent state directories", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "session-utils-agents-disk-"));
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    process.env.OPENCLAW_STATE_DIR = root;
+    try {
+      fs.mkdirSync(path.join(root, "agents", "ghost-empty"), { recursive: true });
+      fs.mkdirSync(path.join(root, "agents", "worker", "sessions"), { recursive: true });
+
+      const result = listAgentsForGateway({} as OpenClawConfig);
+      const ids = result.agents.map((agent) => agent.id);
+
+      expect(ids).toContain("main");
+      expect(ids).toContain("worker");
+      expect(ids).not.toContain("ghost-empty");
+    } finally {
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("resolveSessionModelRef", () => {

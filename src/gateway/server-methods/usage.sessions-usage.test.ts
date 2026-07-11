@@ -117,11 +117,11 @@ const BASE_USAGE_RANGE = {
 
 function expectSuccessfulSessionsUsage(
   respond: ReturnType<typeof vi.fn>,
-): Array<{ key: string; agentId: string }> {
+): Array<Record<string, unknown> & { key: string; agentId: string }> {
   expect(respond).toHaveBeenCalledTimes(1);
   expect(respond.mock.calls[0]?.[0]).toBe(true);
   const result = respond.mock.calls[0]?.[1] as {
-    sessions: Array<{ key: string; agentId: string }>;
+    sessions: Array<Record<string, unknown> & { key: string; agentId: string }>;
   };
   return result.sessions;
 }
@@ -187,6 +187,49 @@ describe("sessions.usage", () => {
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
+  });
+
+  it("passes Wisclaw tenant scope metadata through from store entries", async () => {
+    vi.mocked(loadCombinedSessionStoreForGateway).mockReturnValue({
+      storePath: "(multiple)",
+      store: {
+        "agent:main:s-main": {
+          sessionId: "s-main",
+          sessionFile: "s-main.jsonl",
+          label: "Team scoped session",
+          updatedAt: 999,
+          wisclawScope: {
+            tenantId: "org_seed_team",
+            workspaceId: "workspace_team",
+            runtimeId: "runtime_openclaw_team",
+            seatId: "seat_team_user_001",
+            ownerUserId: "team-user-001",
+            teamId: "org_seed_team",
+            sessionScope: "team",
+          },
+        },
+      },
+    });
+
+    const respond = await runSessionsUsage(BASE_USAGE_RANGE);
+    const sessions = expectSuccessfulSessionsUsage(respond);
+    const scopedSession = sessions.find((session) => session.key === "agent:main:s-main");
+
+    expect(scopedSession).toEqual(
+      expect.objectContaining({
+        tenantId: "org_seed_team",
+        workspaceId: "workspace_team",
+        runtimeId: "runtime_openclaw_team",
+        seatId: "seat_team_user_001",
+        ownerUserId: "team-user-001",
+        teamId: "org_seed_team",
+        sessionScope: "team",
+        wisclawScope: expect.objectContaining({
+          tenantId: "org_seed_team",
+          sessionScope: "team",
+        }),
+      }),
+    );
   });
 
   it("rejects traversal-style keys in specific session usage lookups", async () => {

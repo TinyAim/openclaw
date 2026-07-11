@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { resolveRunModelFallbacksOverride } from "../../agents/agent-scope.js";
 import { lookupContextTokens } from "../../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../agents/defaults.js";
 import { runWithModelFallback } from "../../agents/model-fallback.js";
@@ -13,7 +12,7 @@ import { stripHeartbeatToken } from "../heartbeat.js";
 import type { OriginatingChannelType } from "../templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
-import { resolveRunAuthProfile } from "./agent-runner-utils.js";
+import { resolveModelFallbackOptions, resolveRunAuthProfile } from "./agent-runner-utils.js";
 import {
   resolveOriginAccountId,
   resolveOriginMessageProvider,
@@ -141,16 +140,12 @@ export function createFollowupRunner(params: {
       let fallbackProvider = queued.run.provider;
       let fallbackModel = queued.run.model;
       try {
+        // Wisclaw divergence (Model Provider State Machine v1.1.92) — route
+        // through resolveModelFallbackOptions so a queued followup honors
+        // `modelFallbackPolicy: "disabled"` (session-pinned model must not
+        // fall back), matching agent-runner-execution / agent-runner-memory.
         const fallbackResult = await runWithModelFallback({
-          cfg: queued.run.config,
-          provider: queued.run.provider,
-          model: queued.run.model,
-          agentDir: queued.run.agentDir,
-          fallbacksOverride: resolveRunModelFallbacksOverride({
-            cfg: queued.run.config,
-            agentId: queued.run.agentId,
-            sessionKey: queued.run.sessionKey,
-          }),
+          ...resolveModelFallbackOptions(queued.run),
           run: (provider, model) => {
             const authProfile = resolveRunAuthProfile(queued.run, provider);
             return runEmbeddedPiAgent({

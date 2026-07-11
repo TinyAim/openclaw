@@ -188,6 +188,12 @@ import {
   SessionsResolveParamsSchema,
   type SessionsUsageParams,
   SessionsUsageParamsSchema,
+  type SubagentsKillParams,
+  SubagentsKillParamsSchema,
+  type SubagentsListParams,
+  SubagentsListParamsSchema,
+  type SubagentsSpawnParams,
+  SubagentsSpawnParamsSchema,
   type ShutdownEvent,
   ShutdownEventSchema,
   type SkillsBinsParams,
@@ -313,6 +319,13 @@ export const validateSessionsCompactParams = ajv.compile<SessionsCompactParams>(
 );
 export const validateSessionsUsageParams =
   ajv.compile<SessionsUsageParams>(SessionsUsageParamsSchema);
+// Wisclaw collaboration branches — operator-plane subagent orchestration.
+export const validateSubagentsListParams =
+  ajv.compile<SubagentsListParams>(SubagentsListParamsSchema);
+export const validateSubagentsSpawnParams =
+  ajv.compile<SubagentsSpawnParams>(SubagentsSpawnParamsSchema);
+export const validateSubagentsKillParams =
+  ajv.compile<SubagentsKillParams>(SubagentsKillParamsSchema);
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
 export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
 export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);

@@ -497,6 +497,12 @@ export async function runPreparedReply(
       skillsSnapshot,
       provider,
       model,
+      ...(sessionEntry?.modelFallbackPolicy
+        ? { modelFallbackPolicy: sessionEntry.modelFallbackPolicy }
+        : {}),
+      ...(Array.isArray(sessionEntry?.modelFallbacksOverride)
+        ? { modelFallbacksOverride: sessionEntry.modelFallbacksOverride }
+        : {}),
       authProfileId,
       authProfileIdSource,
       thinkLevel: resolvedThinkLevel,

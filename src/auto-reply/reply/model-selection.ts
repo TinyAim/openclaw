@@ -325,7 +325,8 @@ export async function createModelSelectionState(params: {
     const overrideModel = sessionEntry.modelOverride?.trim();
     if (overrideModel) {
       const key = modelKey(overrideProvider, overrideModel);
-      if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key)) {
+      const strictPinnedModel = sessionEntry.modelFallbackPolicy === "disabled";
+      if (allowedModelKeys.size > 0 && !allowedModelKeys.has(key) && !strictPinnedModel) {
         const { updated } = applyModelOverrideToSessionEntry({
           entry: sessionEntry,
           selection: { provider: defaultProvider, model: defaultModel, isDefault: true },
@@ -356,7 +357,9 @@ export async function createModelSelectionState(params: {
   if (storedOverride?.model && !skipStoredOverride) {
     const candidateProvider = storedOverride.provider || defaultProvider;
     const key = modelKey(candidateProvider, storedOverride.model);
-    if (allowedModelKeys.size === 0 || allowedModelKeys.has(key)) {
+    const strictPinnedModel =
+      storedOverride.source === "session" && sessionEntry?.modelFallbackPolicy === "disabled";
+    if (allowedModelKeys.size === 0 || allowedModelKeys.has(key) || strictPinnedModel) {
       provider = candidateProvider;
       model = storedOverride.model;
     }

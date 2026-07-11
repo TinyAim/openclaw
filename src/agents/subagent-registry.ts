@@ -971,6 +971,7 @@ export function registerSubagentRun(params: {
   cleanup: "delete" | "keep";
   label?: string;
   model?: string;
+  taskClass?: string;
   runTimeoutSeconds?: number;
   expectsCompletionMessage?: boolean;
   spawnMode?: "run" | "session";
@@ -999,6 +1000,7 @@ export function registerSubagentRun(params: {
     spawnMode,
     label: params.label,
     model: params.model,
+    taskClass: params.taskClass,
     runTimeoutSeconds,
     createdAt: now,
     startedAt: now,

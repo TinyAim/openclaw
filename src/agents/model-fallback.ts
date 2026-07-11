@@ -439,15 +439,20 @@ export async function runWithModelFallback<T>(params: {
   agentDir?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
+  /** Guard for when the ordered fallback chain may run. */
+  fallbackPolicy?: "strict" | "transient_only" | "continuity";
   run: (provider: string, model: string) => Promise<T>;
   onError?: ModelFallbackErrorHandler;
 }): Promise<ModelFallbackRunResult<T>> {
-  const candidates = resolveFallbackCandidates({
+  const resolvedCandidates = resolveFallbackCandidates({
     cfg: params.cfg,
     provider: params.provider,
     model: params.model,
     fallbacksOverride: params.fallbacksOverride,
   });
+  const fallbackPolicy = params.fallbackPolicy ?? "continuity";
+  const candidates =
+    fallbackPolicy === "strict" ? resolvedCandidates.slice(0, 1) : resolvedCandidates;
   const authStore = params.cfg
     ? ensureAuthProfileStore(params.agentDir, { allowKeychainPrompt: false })
     : null;
@@ -530,6 +535,13 @@ export async function runWithModelFallback<T>(params: {
 
       lastError = isKnownFailover ? normalized : err;
       const described = describeFailoverError(normalized);
+      if (
+        fallbackPolicy === "transient_only" &&
+        described.reason !== "rate_limit" &&
+        described.reason !== "timeout"
+      ) {
+        throw isKnownFailover ? normalized : err;
+      }
       attempts.push({
         provider: candidate.provider,
         model: candidate.model,

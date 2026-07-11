@@ -422,6 +422,9 @@ describe("agents.delete", () => {
     mocks.loadConfigReturn = {};
     mocks.findAgentEntryIndex.mockReturnValue(0);
     mocks.pruneAgentConfig.mockReturnValue({ config: {}, removedBindings: 2 });
+    mocks.resolveAgentDir.mockReturnValue("/agents/test-agent");
+    mocks.resolveAgentWorkspaceDir.mockReturnValue("/workspace/test-agent");
+    mocks.resolveSessionTranscriptsDirForAgent.mockReturnValue("/transcripts/test-agent");
   });
 
   it("deletes an existing agent and trashes files by default", async () => {
@@ -438,6 +441,21 @@ describe("agents.delete", () => {
     expect(mocks.writeConfigFile).toHaveBeenCalled();
     // moveToTrashBestEffort calls fs.access then movePathToTrash for each dir
     expect(mocks.movePathToTrash).toHaveBeenCalled();
+  });
+
+  it("trashes the agent state parent dir when agent and sessions use the default layout", async () => {
+    mocks.resolveAgentDir.mockReturnValue("/state/agents/test-agent/agent");
+    mocks.resolveSessionTranscriptsDirForAgent.mockReturnValue("/state/agents/test-agent/sessions");
+
+    const { promise } = makeCall("agents.delete", {
+      agentId: "test-agent",
+    });
+    await promise;
+
+    expect(mocks.movePathToTrash).toHaveBeenCalledWith("/workspace/test-agent");
+    expect(mocks.movePathToTrash).toHaveBeenCalledWith("/state/agents/test-agent");
+    expect(mocks.movePathToTrash).not.toHaveBeenCalledWith("/state/agents/test-agent/agent");
+    expect(mocks.movePathToTrash).not.toHaveBeenCalledWith("/state/agents/test-agent/sessions");
   });
 
   it("skips file deletion when deleteFiles is false", async () => {

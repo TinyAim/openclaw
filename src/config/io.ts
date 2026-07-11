@@ -1396,4 +1396,11 @@ export async function writeConfigFile(
     envSnapshotForRestore: sameConfigPath ? options.envSnapshotForRestore : undefined,
     unsetPaths: options.unsetPaths,
   });
+  if (runtimeConfigSnapshot) {
+    runtimeConfigSnapshot = cfg;
+    if (runtimeConfigSourceSnapshot) {
+      runtimeConfigSourceSnapshot = nextCfg;
+    }
+    clearConfigCache();
+  }
 }

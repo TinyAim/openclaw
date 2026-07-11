@@ -725,6 +725,7 @@ export const usageHandlers: GatewayRequestHandlers = {
         }
       }
 
+      const wisclawScope = merged.storeEntry?.wisclawScope;
       sessions.push({
         key: merged.key,
         label: merged.label,
@@ -738,6 +739,14 @@ export const usageHandlers: GatewayRequestHandlers = {
         providerOverride: merged.storeEntry?.providerOverride,
         modelProvider: merged.storeEntry?.modelProvider,
         model: merged.storeEntry?.model,
+        wisclawScope,
+        tenantId: wisclawScope?.tenantId,
+        workspaceId: wisclawScope?.workspaceId,
+        runtimeId: wisclawScope?.runtimeId,
+        seatId: wisclawScope?.seatId,
+        ownerUserId: wisclawScope?.ownerUserId,
+        teamId: wisclawScope?.teamId,
+        sessionScope: wisclawScope?.sessionScope,
         usage,
         contextWeight: includeContextWeight
           ? (merged.storeEntry?.systemPromptReport ?? null)

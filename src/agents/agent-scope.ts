@@ -229,6 +229,24 @@ export function resolveRunModelFallbacksOverride(params: {
   );
 }
 
+export function resolveRunModelFallbackPolicy(params: {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string | null;
+  sessionKey?: string | null;
+}): "strict" | "transient_only" | "continuity" | undefined {
+  if (!params.cfg) return undefined;
+  const agentId = resolveFallbackAgentId({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+  });
+  const agentModel = resolveAgentConfig(params.cfg, agentId)?.model;
+  if (agentModel && typeof agentModel !== "string" && agentModel.fallbackPolicy) {
+    return agentModel.fallbackPolicy;
+  }
+  const defaultModel = params.cfg.agents?.defaults?.model;
+  return defaultModel && typeof defaultModel !== "string" ? defaultModel.fallbackPolicy : undefined;
+}
+
 export function hasConfiguredModelFallbacks(params: {
   cfg: OpenClawConfig | undefined;
   agentId?: string | null;

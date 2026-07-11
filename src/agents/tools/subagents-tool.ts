@@ -405,6 +405,7 @@ export function createSubagentsTool(opts?: { agentSessionKey?: string }): AnyAge
             runtime,
             runtimeMs,
             model: resolveModelRef(sessionEntry) || entry.model,
+            taskClass: entry.taskClass,
             totalTokens,
             startedAt: entry.startedAt,
           };

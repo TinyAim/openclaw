@@ -694,32 +694,29 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
     entry: MemoryFileEntry | SessionFileEntry,
     options: { source: MemorySource; content?: string },
   ) {
-    // FTS-only mode: skip indexing if no provider
-    if (!this.provider) {
-      log.debug("Skipping embedding indexing in FTS-only mode", {
-        path: entry.path,
-        source: options.source,
-      });
-      return;
-    }
-
     const content = options.content ?? (await fs.readFile(entry.absPath, "utf-8"));
-    const chunks = enforceEmbeddingMaxInputTokens(
-      this.provider,
-      chunkMarkdown(content, this.settings.chunking).filter(
-        (chunk) => chunk.text.trim().length > 0,
-      ),
-      EMBEDDING_BATCH_MAX_TOKENS,
+    const rawChunks = chunkMarkdown(content, this.settings.chunking).filter(
+      (chunk) => chunk.text.trim().length > 0,
     );
+    const chunks = this.provider
+      ? enforceEmbeddingMaxInputTokens(
+          this.provider,
+          rawChunks,
+          EMBEDDING_BATCH_MAX_TOKENS,
+        )
+      : rawChunks;
     if (options.source === "sessions" && "lineMap" in entry) {
       remapChunkLines(chunks, entry.lineMap);
     }
-    const embeddings = this.batch.enabled
-      ? await this.embedChunksWithBatch(chunks, entry, options.source)
-      : await this.embedChunksInBatches(chunks);
+    const embeddings = this.provider
+      ? this.batch.enabled
+        ? await this.embedChunksWithBatch(chunks, entry, options.source)
+        : await this.embedChunksInBatches(chunks)
+      : chunks.map(() => []);
     const sample = embeddings.find((embedding) => embedding.length > 0);
     const vectorReady = sample ? await this.ensureVectorReady(sample.length) : false;
     const now = Date.now();
+    const providerModel = this.provider?.model ?? "fts-only";
     if (vectorReady) {
       try {
         this.db
@@ -733,7 +730,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       try {
         this.db
           .prepare(`DELETE FROM ${FTS_TABLE} WHERE path = ? AND source = ? AND model = ?`)
-          .run(entry.path, options.source, this.provider.model);
+          .run(entry.path, options.source, providerModel);
       } catch {}
     }
     this.db
@@ -743,7 +740,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
       const chunk = chunks[i];
       const embedding = embeddings[i] ?? [];
       const id = hashText(
-        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${this.provider.model}`,
+        `${options.source}:${entry.path}:${chunk.startLine}:${chunk.endLine}:${chunk.hash}:${providerModel}`,
       );
       this.db
         .prepare(
@@ -763,7 +760,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
           chunk.startLine,
           chunk.endLine,
           chunk.hash,
-          this.provider.model,
+          providerModel,
           chunk.text,
           JSON.stringify(embedding),
           now,
@@ -787,7 +784,7 @@ export abstract class MemoryManagerEmbeddingOps extends MemoryManagerSyncOps {
             id,
             entry.path,
             options.source,
-            this.provider.model,
+            providerModel,
             chunk.startLine,
             chunk.endLine,
           );

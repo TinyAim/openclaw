@@ -1,4 +1,7 @@
-import type { SessionSystemPromptReport } from "../config/sessions/types.js";
+import type {
+  SessionSystemPromptReport,
+  SessionWisclawScope,
+} from "../config/sessions/types.js";
 import type {
   CostUsageSummary,
   SessionCostSummary,
@@ -32,6 +35,14 @@ export type SessionUsageEntry = {
   providerOverride?: string;
   modelProvider?: string;
   model?: string;
+  wisclawScope?: SessionWisclawScope;
+  tenantId?: string;
+  workspaceId?: string;
+  runtimeId?: string;
+  seatId?: string;
+  ownerUserId?: string;
+  teamId?: string;
+  sessionScope?: "self" | "team" | "global";
   usage: SessionCostSummary | null;
   contextWeight?: SessionSystemPromptReport | null;
 };

@@ -13,6 +13,12 @@ export type SubagentRunRecord = {
   cleanup: "delete" | "keep";
   label?: string;
   model?: string;
+  /**
+   * Wisclaw Tier B task routing — the explicit task class declared at spawn
+   * time (never inferred). Recorded so operator surfaces can display which
+   * routing lane the child run used.
+   */
+  taskClass?: string;
   runTimeoutSeconds?: number;
   spawnMode?: SpawnSubagentMode;
   createdAt: number;

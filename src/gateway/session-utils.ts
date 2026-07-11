@@ -295,13 +295,29 @@ function isStorePathTemplate(store?: string): boolean {
   return typeof store === "string" && store.includes("{agentId}");
 }
 
+function isExistingDirectory(value: string): boolean {
+  try {
+    return fs.statSync(value).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function hasUsableAgentStateDir(agentsDir: string, entryName: string): boolean {
+  const agentRoot = path.join(agentsDir, entryName);
+  return (
+    isExistingDirectory(path.join(agentRoot, "agent")) ||
+    isExistingDirectory(path.join(agentRoot, "sessions"))
+  );
+}
+
 function listExistingAgentIdsFromDisk(): string[] {
   const root = resolveStateDir();
   const agentsDir = path.join(root, "agents");
   try {
     const entries = fs.readdirSync(agentsDir, { withFileTypes: true });
     return entries
-      .filter((entry) => entry.isDirectory())
+      .filter((entry) => entry.isDirectory() && hasUsableAgentStateDir(agentsDir, entry.name))
       .map((entry) => normalizeAgentId(entry.name))
       .filter(Boolean);
   } catch {
@@ -830,6 +846,7 @@ export function listSessionsFromStore(params: {
         space,
         chatType: entry?.chatType,
         origin,
+        spawnedBy: entry?.spawnedBy,
         updatedAt,
         sessionId: entry?.sessionId,
         systemSent: entry?.systemSent,
