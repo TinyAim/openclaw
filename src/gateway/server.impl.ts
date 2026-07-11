@@ -72,6 +72,7 @@ import {
   type GatewayUpdateAvailableEventPayload,
 } from "./events.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
+import type { MediaGenRuntimeHttpExecutor } from "./media-gen-runtime-http.js";
 import { NodeRegistry } from "./node-registry.js";
 import type { startBrowserControlServerIfEnabled } from "./server-browser.js";
 import { createChannelManager } from "./server-channels.js";
@@ -88,6 +89,7 @@ import { safeParseJson } from "./server-methods/nodes.helpers.js";
 import { createSecretsHandlers } from "./server-methods/secrets.js";
 import { hasConnectedMobileNode } from "./server-mobile-nodes.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
+import { createOpenClawMediaGenRuntimeFromEnv } from "./media-gen-runtime/index.js";
 import { createNodeSubscriptionManager } from "./server-node-subscriptions.js";
 import { loadGatewayPlugins } from "./server-plugins.js";
 import { createGatewayReloadHandlers } from "./server-reload-handlers.js";
@@ -208,6 +210,17 @@ export type GatewayServerOptions = {
    */
   openResponsesEnabled?: boolean;
   /**
+   * Direction 1 media-generation runtime executor. When omitted, the runtime
+   * dispatch endpoint stays mounted but returns a productized failed/internal
+   * result instead of fabricating generation.
+   */
+  mediaGenRuntimeExecutor?: MediaGenRuntimeHttpExecutor;
+  /**
+   * Gate 1R Media Studio assembly-render encoder. When omitted, the endpoint
+   * stays mounted but returns accepted=false (fail-closed; no fake FinalMaster).
+   */
+  mediaStudioAssemblyRenderExecutor?: import("./media-studio-assembly-render-http.js").MediaStudioAssemblyRenderHttpExecutor;
+  /**
    * Override gateway auth configuration (merges with config).
    */
   auth?: import("../config/config.js").GatewayAuthConfig;
@@ -246,6 +259,51 @@ export async function startGatewayServer(
     key: "OPENCLAW_RAW_STREAM_PATH",
     description: "raw stream log path override",
   });
+  const envMediaGenRuntime =
+    opts.mediaGenRuntimeExecutor === undefined
+      ? createOpenClawMediaGenRuntimeFromEnv({
+          log: {
+            info: (msg) => log.info(msg),
+            warn: (msg) => log.warn(msg),
+          },
+        })
+      : { enabled: false as const, reason: "mediaGenRuntimeExecutor option provided" };
+  if (envMediaGenRuntime.enabled) {
+    log.info(
+      `media-gen runtime executor enabled for presets=${envMediaGenRuntime.supportedPresetIds.join(
+        ",",
+      )} moderation=${envMediaGenRuntime.enforcesModeration} labeling=${envMediaGenRuntime.appliesLabeling}`,
+    );
+  } else if (process.env.OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED === "1") {
+    log.warn(`media-gen runtime executor not enabled: ${envMediaGenRuntime.reason}`);
+  }
+
+  // Gate 1E: Media Studio assembly-render encoder (FFmpeg + Control API callbacks).
+  // Resolve before HTTP bind so the shell can inject the executor at listen time.
+  let resolvedAssemblyRenderExecutor = opts.mediaStudioAssemblyRenderExecutor;
+  if (resolvedAssemblyRenderExecutor === undefined) {
+    try {
+      const { createMediaStudioAssemblyRenderFromEnv } = await import(
+        "./media-studio-assembly-render/factory.js"
+      );
+      const assemblyRenderFromEnv = await createMediaStudioAssemblyRenderFromEnv({
+        log: {
+          info: (msg) => log.info(msg),
+          warn: (msg) => log.warn(msg),
+        },
+      });
+      if (assemblyRenderFromEnv.enabled) {
+        resolvedAssemblyRenderExecutor = assemblyRenderFromEnv.executor;
+        log.info("media-studio assembly-render executor enabled (Gate 1E)");
+      } else if (process.env.OPENCLAW_MEDIA_STUDIO_ASSEMBLY_RENDER_ENABLED === "1") {
+        log.warn(
+          `media-studio assembly-render not enabled: ${assemblyRenderFromEnv.reason}`,
+        );
+      }
+    } catch (err) {
+      log.warn(`media-studio assembly-render factory error: ${String(err)}`);
+    }
+  }
 
   let configSnapshot = await readConfigFileSnapshot();
   if (configSnapshot.legacyIssues.length > 0) {
@@ -545,6 +603,10 @@ export async function startGatewayServer(
     openResponsesEnabled,
     openResponsesConfig,
     strictTransportSecurityHeader,
+    mediaGenRuntimeExecutor:
+      opts.mediaGenRuntimeExecutor ??
+      (envMediaGenRuntime.enabled ? envMediaGenRuntime.executor : undefined),
+    mediaStudioAssemblyRenderExecutor: resolvedAssemblyRenderExecutor,
     resolvedAuth,
     rateLimiter: authRateLimiter,
     gatewayTls,
@@ -560,6 +622,7 @@ export async function startGatewayServer(
     logPlugins,
   });
   let bonjourStop: (() => Promise<void>) | null = null;
+  let stopMediaGenRuntimeHeartbeat = () => {};
   const nodeRegistry = new NodeRegistry();
   const nodePresenceTimers = new Map<string, ReturnType<typeof setInterval>>();
   const nodeSubscriptions = createNodeSubscriptionManager();
@@ -611,6 +674,9 @@ export async function startGatewayServer(
       logDiscovery,
     });
     bonjourStop = discovery.bonjourStop;
+  }
+  if (!minimalTestGateway && envMediaGenRuntime.enabled) {
+    stopMediaGenRuntimeHeartbeat = envMediaGenRuntime.startHeartbeat();
   }
 
   if (!minimalTestGateway) {
@@ -987,6 +1053,7 @@ export async function startGatewayServer(
       authRateLimiter?.dispose();
       browserAuthRateLimiter.dispose();
       channelHealthMonitor?.stop();
+      stopMediaGenRuntimeHeartbeat();
       clearSecretsRuntimeSnapshot();
       await close(opts);
     },

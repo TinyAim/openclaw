@@ -11,6 +11,7 @@ import type { ResolvedGatewayAuth } from "./auth.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import type { ControlUiRootState } from "./control-ui.js";
 import type { HooksConfigResolved } from "./hooks.js";
+import type { MediaGenRuntimeHttpExecutor } from "./media-gen-runtime-http.js";
 import { isLoopbackHost, resolveGatewayListenHosts } from "./net.js";
 import {
   createGatewayBroadcaster,
@@ -46,6 +47,8 @@ export async function createGatewayRuntimeState(params: {
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
   strictTransportSecurityHeader?: string;
+  mediaGenRuntimeExecutor?: MediaGenRuntimeHttpExecutor;
+  mediaStudioAssemblyRenderExecutor?: import("./media-studio-assembly-render-http.js").MediaStudioAssemblyRenderHttpExecutor;
   resolvedAuth: ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
@@ -149,6 +152,8 @@ export async function createGatewayRuntimeState(params: {
       openResponsesEnabled: params.openResponsesEnabled,
       openResponsesConfig: params.openResponsesConfig,
       strictTransportSecurityHeader: params.strictTransportSecurityHeader,
+      mediaGenRuntimeExecutor: params.mediaGenRuntimeExecutor,
+      mediaStudioAssemblyRenderExecutor: params.mediaStudioAssemblyRenderExecutor,
       handleHooksRequest,
       handlePluginRequest,
       shouldEnforcePluginGatewayAuth,

@@ -46,6 +46,14 @@ import {
   resolveHookDeliver,
 } from "./hooks.js";
 import { sendGatewayAuthFailure, setDefaultSecurityHeaders } from "./http-common.js";
+import {
+  handleMediaGenRuntimeHttpRequest,
+  type MediaGenRuntimeHttpExecutor,
+} from "./media-gen-runtime-http.js";
+import {
+  handleMediaStudioAssemblyRenderHttpRequest,
+  type MediaStudioAssemblyRenderHttpExecutor,
+} from "./media-studio-assembly-render-http.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
 import {
@@ -512,6 +520,9 @@ export function createGatewayHttpServer(opts: {
   openResponsesEnabled: boolean;
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
   strictTransportSecurityHeader?: string;
+  mediaGenRuntimeExecutor?: MediaGenRuntimeHttpExecutor;
+  /** Gate 1R: assembly-render encoder executor (optional; fail-closed when absent). */
+  mediaStudioAssemblyRenderExecutor?: MediaStudioAssemblyRenderHttpExecutor;
   handleHooksRequest: HooksRequestHandler;
   handlePluginRequest?: PluginHttpRequestHandler;
   shouldEnforcePluginGatewayAuth?: (pathContext: PluginRoutePathContext) => boolean;
@@ -530,6 +541,8 @@ export function createGatewayHttpServer(opts: {
     openResponsesEnabled,
     openResponsesConfig,
     strictTransportSecurityHeader,
+    mediaGenRuntimeExecutor,
+    mediaStudioAssemblyRenderExecutor,
     handleHooksRequest,
     handlePluginRequest,
     shouldEnforcePluginGatewayAuth,
@@ -616,6 +629,28 @@ export function createGatewayHttpServer(opts: {
             }),
         });
       }
+      requestStages.push({
+        name: "media-gen-runtime",
+        run: () =>
+          handleMediaGenRuntimeHttpRequest(req, res, {
+            auth: resolvedAuth,
+            trustedProxies,
+            allowRealIpFallback,
+            rateLimiter,
+            executor: mediaGenRuntimeExecutor,
+          }),
+      });
+      requestStages.push({
+        name: "media-studio-assembly-render",
+        run: () =>
+          handleMediaStudioAssemblyRenderHttpRequest(req, res, {
+            auth: resolvedAuth,
+            trustedProxies,
+            allowRealIpFallback,
+            rateLimiter,
+            executor: mediaStudioAssemblyRenderExecutor,
+          }),
+      });
       if (canvasHost) {
         requestStages.push({
           name: "canvas-auth",
