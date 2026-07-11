@@ -11,6 +11,13 @@ const execFileAsync = promisify(execFile);
 export type MediaExecOptions = {
   timeoutMs?: number;
   maxBufferBytes?: number;
+  /**
+   * When aborted, Node kills the child with killSignal (default SIGTERM).
+   * Assembly-render cancel paths should pass the job AbortSignal so in-flight
+   * FFmpeg is terminated rather than only checked between segments.
+   */
+  signal?: AbortSignal;
+  killSignal?: NodeJS.Signals | number;
 };
 
 function resolveExecOptions(
@@ -20,25 +27,57 @@ function resolveExecOptions(
   return {
     timeout: options?.timeoutMs ?? defaultTimeoutMs,
     maxBuffer: options?.maxBufferBytes ?? MEDIA_FFMPEG_MAX_BUFFER_BYTES,
+    ...(options?.signal ? { signal: options.signal } : {}),
+    killSignal: options?.killSignal ?? "SIGTERM",
   };
 }
 
 export async function runFfprobe(args: string[], options?: MediaExecOptions): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "ffprobe",
-    args,
-    resolveExecOptions(MEDIA_FFPROBE_TIMEOUT_MS, options),
-  );
-  return stdout.toString();
+  if (options?.signal?.aborted) {
+    throw new Error("cancelled");
+  }
+  try {
+    const { stdout } = await execFileAsync(
+      "ffprobe",
+      args,
+      resolveExecOptions(MEDIA_FFPROBE_TIMEOUT_MS, options),
+    );
+    return stdout.toString();
+  } catch (err) {
+    if (options?.signal?.aborted || isAbortError(err)) {
+      throw new Error("cancelled");
+    }
+    throw err;
+  }
 }
 
 export async function runFfmpeg(args: string[], options?: MediaExecOptions): Promise<string> {
-  const { stdout } = await execFileAsync(
-    "ffmpeg",
-    args,
-    resolveExecOptions(MEDIA_FFMPEG_TIMEOUT_MS, options),
+  if (options?.signal?.aborted) {
+    throw new Error("cancelled");
+  }
+  try {
+    const { stdout } = await execFileAsync(
+      "ffmpeg",
+      args,
+      resolveExecOptions(MEDIA_FFMPEG_TIMEOUT_MS, options),
+    );
+    return stdout.toString();
+  } catch (err) {
+    if (options?.signal?.aborted || isAbortError(err)) {
+      throw new Error("cancelled");
+    }
+    throw err;
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const e = err as { name?: string; code?: string; message?: string };
+  return (
+    e.name === "AbortError" ||
+    e.code === "ABORT_ERR" ||
+    (typeof e.message === "string" && /abort/i.test(e.message))
   );
-  return stdout.toString();
 }
 
 export function parseFfprobeCsvFields(stdout: string, maxFields: number): string[] {

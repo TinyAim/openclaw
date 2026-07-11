@@ -14,8 +14,14 @@ import path from "node:path";
 import { runFfmpeg } from "../../media/ffmpeg-exec.js";
 import type { AssemblyRenderEncodeFn, AssemblyRenderEncodeResult } from "./types.js";
 
+export type FfmpegRunFn = (
+  args: string[],
+  options?: { signal?: AbortSignal; timeoutMs?: number },
+) => Promise<string>;
+
 export async function isFfmpegAvailable(
-  run: (args: string[]) => Promise<string> = (args) => runFfmpeg(args, { timeoutMs: 5_000 }),
+  run: FfmpegRunFn = (args, options) =>
+    runFfmpeg(args, { timeoutMs: options?.timeoutMs ?? 5_000, signal: options?.signal }),
 ): Promise<boolean> {
   try {
     await run(["-version"]);
@@ -26,12 +32,18 @@ export async function isFfmpegAvailable(
 }
 
 export function createFfmpegTimelineEncoder(deps?: {
-  runFfmpegImpl?: (args: string[]) => Promise<string>;
+  runFfmpegImpl?: FfmpegRunFn;
   /** Optional: map artifactId → local media path for real concat. */
   resolveLocalSourcePath?: (artifactId: string) => string | null | Promise<string | null>;
   resolution?: string;
 }): AssemblyRenderEncodeFn {
-  const run = deps?.runFfmpegImpl ?? ((args) => runFfmpeg(args));
+  const run: FfmpegRunFn =
+    deps?.runFfmpegImpl ??
+    ((args, options) =>
+      runFfmpeg(args, {
+        signal: options?.signal,
+        timeoutMs: options?.timeoutMs,
+      }));
   const resolution = deps?.resolution ?? "1280x720";
   const [w, h] = resolution.split("x").map((n) => Number.parseInt(n, 10));
   const size =
@@ -47,6 +59,8 @@ export function createFfmpegTimelineEncoder(deps?: {
       path.join(os.tmpdir(), "wisclaw-asm-render-"),
     );
     const outPath = path.join(tmpRoot, `${input.renderId}-${randomUUID().slice(0, 8)}.mp4`);
+    const runWithSignal = (args: string[]) =>
+      run(args, { signal: input.signal });
     try {
       if (input.signal.aborted) {
         throw new Error("cancelled");
@@ -68,7 +82,7 @@ export function createFfmpegTimelineEncoder(deps?: {
           .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
           .join("\n");
         await fs.writeFile(listPath, listBody, "utf8");
-        await run([
+        await runWithSignal([
           "-y",
           "-f",
           "concat",
@@ -99,7 +113,7 @@ export function createFfmpegTimelineEncoder(deps?: {
           durationSec += dur;
           const seg = path.join(tmpRoot, `seg_${i}.mp4`);
           const color = i % 2 === 0 ? "black" : "navy";
-          await run([
+          await runWithSignal([
             "-y",
             "-f",
             "lavfi",
@@ -123,7 +137,7 @@ export function createFfmpegTimelineEncoder(deps?: {
             .map((p) => `file '${p.replace(/'/g, "'\\''")}'`)
             .join("\n");
           await fs.writeFile(listPath, listBody, "utf8");
-          await run([
+          await runWithSignal([
             "-y",
             "-f",
             "concat",

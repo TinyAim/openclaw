@@ -363,6 +363,61 @@ describe("Gate 1E dispatch/cancel fencing", () => {
   });
 });
 
+describe("Gate 1E complete-after-handoff failure", () => {
+  it("logs orphan and posts fail when complete throws after handoff", async () => {
+    const posts: Array<Record<string, unknown>> = [];
+    const warns: string[] = [];
+    const fetchImpl = vi.fn(async (url: string, init: { body?: string }) => {
+      const body = init.body ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+      posts.push({ url: String(url), ...body });
+      if (String(url).includes("/render/complete") && body.failed !== true) {
+        return { ok: false, status: 500, text: async () => "boom" };
+      }
+      return { ok: true, status: 200, text: async () => "{}" };
+    });
+    // postComplete throws when response not ok — use bridge that throws on complete.
+    const bridge = {
+      runtimeId: "rt-1",
+      postProgress: async () => undefined,
+      postComplete: async () => {
+        throw new Error("complete_rejected");
+      },
+      postFail: async (input: Record<string, unknown>) => {
+        posts.push(input);
+      },
+      handoffMaster: async () => ({ artifactId: "art_orphan" }),
+    };
+    const executor = createMediaStudioAssemblyRenderExecutor({
+      bridge: bridge as any,
+      log: { warn: (m) => warns.push(m) },
+      encode: async () => ({
+        bytes: new Uint8Array([1]),
+        mimeType: "video/mp4",
+        durationSec: 1,
+        resolution: "1280x720",
+        codec: "h264",
+        sha256: "11".repeat(32),
+      }),
+    });
+    await executor.dispatch(baseDispatch({ renderId: "r_orphan" }));
+    for (let i = 0; i < 40; i++) {
+      if (posts.some((p) => p.errorCode === "media_studio.render.complete_after_handoff_failed")) {
+        break;
+      }
+      await wait(15);
+    }
+    expect(
+      posts.some(
+        (p) =>
+          p.failed === true &&
+          p.errorCode === "media_studio.render.complete_after_handoff_failed",
+      ),
+    ).toBe(true);
+    expect(warns.some((w) => w.includes("orphan_master_handoff"))).toBe(true);
+    expect(warns.some((w) => w.includes("art_orphan"))).toBe(true);
+  });
+});
+
 describe("Gate 1H default handoff master", () => {
   it("posts renderId ownership query to artifact-handoff", async () => {
     const calls: Array<{ url: string; headers: Record<string, string> }> = [];

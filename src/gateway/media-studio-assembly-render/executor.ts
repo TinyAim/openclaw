@@ -206,20 +206,44 @@ export function createMediaStudioAssemblyRenderExecutor(
 
       if (jobs.get(key) !== job) return;
 
-      await options.bridge.postComplete({
-        workspaceId: dispatch.workspaceId,
-        projectId: dispatch.projectId,
-        renderId: dispatch.renderId,
-        runtimeId,
-        finalMasterArtifactId: artifactId,
-        qcPassed: true,
-        durationSec: encoded.durationSec,
-        resolution: encoded.resolution,
-        codec: encoded.codec,
-        checksum: encoded.sha256,
-        mimeType: encoded.mimeType,
-        ...fencing,
-      });
+      try {
+        await options.bridge.postComplete({
+          workspaceId: dispatch.workspaceId,
+          projectId: dispatch.projectId,
+          renderId: dispatch.renderId,
+          runtimeId,
+          finalMasterArtifactId: artifactId,
+          qcPassed: true,
+          durationSec: encoded.durationSec,
+          resolution: encoded.resolution,
+          codec: encoded.codec,
+          checksum: encoded.sha256,
+          mimeType: encoded.mimeType,
+          ...fencing,
+        });
+      } catch (completeErr) {
+        // Handoff already registered an Artifact; complete failed → orphan
+        // reconciliation receipt for ops (Control API remains terminal authority).
+        options.log?.warn?.(
+          `assembly-render orphan_master_handoff renderId=${dispatch.renderId} artifactId=${artifactId} err=${String(completeErr)}`,
+        );
+        try {
+          await options.bridge.postFail({
+            workspaceId: dispatch.workspaceId,
+            projectId: dispatch.projectId,
+            renderId: dispatch.renderId,
+            runtimeId,
+            failed: true,
+            errorCode: "media_studio.render.complete_after_handoff_failed",
+            ...fencing,
+          });
+        } catch (failErr) {
+          options.log?.warn?.(
+            `assembly-render orphan fail-callback also failed renderId=${dispatch.renderId} artifactId=${artifactId}: ${String(failErr)}`,
+          );
+        }
+        return;
+      }
       options.log?.info?.(
         `assembly-render complete renderId=${dispatch.renderId} artifactId=${artifactId}`,
       );
