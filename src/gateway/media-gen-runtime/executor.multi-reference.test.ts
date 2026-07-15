@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
-import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import type { MediaGenRuntimeDispatch } from "../media-gen-runtime-http.js";
-import type { MediaGenRuntimeBridge, MediaGenRuntimeVendor } from "./types.js";
+import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
+import type {
+  MediaGenRuntimeBridge,
+  MediaGenRuntimeVendor,
+  MediaGenRuntimeVendorInput,
+  MediaGenRuntimeVendorJob,
+} from "./types.js";
 
 // CP3-d multi-asset reference execution (Multi_Asset_Reference_Design_CP3.md §3 /
 // §8). Split out of executor.test.ts to keep both files under the 500-line cap.
@@ -35,7 +40,12 @@ describe("OpenClaw media-generation runtime executor · multi-reference", () => 
       resolveArtifactReference,
       handoffArtifact: vi.fn(),
     };
-    const submit = vi.fn(async () => ({ state: "processing" as const, vendorJobId: "job-multi" }));
+    const submit = vi.fn(
+      async (_input: MediaGenRuntimeVendorInput): Promise<MediaGenRuntimeVendorJob> => ({
+        state: "processing",
+        vendorJobId: "job-multi",
+      }),
+    );
     const vendor: MediaGenRuntimeVendor = {
       presetId: "vidu",
       supportsMultiReference: true,

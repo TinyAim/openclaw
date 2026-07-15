@@ -1,10 +1,55 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOpenClawMediaGenRuntimeFromEnv } from "./factory.js";
 
+function baseEnabledEnv(overrides: Record<string, string> = {}): Record<string, string> {
+  return {
+    OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED: "1",
+    OPENCLAW_MEDIA_GEN_CONTROL_API_URL: "https://control.example",
+    OPENCLAW_MEDIA_GEN_RUNTIME_ID: "runtime-1",
+    OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN: "token-1",
+    OPENCLAW_MEDIA_GEN_WORKSPACE_IDS: "ws-1",
+    KLING_ACCESS_KEY: "ak",
+    KLING_SECRET: "sk",
+    OPENCLAW_MEDIA_GEN_MODERATION_WEBHOOK_URL: "https://moderation.example/check",
+    OPENCLAW_MEDIA_GEN_LABELING_WEBHOOK_URL: "https://labeler.example/apply",
+    ...overrides,
+  };
+}
+
 describe("OpenClaw media-generation runtime env factory", () => {
   it("stays disabled unless explicitly enabled", () => {
     const result = createOpenClawMediaGenRuntimeFromEnv({ env: {} });
     expect(result.enabled).toBe(false);
+  });
+
+  it("defaults quality gate to off (no OPENCLAW_MEDIA_GEN_QUALITY_GATE)", () => {
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      env: baseEnabledEnv(),
+      log: { info: vi.fn(), warn: vi.fn() },
+    });
+    expect(result.enabled).toBe(true);
+  });
+
+  it("rejects invalid quality gate tokens (fail-closed, never default on)", () => {
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      env: baseEnabledEnv({ OPENCLAW_MEDIA_GEN_QUALITY_GATE: "requird" }),
+    });
+    expect(result.enabled).toBe(false);
+    if (!result.enabled) {
+      expect(result.reason).toMatch(/invalid OPENCLAW_MEDIA_GEN_QUALITY_GATE/);
+    }
+  });
+
+  it("required mode disables executor when probe tools are missing", () => {
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      env: baseEnabledEnv({ OPENCLAW_MEDIA_GEN_QUALITY_GATE: "required" }),
+      log: { info: vi.fn(), warn: vi.fn() },
+      probeMediaQualityTools: () => ({ ok: false, missing: ["ffmpeg"] }),
+    });
+    expect(result.enabled).toBe(false);
+    if (!result.enabled) {
+      expect(result.reason).toContain("missing tools: ffmpeg");
+    }
   });
 
   it("builds a real Kling runtime executor and registers workspaces by heartbeat", async () => {
@@ -63,7 +108,10 @@ describe("OpenClaw media-generation runtime env factory", () => {
   it("advertises supportsMultiReference and the vidu preset when a Vidu key is configured", async () => {
     const calls: Array<{ url: string; body: unknown }> = [];
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+      calls.push({
+        url: String(url),
+        body: init?.body ? JSON.parse(String(init.body)) : undefined,
+      });
       return new Response(JSON.stringify({ data: { ok: true } }), {
         status: 200,
         headers: { "content-type": "application/json" },

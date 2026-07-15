@@ -35,6 +35,20 @@ export type MediaGenRuntimeExecutorOptions = {
   allowedMediaHosts?: string[];
   allowInsecureMediaFetch?: boolean;
   now?: () => Date;
+  /**
+   * Optional quality gate after download, before Artifact handoff.
+   * Factory wires this from OPENCLAW_MEDIA_GEN_QUALITY_GATE; unit tests omit it.
+   *
+   * Cancellation uses code `"canceled"` (top-level status), never a
+   * `failureReason` token — see MediaGenRuntimeResult contract.
+   */
+  validateMediaBytes?: (input: {
+    bytes: Buffer;
+    mimeType: string;
+  }) => Promise<
+    | { ok: true }
+    | { ok: false; code: string; message: string }
+  >;
 };
 
 type TrackedJob = {
@@ -63,6 +77,19 @@ function failed(
     failureReason,
     failureMessage,
     ...(snapshot !== undefined ? { snapshot } : {}),
+  };
+}
+
+function canceled(
+  dispatch: MediaGenRuntimeDispatch,
+  failureMessage: string,
+): MediaGenRuntimeResult {
+  return {
+    taskId: dispatch.taskId,
+    workspaceId: dispatch.workspaceId,
+    correlationId: dispatch.correlationId,
+    status: "canceled",
+    failureMessage,
   };
 }
 
@@ -187,6 +214,40 @@ export function createOpenClawMediaGenRuntimeExecutor(
         "download_failed",
         error instanceof Error ? error.message : "runtime failed to fetch vendor output",
       );
+    }
+
+    // Quality gate: after download, before Artifact Center handoff.
+    // handoffArtifact must NEVER run when quality rejects or cancels.
+    if (options.validateMediaBytes) {
+      try {
+        const quality = await options.validateMediaBytes({
+          bytes: downloaded.bytes,
+          mimeType: downloaded.mimeType,
+        });
+        if (!quality.ok) {
+          // Top-level status=canceled (contract token), never failureReason=cancelled.
+          if (quality.code === "canceled" || quality.code === "cancelled") {
+            return canceled(dispatch, quality.message);
+          }
+          // Infrastructure vs content: tool/probe failures → internal;
+          // black/undecodable/zero_duration/no_video → vendor_rejected.
+          const infrastructure =
+            quality.code === "tool_missing" ||
+            quality.code === "probe_failed" ||
+            quality.code === "timeout";
+          return failed(
+            dispatch,
+            infrastructure ? "internal" : "vendor_rejected",
+            quality.message,
+          );
+        }
+      } catch (error) {
+        return failed(
+          dispatch,
+          "internal",
+          error instanceof Error ? error.message : "media quality validation failed",
+        );
+      }
     }
 
     const handoffOutput = { ...output, mimeType: downloaded.mimeType };

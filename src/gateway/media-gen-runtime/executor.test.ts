@@ -383,6 +383,172 @@ describe("OpenClaw media-generation runtime executor", () => {
     expect(bridge.handoffArtifact).not.toHaveBeenCalled();
   });
 
+  it("quality rejected: never calls handoffArtifact", async () => {
+    const bridge: MediaGenRuntimeBridge = {
+      runtimeId: "runtime-1",
+      register: vi.fn(),
+      resolveArtifactReference: vi.fn(),
+      handoffArtifact: vi.fn(async () => ({
+        artifactId: "should-not",
+        mimeType: "video/mp4",
+      })),
+    };
+    const vendor: MediaGenRuntimeVendor = {
+      presetId: "kling",
+      isConfigured: () => true,
+      submit: vi.fn(async () => ({
+        state: "succeeded" as const,
+        vendorJobId: "job-1",
+        output: { mediaRef: "https://cdn.example/out.mp4", mimeType: "video/mp4" },
+      })),
+      poll: vi.fn(),
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge,
+      vendors: [vendor],
+      fetchImpl: vi.fn(
+        async () =>
+          new Response(Buffer.from("video-bytes"), {
+            status: 200,
+            headers: { "content-type": "video/mp4" },
+          }),
+      ) as unknown as typeof fetch,
+      allowedMediaHosts: ["cdn.example"],
+      validateMediaBytes: async () => ({
+        ok: false as const,
+        code: "black_frame_dominant",
+        message: "media is predominantly black frames",
+      }),
+    });
+    const result = await executor.dispatch(dispatch());
+    expect(result).toMatchObject({
+      status: "failed",
+      failureReason: "vendor_rejected",
+      failureMessage: "media is predominantly black frames",
+    });
+    expect(bridge.handoffArtifact).toHaveBeenCalledTimes(0);
+  });
+
+  it("quality infrastructure failure maps to internal, not vendor_rejected", async () => {
+    const bridge: MediaGenRuntimeBridge = {
+      runtimeId: "runtime-1",
+      register: vi.fn(),
+      resolveArtifactReference: vi.fn(),
+      handoffArtifact: vi.fn(),
+    };
+    const vendor: MediaGenRuntimeVendor = {
+      presetId: "kling",
+      isConfigured: () => true,
+      submit: vi.fn(async () => ({
+        state: "succeeded" as const,
+        vendorJobId: "job-1",
+        output: { mediaRef: "https://cdn.example/out.mp4", mimeType: "video/mp4" },
+      })),
+      poll: vi.fn(),
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge,
+      vendors: [vendor],
+      fetchImpl: vi.fn(
+        async () =>
+          new Response(Buffer.from("video-bytes"), {
+            status: 200,
+            headers: { "content-type": "video/mp4" },
+          }),
+      ) as unknown as typeof fetch,
+      allowedMediaHosts: ["cdn.example"],
+      validateMediaBytes: async () => ({
+        ok: false as const,
+        code: "tool_missing",
+        message: "ffprobe is not available on this runtime",
+      }),
+    });
+    const result = await executor.dispatch(dispatch());
+    expect(result).toMatchObject({
+      status: "failed",
+      failureReason: "internal",
+    });
+    expect(bridge.handoffArtifact).not.toHaveBeenCalled();
+  });
+
+  it("quality canceled returns status=canceled (not failureReason cancelled)", async () => {
+    const bridge: MediaGenRuntimeBridge = {
+      runtimeId: "runtime-1",
+      register: vi.fn(),
+      resolveArtifactReference: vi.fn(),
+      handoffArtifact: vi.fn(),
+    };
+    const vendor: MediaGenRuntimeVendor = {
+      presetId: "kling",
+      isConfigured: () => true,
+      submit: vi.fn(async () => ({
+        state: "succeeded" as const,
+        vendorJobId: "job-1",
+        output: { mediaRef: "https://cdn.example/out.mp4", mimeType: "video/mp4" },
+      })),
+      poll: vi.fn(),
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge,
+      vendors: [vendor],
+      fetchImpl: vi.fn(
+        async () =>
+          new Response(Buffer.from("video-bytes"), {
+            status: 200,
+            headers: { "content-type": "video/mp4" },
+          }),
+      ) as unknown as typeof fetch,
+      allowedMediaHosts: ["cdn.example"],
+      validateMediaBytes: async () => ({
+        ok: false as const,
+        code: "canceled",
+        message: "media quality validation canceled",
+      }),
+    });
+    const result = await executor.dispatch(dispatch());
+    expect(result.status).toBe("canceled");
+    expect(result.failureReason).toBeUndefined();
+    expect(bridge.handoffArtifact).not.toHaveBeenCalled();
+  });
+
+  it("quality passed: handoffArtifact called once", async () => {
+    const bridge: MediaGenRuntimeBridge = {
+      runtimeId: "runtime-1",
+      register: vi.fn(),
+      resolveArtifactReference: vi.fn(),
+      handoffArtifact: vi.fn(async ({ output }) => ({
+        artifactId: "artifact-1",
+        mimeType: output.mimeType,
+      })),
+    };
+    const vendor: MediaGenRuntimeVendor = {
+      presetId: "kling",
+      isConfigured: () => true,
+      submit: vi.fn(async () => ({
+        state: "succeeded" as const,
+        vendorJobId: "job-1",
+        output: { mediaRef: "https://cdn.example/out.mp4", mimeType: "video/mp4" },
+      })),
+      poll: vi.fn(),
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge,
+      vendors: [vendor],
+      fetchImpl: vi.fn(
+        async () =>
+          new Response(Buffer.from("video-bytes"), {
+            status: 200,
+            headers: { "content-type": "video/mp4" },
+          }),
+      ) as unknown as typeof fetch,
+      allowedMediaHosts: ["cdn.example"],
+      validateMediaBytes: async () => ({ ok: true as const }),
+    });
+    const result = await executor.dispatch(dispatch());
+    expect(result.status).toBe("succeeded");
+    expect(bridge.handoffArtifact).toHaveBeenCalledTimes(1);
+  });
+
   it("enforces max bytes while streaming vendor output without trusting Content-Length", async () => {
     const bridge: MediaGenRuntimeBridge = {
       runtimeId: "runtime-1",

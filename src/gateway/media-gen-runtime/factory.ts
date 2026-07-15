@@ -1,15 +1,20 @@
+import type { MediaGenRuntimeHttpExecutor } from "../media-gen-runtime-http.js";
 import { createWebhookLabeler, createWebhookModeration } from "./compliance-hooks.js";
 import { createControlApiMediaGenBridge } from "./control-api-bridge.js";
 import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import { createKlingRuntimeVendor } from "./kling-vendor.js";
-import { createViduRuntimeVendor } from "./vidu-vendor.js";
-import type { MediaGenRuntimeHttpExecutor } from "../media-gen-runtime-http.js";
+import {
+  parseMediaQualityGateMode,
+  probeMediaQualityToolsAvailableSync,
+} from "./media-quality-tools.js";
+import { createMediaQualityValidator } from "./media-quality-validator.js";
 import type {
   MediaGenRuntimeBridge,
   MediaGenRuntimeConfigError,
   MediaGenRuntimeFetch,
   MediaGenRuntimeVendor,
 } from "./types.js";
+import { createViduRuntimeVendor } from "./vidu-vendor.js";
 
 export type MediaGenRuntimeEnv = Record<string, string | undefined>;
 
@@ -29,6 +34,8 @@ export type MediaGenRuntimeFromEnvOptions = {
   env?: MediaGenRuntimeEnv;
   fetchImpl?: MediaGenRuntimeFetch;
   log?: { info?: (msg: string) => void; warn?: (msg: string) => void };
+  /** Test seam for the synchronous bootstrap tool probe. */
+  probeMediaQualityTools?: typeof probeMediaQualityToolsAvailableSync;
 };
 
 function envString(env: MediaGenRuntimeEnv, ...keys: string[]): string {
@@ -145,6 +152,78 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     };
   }
   const allowedMediaHosts = envList(env, "OPENCLAW_MEDIA_GEN_FETCH_HOST_ALLOWLIST");
+  // Quality gate (P2): DEFAULT OFF until installer/bundle proves ffprobe/ffmpeg.
+  // - off: no validation hook
+  // - on: enable validation only when bootstrap finds both tools; otherwise
+  //       warn and leave it off rather than labeling any artifact verified
+  // - required: bootstrap probe; missing tools → executor disabled (no register)
+  // Invalid tokens fail closed (do not default to on).
+  const qualityModeParsed = parseMediaQualityGateMode(
+    envString(env, "OPENCLAW_MEDIA_GEN_QUALITY_GATE") || "off",
+  );
+  if (typeof qualityModeParsed === "object" && "invalid" in qualityModeParsed) {
+    return {
+      enabled: false,
+      reason: `invalid OPENCLAW_MEDIA_GEN_QUALITY_GATE=${JSON.stringify(qualityModeParsed.value)} (expected off|on|required)`,
+    };
+  }
+  const qualityGate = qualityModeParsed;
+  let validateMediaBytes:
+    | import("./executor.js").MediaGenRuntimeExecutorOptions["validateMediaBytes"]
+    | undefined;
+  if (qualityGate === "required") {
+    // Sync path: factory is sync today; required mode uses a blocking probe via
+    // child_process spawnSync-equivalent through deasync-free approach: we run
+    // a synchronous probe helper that uses spawnSync for bootstrap only.
+    const tools = options.probeMediaQualityTools?.() ?? probeMediaQualityToolsAvailableSync();
+    if (!tools.ok) {
+      return {
+        enabled: false,
+        reason: `OPENCLAW_MEDIA_GEN_QUALITY_GATE=required but missing tools: ${tools.missing.join(", ")}`,
+      };
+    }
+    const validator = createMediaQualityValidator({
+      mode: "required",
+      requireAudio: envBool(env, "OPENCLAW_MEDIA_GEN_QUALITY_REQUIRE_AUDIO"),
+    });
+    validateMediaBytes = async (input) => {
+      const result = await validator(input);
+      if (result.ok) return { ok: true as const };
+      return {
+        ok: false as const,
+        code: result.code,
+        message: result.message,
+      };
+    };
+  } else if (qualityGate === "on") {
+    const tools = options.probeMediaQualityTools?.() ?? probeMediaQualityToolsAvailableSync();
+    if (!tools.ok) {
+      options.log?.warn?.(
+        `[media-gen-runtime] quality gate=on but tools missing (${tools.missing.join(", ")}); gate disabled until tools are installed`,
+      );
+    } else {
+      const validator = createMediaQualityValidator({
+        mode: "on",
+        requireAudio: envBool(env, "OPENCLAW_MEDIA_GEN_QUALITY_REQUIRE_AUDIO"),
+      });
+      validateMediaBytes = async (input) => {
+        const result = await validator(input);
+        if (result.ok) {
+          if (result.blackFrameCheckSkipped) {
+            options.log?.warn?.(
+              "[media-gen-runtime] quality gate=on skipped decoded-frame black validation; artifact is not quality-verified",
+            );
+          }
+          return { ok: true as const };
+        }
+        return {
+          ok: false as const,
+          code: result.code,
+          message: result.message,
+        };
+      };
+    }
+  }
   const executor = createOpenClawMediaGenRuntimeExecutor({
     bridge,
     vendors,
@@ -155,6 +234,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     allowInsecureMediaFetch: envBool(env, "OPENCLAW_MEDIA_GEN_ALLOW_INSECURE_FETCH"),
     maxMediaBytes: envNumber(env, "OPENCLAW_MEDIA_GEN_MAX_ARTIFACT_BYTES", 512 * 1024 * 1024),
     mediaFetchTimeoutMs: envNumber(env, "OPENCLAW_MEDIA_GEN_FETCH_TIMEOUT_MS", 120_000),
+    ...(validateMediaBytes ? { validateMediaBytes } : {}),
   });
   const supportedPresetIds = vendors.map((vendor) => vendor.presetId);
   const workspaces = envList(env, "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS");
@@ -164,9 +244,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
   // CP3 §8 honesty gate: advertise multi-reference ONLY when a configured vendor
   // truly maps a multi-slot input (e.g. Vidu subject images[]); the control plane
   // is fail-closed on this bit and only builds a references[] dispatch when true.
-  const supportsMultiReference = vendors.some(
-    (vendor) => vendor.supportsMultiReference === true,
-  );
+  const supportsMultiReference = vendors.some((vendor) => vendor.supportsMultiReference === true);
 
   return {
     enabled: true,
