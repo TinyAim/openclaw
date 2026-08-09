@@ -88,6 +88,10 @@ export async function createGatewayRuntimeState(params: {
   getResolvedAuth: () => ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
   gatewayTls?: GatewayTlsRuntime;
   hooksConfig: () => HooksConfigResolved | null;
   getHookClientIpConfig: () => HookClientIpConfig;
@@ -268,6 +272,11 @@ export async function createGatewayRuntimeState(params: {
         resolvedAuth: params.resolvedAuth,
         getResolvedAuth: params.getResolvedAuth,
         rateLimiter: params.rateLimiter,
+        mediaGenRuntimeExecutor: params.mediaGenRuntimeExecutor,
+        spatialReferenceRuntimeExecutor: params.spatialReferenceRuntimeExecutor,
+        spatialEnvironmentPanoramaRuntimeExecutor: params.spatialEnvironmentPanoramaRuntimeExecutor,
+        spatialEnvironmentDepthMeshRuntimeExecutor:
+          params.spatialEnvironmentDepthMeshRuntimeExecutor,
         getReadiness: params.getReadiness,
         isTerminalEnabled: params.isTerminalEnabled,
         tlsOptions: params.gatewayTls?.enabled ? params.gatewayTls.tlsOptions : undefined,

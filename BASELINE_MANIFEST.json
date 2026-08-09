@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "1.0.0",
+  "generatedAt": "2026-08-05T04:01:19Z",
+  "integration_commit": "0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c",
+  "openclaw_upstream_release_reference": "2026.7.1",
+  "wisclaw_policy": "controlled-forward-port",
+  "openclawSnapshot": {
+    "commit": "0790d9f593ad30c940ed93b5872a8cf6d6f3cf8c",
+    "referenceVersion": "2026.7.1",
+    "describe": "v2026.7.1-2",
+    "docsArchive": "infra/dependencies/engine-docs-archive/openclaw/v2026.7.1-2_20260805T034138Z",
+    "upstreamTag": "v2026.7.1-2"
+  },
+  "security": {
+    "minPatchedVersion": "2026.3.13",
+    "blockedVersions": [
+      "2026.3.3"
+    ],
+    "note": "2026.3.3 is security-blocked only. Active product baseline is 2026.7.1 (tag v2026.7.1-2)."
+  }
+}

@@ -168,6 +168,12 @@ import {
   type QueuedChatTurnMap,
 } from "../chat-queued-turns.js";
 import { stripEnvelopeFromMessage } from "../chat-sanitize.js";
+import {
+  claimDurableChatOutcome,
+  markDurableChatRequestStarted,
+  releaseDurableChatOutcomeBeforeStart,
+  settleDurableChatOutcome,
+} from "../chat-send-outcome-ledger.js";
 import { augmentChatHistoryWithCliSessionImports } from "../cli-session-history.js";
 import { isSuppressedControlReplyText } from "../control-reply-text.js";
 import {
@@ -2418,6 +2424,23 @@ function writePreRegisteredChatAbort(params: {
   });
 }
 
+async function settleDurableChatAbortOutcomes(params: {
+  context: Pick<GatewayRequestContext, "logGateway">;
+  runIds: Iterable<string>;
+  stopReason: string;
+}): Promise<void> {
+  for (const runId of params.runIds) {
+    await settleDurableChatOutcome({
+      runId,
+      terminal: { status: "aborted", stopReason: params.stopReason },
+    }).catch((error: unknown) => {
+      params.context.logGateway.warn(
+        `durable chat abort outcome persist failed: ${formatForLog(error)}`,
+      );
+    });
+  }
+}
+
 function resolveAuthorizedPreRegisteredRunsForSessionKeys(params: {
   context: GatewayRequestContext;
   sessionKeys: Iterable<string>;
@@ -3511,6 +3534,11 @@ export const chatHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
         return;
       }
+      await settleDurableChatAbortOutcomes({
+        context,
+        runIds: res.runIds,
+        stopReason: "rpc",
+      });
       respond(true, { ok: true, aborted: res.aborted, runIds: res.runIds });
       return;
     }
@@ -3569,6 +3597,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           stopReason: "rpc",
           attemptId: normalizeUnknownText(pendingChatMatch.payload.attemptId),
         });
+        await settleDurableChatAbortOutcomes({ context, runIds: [runId], stopReason: "rpc" });
         respond(true, { ok: true, aborted: true, runIds: [runId] });
         return;
       }
@@ -3690,6 +3719,9 @@ export const chatHandlers: GatewayRequestHandlers = {
         ],
       });
     }
+    if (res.aborted) {
+      await settleDurableChatAbortOutcomes({ context, runIds: [runId], stopReason: "rpc" });
+    }
     respond(true, {
       ok: true,
       aborted: res.aborted,
@@ -3735,6 +3767,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       systemProvenanceReceipt?: string;
       suppressCommandInterpretation?: boolean;
       expectedSessionRoutingContract?: string;
+      durableOutcome?: boolean;
       idempotencyKey: string;
     };
     const suppressCommandInterpretation = p.suppressCommandInterpretation === true;
@@ -3929,77 +3962,168 @@ export const chatHandlers: GatewayRequestHandlers = {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
         return;
       }
+      await settleDurableChatAbortOutcomes({
+        context,
+        runIds: res.runIds,
+        stopReason: "stop",
+      });
       respond(true, { ok: true, aborted: res.aborted, runIds: res.runIds });
       return;
     }
 
-    const cached = context.dedupe.get(`chat:${clientRunId}`);
-    if (cached) {
-      respond(cached.ok, cached.payload, cached.error, {
-        cached: true,
-      });
-      return;
-    }
+    let durableFingerprint: string | undefined;
+    if (p.durableOutcome === true) {
+      let durableClaim;
+      try {
+        durableClaim = await claimDurableChatOutcome({
+          idempotencyKey: clientRunId,
+          request: p as Readonly<Record<string, unknown>>,
+          durableOutcome: true,
+        });
+      } catch (error) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            `durable outcome ledger unavailable: ${String(error)}`,
+          ),
+        );
+        return;
+      }
+      if (durableClaim.kind === "terminal") {
+        // A durable terminal is a successfully recovered protocol receipt even
+        // when the recorded execution status is error/aborted. Callers must be
+        // able to normalize that terminal state instead of losing it to an RPC
+        // transport exception.
+        respond(true, durableClaim.terminal.payload, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+        return;
+      }
+      if (
+        durableClaim.kind === "in_flight" ||
+        durableClaim.kind === "outcome_unknown" ||
+        durableClaim.kind === "idempotency_conflict"
+      ) {
+        respond(true, durableClaim.payload, undefined, { cached: true, runId: clientRunId });
+        return;
+      }
+      if (durableClaim.kind === "dispatch") {
+        durableFingerprint = durableClaim.fingerprint;
+      }
+    } else {
+      const cached = context.dedupe.get(`chat:${clientRunId}`);
+      if (cached) {
+        respond(cached.ok, cached.payload, cached.error, {
+          cached: true,
+        });
+        return;
+      }
 
-    const abortMarker = context.chatAbortedRuns.get(clientRunId);
-    if (abortMarker !== undefined) {
-      const abortedAt = chatAbortMarkerTimestampMs(abortMarker);
-      const payload = buildAbortedChatSendPayload({
-        runId: clientRunId,
-        endedAt: abortedAt,
-      });
-      setGatewayDedupeEntry({
-        dedupe: context.dedupe,
-        key: `chat:${clientRunId}`,
-        entry: {
-          ts: abortedAt,
-          ok: true,
-          payload,
-        },
-      });
-      respond(true, payload, undefined, {
-        cached: true,
-        runId: clientRunId,
-      });
-      return;
-    }
+      const abortMarker = context.chatAbortedRuns.get(clientRunId);
+      if (abortMarker !== undefined) {
+        const abortedAt = chatAbortMarkerTimestampMs(abortMarker);
+        const payload = buildAbortedChatSendPayload({
+          runId: clientRunId,
+          endedAt: abortedAt,
+        });
+        setGatewayDedupeEntry({
+          dedupe: context.dedupe,
+          key: `chat:${clientRunId}`,
+          entry: {
+            ts: abortedAt,
+            ok: true,
+            payload,
+          },
+        });
+        respond(true, payload, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+        return;
+      }
 
-    const pendingChatSend = readPreRegisteredRun({
-      key: pendingChatSendKey,
-      entry: context.dedupe.get(pendingChatSendKey),
-      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    });
-    if (pendingChatSend) {
-      respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-        cached: true,
-        runId: clientRunId,
+      const pendingChatSend = readPreRegisteredRun({
+        key: pendingChatSendKey,
+        entry: context.dedupe.get(pendingChatSendKey),
+        keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
       });
-      return;
-    }
+      if (pendingChatSend) {
+        respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+        return;
+      }
 
-    const activeExisting = context.chatAbortControllers.get(clientRunId);
-    if (activeExisting) {
-      respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-        cached: true,
-        runId: clientRunId,
-      });
-      return;
+      const activeExisting = context.chatAbortControllers.get(clientRunId);
+      if (activeExisting) {
+        respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+        return;
+      }
+      if (context.chatQueuedTurns?.has(clientRunId)) {
+        respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+        return;
+      }
     }
-    if (context.chatQueuedTurns?.has(clientRunId)) {
-      respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-        cached: true,
-        runId: clientRunId,
+    const settleCurrentDurableOutcome = async (
+      terminal: Parameters<typeof settleDurableChatOutcome>[0]["terminal"],
+    ): Promise<void> => {
+      if (!durableFingerprint) return;
+      await settleDurableChatOutcome({ runId: clientRunId, terminal }).catch((error: unknown) => {
+        context.logGateway.warn(`durable chat outcome persist failed: ${formatForLog(error)}`);
       });
-      return;
-    }
+    };
+    const settleCurrentDurableFromGatewayResult = async (entry: DedupeEntry): Promise<void> => {
+      const payload =
+        entry.payload && typeof entry.payload === "object"
+          ? (entry.payload as Record<string, unknown>)
+          : {};
+      const status = typeof payload.status === "string" ? payload.status : undefined;
+      if (status === "aborted" || status === "timeout") {
+        await settleCurrentDurableOutcome({
+          status: "aborted",
+          stopReason: typeof payload.stopReason === "string" ? payload.stopReason : status,
+        });
+        return;
+      }
+      if (!entry.ok || status === "error") {
+        await settleCurrentDurableOutcome({
+          status: "error",
+          errorMessage: typeof payload.summary === "string" ? payload.summary : "chat send failed",
+        });
+        return;
+      }
+      await settleCurrentDurableOutcome({ status: "ok", message: payload.message });
+    };
     // Cached/in-flight retries are already bound to their original target and
     // must remain queryable after config changes. Gate only a new dispatch.
     if (sessionRoutingChanged(cfg)) {
+      if (durableFingerprint) {
+        await releaseDurableChatOutcomeBeforeStart({
+          idempotencyKey: clientRunId,
+          fingerprint: durableFingerprint,
+        }).catch(() => false);
+      }
       respondSessionRoutingChanged();
       return;
     }
     const archivedSessionError = resolveSessionWorkStartError(sessionKey, entry);
     if (archivedSessionError) {
+      if (durableFingerprint) {
+        await releaseDurableChatOutcomeBeforeStart({
+          idempotencyKey: clientRunId,
+          fingerprint: durableFingerprint,
+        }).catch(() => false);
+      }
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, archivedSessionError));
       return;
     }
@@ -4025,6 +4149,24 @@ export const chatHandlers: GatewayRequestHandlers = {
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const pendingAttemptId = randomUUID();
     const pendingExpiresAtMs = resolveChatRunExpiresAtMs({ now, timeoutMs });
+    if (durableFingerprint) {
+      try {
+        await markDurableChatRequestStarted({
+          idempotencyKey: clientRunId,
+          fingerprint: durableFingerprint,
+        });
+      } catch (error) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            `durable outcome start record unavailable: ${String(error)}`,
+          ),
+        );
+        return;
+      }
+    }
     // Keep the run abortable while lifecycle mutation owns the session. Admission
     // must reject an expired/missing reservation instead of reviving evicted work.
     context.dedupe.set(pendingChatSendKey, {
@@ -4164,9 +4306,11 @@ export const chatHandlers: GatewayRequestHandlers = {
     } catch (err) {
       clearPendingChatSendReservation();
       if (err instanceof Error && err.message === SESSION_ROUTING_CHANGED_ERROR_REASON) {
+        await settleCurrentDurableOutcome({ status: "error", errorMessage: err.message });
         respondSessionRoutingChanged();
         return;
       }
+      await settleCurrentDurableOutcome({ status: "error", errorMessage: String(err) });
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)));
       return;
     }
@@ -4176,12 +4320,17 @@ export const chatHandlers: GatewayRequestHandlers = {
       gatewayWorkAdmission.release();
       const supersedingCached = supersedingResult ?? context.dedupe.get(`chat:${clientRunId}`);
       if (supersedingCached) {
+        await settleCurrentDurableFromGatewayResult(supersedingCached);
         respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, {
           cached: true,
           runId: clientRunId,
         });
         return;
       }
+      await settleCurrentDurableOutcome({
+        status: "error",
+        errorMessage: "chat send reservation was superseded",
+      });
       respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
         cached: true,
         runId: clientRunId,
@@ -4206,6 +4355,11 @@ export const chatHandlers: GatewayRequestHandlers = {
         });
       }
       const aborted = context.dedupe.get(`chat:${clientRunId}`);
+      if (aborted) {
+        await settleCurrentDurableFromGatewayResult(aborted);
+      } else {
+        await settleCurrentDurableOutcome({ status: "aborted", stopReason: "restart" });
+      }
       respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
         cached: true,
         runId: clientRunId,
@@ -4216,17 +4370,26 @@ export const chatHandlers: GatewayRequestHandlers = {
       gatewayWorkAdmission.release();
       const aborted = context.dedupe.get(`chat:${clientRunId}`);
       if (aborted) {
+        await settleCurrentDurableFromGatewayResult(aborted);
         respond(aborted.ok, aborted.payload, aborted.error, {
           cached: true,
           runId: clientRunId,
         });
         return;
       }
+      await settleCurrentDurableOutcome({
+        status: "error",
+        errorMessage: "chat run admission failed",
+      });
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "chat run admission failed"));
       return;
     }
     if (!activeRunAbort.registered) {
       gatewayWorkAdmission.release();
+      await settleCurrentDurableOutcome({
+        status: "error",
+        errorMessage: "chat run is already active under this idempotency key",
+      });
       respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
         cached: true,
         runId: clientRunId,
@@ -4316,6 +4479,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         cleanupAdmittedRun({ force: true });
         clearAgentRunContext(clientRunId, lifecycleGeneration);
         logAttachmentFailure(context.logGateway, "chat.send attachment parse/stage failed", err);
+        await settleCurrentDurableOutcome({ status: "error", errorMessage: String(err) });
         respond(
           false,
           undefined,
@@ -4346,6 +4510,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
       cleanupAdmittedRun({ force: true });
       clearAgentRunContext(clientRunId, lifecycleGeneration);
+      await settleCurrentDurableOutcome({ status: "aborted", stopReason });
       respond(true, payload, undefined, { runId: clientRunId });
       return;
     }
@@ -4355,6 +4520,10 @@ export const chatHandlers: GatewayRequestHandlers = {
     if (sessionRoutingChanged(context.getRuntimeConfig())) {
       cleanupAdmittedRun({ force: true });
       clearAgentRunContext(clientRunId, lifecycleGeneration);
+      await settleCurrentDurableOutcome({
+        status: "error",
+        errorMessage: SESSION_ROUTING_CHANGED_ERROR_REASON,
+      });
       respondSessionRoutingChanged();
       return;
     }
@@ -4933,6 +5102,21 @@ export const chatHandlers: GatewayRequestHandlers = {
                   .map((payload) => payload.text?.trim())
                   .filter((text): text is string => Boolean(text))
                   .join(" | ") || undefined;
+              const durableReplyText = deliveredReplies
+                .filter((entryInner) => entryInner.kind === "final" && !entryInner.payload.isError)
+                .map((entryInner) => entryInner.payload.text?.trim())
+                .filter((text): text is string => Boolean(text))
+                .join("\n\n")
+                .trim();
+              const durableReplyMessage = durableReplyText
+                ? {
+                    role: "assistant",
+                    content: [{ type: "text", text: durableReplyText }],
+                    text: durableReplyText,
+                    timestamp: Date.now(),
+                    stopReason: "stop",
+                  }
+                : undefined;
               if (
                 agentRunStarted &&
                 returnedAgentErrorPayloads.length > 0 &&
@@ -5711,6 +5895,15 @@ export const chatHandlers: GatewayRequestHandlers = {
                       returnedAgentErrorMessage ?? "agent returned an error payload",
                     )
                   : undefined;
+                await settleCurrentDurableOutcome(
+                  shouldBroadcastAgentError
+                    ? {
+                        status: "error",
+                        errorMessage:
+                          returnedAgentErrorMessage ?? "agent returned an error payload",
+                      }
+                    : { status: "ok", message: durableReplyMessage },
+                );
                 setGatewayDedupeEntry({
                   dedupe: context.dedupe,
                   key: `chat:${clientRunId}`,
@@ -5727,6 +5920,8 @@ export const chatHandlers: GatewayRequestHandlers = {
                     ...(returnedAgentError ? { error: returnedAgentError } : {}),
                   },
                 });
+              } else {
+                await settleCurrentDurableOutcome({ status: "aborted", stopReason: "aborted" });
               }
             },
             {
@@ -5760,6 +5955,7 @@ export const chatHandlers: GatewayRequestHandlers = {
               `webchat dispatch failed after followup queue admission: ${formatForLog(err)}`,
             );
             if (!context.chatAbortedRuns.has(clientRunId)) {
+              await settleCurrentDurableOutcome({ status: "ok" });
               setGatewayDedupeEntry({
                 dedupe: context.dedupe,
                 key: `chat:${clientRunId}`,
@@ -5799,6 +5995,15 @@ export const chatHandlers: GatewayRequestHandlers = {
               startedAt: activeRunAbort.entry?.startedAtMs ?? now,
             };
           }
+          const wasAborted = context.chatAbortedRuns.has(clientRunId);
+          await settleCurrentDurableOutcome(
+            wasAborted
+              ? {
+                  status: "aborted",
+                  stopReason: activeRunAbort.entry?.abortStopReason ?? "aborted",
+                }
+              : { status: "error", errorMessage },
+          );
           const error = errorShape(ErrorCodes.UNAVAILABLE, errorMessage);
           setGatewayDedupeEntry({
             dedupe: context.dedupe,
@@ -5884,6 +6089,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         status: "error" as const,
         summary: String(err),
       };
+      await settleCurrentDurableOutcome({ status: "error", errorMessage: String(err) });
       setGatewayDedupeEntry({
         dedupe: context.dedupe,
         key: `chat:${clientRunId}`,

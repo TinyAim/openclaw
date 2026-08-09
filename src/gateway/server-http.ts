@@ -82,6 +82,22 @@ const getManagedImageAttachmentsModule = createLazyRuntimeModule(
   () => import("./managed-image-attachments.js"),
 );
 
+const getMediaGenRuntimeHttpModule = createLazyRuntimeModule(
+  () => import("./media-gen-runtime-http.js"),
+);
+
+const getMediaStudioSpatialReferenceHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-reference-render-http.js"),
+);
+
+const getMediaStudioSpatialEnvironmentPanoramaHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-environment-render-http.js"),
+);
+
+const getMediaStudioSpatialEnvironmentDepthMeshHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-depth-mesh-render-http.js"),
+);
+
 const getModelsHttpModule = createLazyRuntimeModule(() => import("./models-http.js"));
 
 const getOpenAiHttpModule = createLazyRuntimeModule(() => import("./openai-http.js"));
@@ -450,6 +466,14 @@ export function createGatewayHttpServer(opts: {
   getResolvedAuth?: () => ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  /** Direction 1 executor; the route stays mounted and fails closed when absent. */
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  /** Optional first-party Spatial reference executor. Route is absent when omitted. */
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  /** Optional first-party model-free panorama executor. Route is absent when omitted. */
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  /** Optional first-party deterministic depth-mesh executor. Route is absent when omitted. */
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
   getReadiness?: ReadinessChecker;
   getRuntimeConfig?: () => OpenClawConfig;
   isTerminalEnabled?: () => boolean;
@@ -643,6 +667,62 @@ export function createGatewayHttpServer(opts: {
             }),
         });
       }
+      requestStages.push({
+        name: "media-studio-spatial-reference-runtime",
+        run: async () =>
+          opts.spatialReferenceRuntimeExecutor
+            ? (
+                await getMediaStudioSpatialReferenceHttpModule()
+              ).handleMediaStudioSpatialReferenceRenderHttpRequest(req, res, {
+                auth: resolvedAuthValue,
+                trustedProxies,
+                allowRealIpFallback,
+                rateLimiter,
+                executor: opts.spatialReferenceRuntimeExecutor,
+              })
+            : false,
+      });
+      requestStages.push({
+        name: "media-studio-spatial-environment-panorama-runtime",
+        run: async () =>
+          opts.spatialEnvironmentPanoramaRuntimeExecutor
+            ? (
+                await getMediaStudioSpatialEnvironmentPanoramaHttpModule()
+              ).handleMediaStudioSpatialEnvironmentPanoramaHttpRequest(req, res, {
+                auth: resolvedAuthValue,
+                trustedProxies,
+                allowRealIpFallback,
+                rateLimiter,
+                executor: opts.spatialEnvironmentPanoramaRuntimeExecutor,
+              })
+            : false,
+      });
+      requestStages.push({
+        name: "media-studio-spatial-environment-depth-mesh-runtime",
+        run: async () =>
+          opts.spatialEnvironmentDepthMeshRuntimeExecutor
+            ? (
+                await getMediaStudioSpatialEnvironmentDepthMeshHttpModule()
+              ).handleMediaStudioSpatialEnvironmentDepthMeshHttpRequest(req, res, {
+                auth: resolvedAuthValue,
+                trustedProxies,
+                allowRealIpFallback,
+                rateLimiter,
+                executor: opts.spatialEnvironmentDepthMeshRuntimeExecutor,
+              })
+            : false,
+      });
+      requestStages.push({
+        name: "media-gen-runtime",
+        run: async () =>
+          (await getMediaGenRuntimeHttpModule()).handleMediaGenRuntimeHttpRequest(req, res, {
+            auth: resolvedAuthValue,
+            trustedProxies,
+            allowRealIpFallback,
+            rateLimiter,
+            executor: opts.mediaGenRuntimeExecutor,
+          }),
+      });
       if (
         handlePluginRequest &&
         pluginPathContext &&

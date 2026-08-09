@@ -486,6 +486,17 @@ export type GatewayServerOptions = {
    */
   openResponsesEnabled?: boolean;
   /**
+   * Direction 1 media-generation executor. The authenticated dispatch route is
+   * still mounted when omitted, but returns an honest internal failure.
+   */
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  /** First-party Spatial reference Runtime override. */
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  /** First-party model-free panorama Runtime override. */
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  /** First-party deterministic depth-mesh Runtime override. */
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
+  /**
    * Override gateway auth configuration (merges with config).
    */
   auth?: import("../config/config.js").GatewayAuthConfig;
@@ -559,6 +570,50 @@ export async function startGatewayServer(
     key: "OPENCLAW_RAW_STREAM_PATH",
     description: "raw stream log path override",
   });
+  const envMediaGenRuntime =
+    opts.mediaGenRuntimeExecutor === undefined &&
+    process.env.OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED === "1"
+      ? (await import("./media-gen-runtime/index.js")).createOpenClawMediaGenRuntimeFromEnv({
+          log: {
+            info: (msg) => log.info(msg),
+            warn: (msg) => log.warn(msg),
+          },
+        })
+      : {
+          enabled: false as const,
+          reason:
+            opts.mediaGenRuntimeExecutor === undefined
+              ? "OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED is not set"
+              : "mediaGenRuntimeExecutor option provided",
+        };
+  if (envMediaGenRuntime.enabled) {
+    log.info(
+      `media-gen runtime executor enabled for presets=${envMediaGenRuntime.supportedPresetIds.join(",")} moderation=${envMediaGenRuntime.enforcesModeration} labeling=${envMediaGenRuntime.appliesLabeling}`,
+    );
+  } else if (process.env.OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED === "1") {
+    log.warn(`media-gen runtime executor not enabled: ${envMediaGenRuntime.reason}`);
+  }
+  const envSpatialReferenceRuntime =
+    opts.spatialReferenceRuntimeExecutor === undefined &&
+    opts.spatialEnvironmentPanoramaRuntimeExecutor === undefined &&
+    opts.spatialEnvironmentDepthMeshRuntimeExecutor === undefined
+      ? (
+          await import("./media-studio-spatial-reference-runtime/index.js")
+        ).createMediaStudioSpatialReferenceRuntimeFromEnv({
+          log: {
+            info: (msg) => log.info(msg),
+            warn: (msg) => log.warn(msg),
+          },
+        })
+      : {
+          enabled: false as const,
+          reason: "Spatial Runtime executor option provided",
+        };
+  if (envSpatialReferenceRuntime.enabled) {
+    log.info("media-studio Spatial reference, panorama and depth-mesh Runtime enabled");
+  } else if (process.env.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED === "1") {
+    log.warn(`media-studio Spatial Runtime not enabled: ${envSpatialReferenceRuntime.reason}`);
+  }
   if (!resumeGatewayRestartTraceFromEnv(process.env, [["source", "env"]])) {
     const restartHandoff = readGatewayRestartHandoffSync();
     resumeGatewayRestartTraceFromHandoff(restartHandoff?.restartTrace, [
@@ -917,6 +972,22 @@ export async function startGatewayServer(
       strictTransportSecurityHeader,
       resolvedAuth,
       rateLimiter: authRateLimiter,
+      mediaGenRuntimeExecutor:
+        opts.mediaGenRuntimeExecutor ??
+        (envMediaGenRuntime.enabled ? envMediaGenRuntime.executor : undefined),
+      spatialReferenceRuntimeExecutor:
+        opts.spatialReferenceRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled ? envSpatialReferenceRuntime.executor : undefined),
+      spatialEnvironmentPanoramaRuntimeExecutor:
+        opts.spatialEnvironmentPanoramaRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled
+          ? envSpatialReferenceRuntime.panoramaExecutor
+          : undefined),
+      spatialEnvironmentDepthMeshRuntimeExecutor:
+        opts.spatialEnvironmentDepthMeshRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled
+          ? envSpatialReferenceRuntime.depthMeshExecutor
+          : undefined),
       isTerminalEnabled: terminalLaunchPolicy.isEnabled,
       gatewayTls,
       getResolvedAuth,
@@ -933,6 +1004,8 @@ export async function startGatewayServer(
       getReadiness,
     }),
   );
+  let stopMediaGenRuntimeHeartbeat = () => {};
+  let stopSpatialReferenceRuntimeHeartbeat = () => {};
   const restartRecoveryCandidates = new Map<string, RestartRecoveryCandidate>();
   const { createGatewayNodeSessionRuntime } = await import("./server-node-session-runtime.js");
   const {
@@ -994,6 +1067,10 @@ export async function startGatewayServer(
   };
   const runClosePrelude = async () => {
     markClosePreludeStarted();
+    stopMediaGenRuntimeHeartbeat();
+    stopMediaGenRuntimeHeartbeat = () => {};
+    stopSpatialReferenceRuntimeHeartbeat();
+    stopSpatialReferenceRuntimeHeartbeat = () => {};
     clearPluginMetadataLifecycleCaches();
     const { runGatewayClosePrelude } = await loadGatewayCloseModule();
     await runGatewayClosePrelude({
@@ -1126,6 +1203,12 @@ export async function startGatewayServer(
   };
 
   try {
+    if (!minimalTestGateway && envMediaGenRuntime.enabled) {
+      stopMediaGenRuntimeHeartbeat = envMediaGenRuntime.startHeartbeat();
+    }
+    if (!minimalTestGateway && envSpatialReferenceRuntime.enabled) {
+      stopSpatialReferenceRuntimeHeartbeat = envSpatialReferenceRuntime.startHeartbeat();
+    }
     const earlyRuntime = await startupTrace.measure("runtime.early", () =>
       loadGatewayStartupEarlyModule().then(({ startGatewayEarlyRuntime }) =>
         startGatewayEarlyRuntime({

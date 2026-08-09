@@ -802,6 +802,9 @@ describe("validateChatSendParams", () => {
     ).toBe(true);
     expect(validateChatSendParams({ ...base, fastAutoOnSeconds: 2 })).toBe(true);
     expect(validateChatSendParams({ ...base, fastAutoOnSeconds: 0 })).toBe(false);
+    expect(validateChatSendParams({ ...base, durableOutcome: true })).toBe(true);
+    expect(validateChatSendParams({ ...base, durableOutcome: false })).toBe(true);
+    expect(validateChatSendParams({ ...base, durableOutcome: "yes" })).toBe(false);
   });
 });
 

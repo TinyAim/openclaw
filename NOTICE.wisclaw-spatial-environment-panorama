@@ -1,0 +1,17 @@
+Wisclaw Spatial Environment Panorama Runtime Notice
+
+The model-free panorama reflection/quilt algorithm and its deterministic
+sampling, completion, quality-gate, and PNG-output logic are Wisclaw
+first-party implementation code.
+
+The exact runtime component manifest also includes:
+
+- rastermill 0.3.1, distributed under the MIT License.
+  Source: https://github.com/openclaw/rastermill
+- @silvia-odwyer/photon-node 0.3.4, distributed under the Apache License 2.0.
+  Source: https://github.com/silvia-odwyer/photon
+
+The corresponding license texts are distributed by the pinned npm packages
+and remain subject to their respective terms. These libraries are used only
+for in-process orientation normalization and image decoding. The runtime
+explicitly disables undeclared external codec fallbacks for this operation.

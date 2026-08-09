@@ -234,6 +234,144 @@ test("chat.send replays a cached result after the session is archived", async ()
   }
 });
 
+test("chat.send replays a durable terminal outcome after gateway memory reset", async () => {
+  const sessionDir = autoCleanupTempDirs.make("openclaw-gw-");
+  const stateDir = autoCleanupTempDirs.make("openclaw-chat-outcome-");
+  const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+  process.env.OPENCLAW_STATE_DIR = stateDir;
+  try {
+    dispatchInboundMessageMock.mockClear();
+    testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
+          archivedAt: Date.now(),
+        },
+      },
+    });
+    const runId = "idem-durable-restart-result";
+    const params = {
+      sessionKey: "main",
+      message: "retry durable completed send",
+      durableOutcome: true,
+      idempotencyKey: runId,
+    };
+    const ledger = await import("./chat-send-outcome-ledger.js");
+    ledger.__testing.resetMemory();
+    const claim = await ledger.claimDurableChatOutcome({
+      idempotencyKey: runId,
+      request: params,
+      durableOutcome: true,
+    });
+    if (claim.kind !== "dispatch") throw new Error("expected durable dispatch claim");
+    await ledger.markDurableChatRequestStarted({
+      idempotencyKey: runId,
+      fingerprint: claim.fingerprint,
+    });
+    await ledger.settleDurableChatOutcome({
+      runId,
+      terminal: {
+        status: "ok",
+        message: { role: "assistant", text: "durable result" },
+      },
+    });
+    ledger.__testing.resetMemory();
+
+    const context = createDirectChatContext();
+    const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown; meta?: unknown }> =
+      [];
+    const { chatHandlers } = await import("./server-methods/chat.js");
+    await chatHandlers["chat.send"]({
+      req: { type: "req", id: "durable-retry", method: "chat.send" },
+      params,
+      client: null,
+      isWebchatConnect: () => false,
+      respond: ((ok, payload, error, meta) => {
+        responses.push({ ok, payload, error, meta });
+      }) as RespondFn,
+      context,
+    });
+
+    expect(responses).toEqual([
+      {
+        ok: true,
+        payload: {
+          runId,
+          status: "ok",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "durable result" }],
+          },
+        },
+        error: undefined,
+        meta: { cached: true, runId },
+      },
+    ]);
+
+    responses.length = 0;
+    const errorRunId = "idem-durable-restart-error";
+    const errorParams = {
+      sessionKey: "main",
+      message: "retry durable failed send",
+      durableOutcome: true,
+      idempotencyKey: errorRunId,
+    };
+    const errorClaim = await ledger.claimDurableChatOutcome({
+      idempotencyKey: errorRunId,
+      request: errorParams,
+      durableOutcome: true,
+    });
+    if (errorClaim.kind !== "dispatch") throw new Error("expected durable error claim");
+    await ledger.markDurableChatRequestStarted({
+      idempotencyKey: errorRunId,
+      fingerprint: errorClaim.fingerprint,
+    });
+    await ledger.settleDurableChatOutcome({
+      runId: errorRunId,
+      terminal: { status: "error", errorMessage: "provider secret must not replay" },
+    });
+    ledger.__testing.resetMemory();
+    await chatHandlers["chat.send"]({
+      req: { type: "req", id: "durable-error-retry", method: "chat.send" },
+      params: errorParams,
+      client: null,
+      isWebchatConnect: () => false,
+      respond: ((ok, payload, error, meta) => {
+        responses.push({ ok, payload, error, meta });
+      }) as RespondFn,
+      context,
+    });
+    expect(responses).toEqual([
+      {
+        ok: true,
+        payload: {
+          runId: errorRunId,
+          status: "error",
+          summary: "chat send failed",
+        },
+        error: undefined,
+        meta: { cached: true, runId: errorRunId },
+      },
+    ]);
+    expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+  } finally {
+    const ledger = await import("./chat-send-outcome-ledger.js");
+    ledger.__testing.resetMemory();
+    if (previousStateDir === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = previousStateDir;
+    }
+    dispatchInboundMessageMock.mockReset();
+    testState.sessionStorePath = undefined;
+    clearConfigCache();
+    await removeTempDir(sessionDir);
+    await removeTempDir(stateDir);
+  }
+});
+
 async function readTimelineEvents(filePath: string): Promise<Array<Record<string, unknown>>> {
   const raw = await fs.readFile(filePath, "utf-8");
   return raw

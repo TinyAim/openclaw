@@ -97,6 +97,9 @@ export const ChatSendParamsSchema = Type.Object(
     systemProvenanceReceipt: Type.Optional(Type.String()),
     suppressCommandInterpretation: Type.Optional(Type.Boolean()),
     expectedSessionRoutingContract: Type.Optional(NonEmptyString),
+    // Opt-in for callers that require idempotency outcomes to survive a
+    // gateway process restart. Ordinary interactive chat remains process-local.
+    durableOutcome: Type.Optional(Type.Boolean()),
     idempotencyKey: NonEmptyString,
   },
   { additionalProperties: false },
