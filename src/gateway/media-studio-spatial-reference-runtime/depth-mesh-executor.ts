@@ -12,6 +12,10 @@ import {
   type DepthMeshCallbackOutboxEntry,
   type DepthMeshTerminalCallbackPayload,
 } from "./depth-mesh-callback-outbox.js";
+import {
+  createTerminalCallbackReplayBackoff,
+  readTerminalCallbackResponse,
+} from "./terminal-callback-delivery.js";
 
 const RUNTIME_TOKEN_HEADER = "x-wisclaw-media-gen-runtime-token";
 const GRANT_HEADER = "x-wisclaw-spatial-upload-grant";
@@ -57,10 +61,11 @@ function ack(
 async function envelope<T>(response: Response): Promise<T> {
   const raw = (await response.json().catch(() => null)) as {
     data?: T;
+    code?: string;
     error?: { code?: string };
   } | null;
   if (!response.ok || !raw?.data) {
-    throw new Error(raw?.error?.code ?? `http_${response.status}`);
+    throw new Error(raw?.code ?? raw?.error?.code ?? `http_${response.status}`);
   }
   return raw.data;
 }
@@ -124,10 +129,14 @@ export function createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor(opti
   const cancelled = new Set<string>();
   const acknowledgements = new Map<string, SpatialEnvironmentDepthMeshRuntimeResult>();
   const callbackOutbox = options.callbackOutbox ?? createInMemoryDepthMeshCallbackOutbox();
+  const callbackRetryIntervalMs = Math.max(250, options.callbackRetryIntervalMs ?? 5_000);
+  const callbackBackoff = createTerminalCallbackReplayBackoff({
+    baseDelayMs: callbackRetryIntervalMs,
+  });
   let stopped = false;
   let flushing: Promise<void> | undefined;
 
-  const callback = async (body: unknown): Promise<void> => {
+  const callback = async (body: unknown) => {
     const response = await fetchImpl(joinUrl(options.controlApiUrl, CALLBACK_PATH), {
       method: "POST",
       headers: {
@@ -136,22 +145,34 @@ export function createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor(opti
       },
       body: JSON.stringify(body),
     });
-    await envelope(response);
+    return readTerminalCallbackResponse<{ accepted: boolean }>(response);
   };
 
-  const flushCallbackOutbox = (): Promise<void> => {
+  const flushCallbackOutbox = (force = false): Promise<void> => {
     if (flushing) return flushing;
     flushing = (async () => {
       const entries = await callbackOutbox.list();
+      let attempted = 0;
       for (const entry of entries) {
         if (stopped) break;
+        const key = `${entry.identity}\n${entry.payloadDigest}`;
+        if (!force && !callbackBackoff.isDue(key)) continue;
+        if (attempted >= 25) break;
+        attempted += 1;
         try {
-          await callback(entry.payload);
+          const result = await callback(entry.payload);
+          if (result.disposition === "terminal_rejection") {
+            options.log?.warn?.(
+              `depth mesh terminal callback discarded task=${entry.payload.taskId} code=${result.code}`,
+            );
+          }
           await callbackOutbox.remove({
             identity: entry.identity,
             payloadDigest: entry.payloadDigest,
           });
+          callbackBackoff.clear(key);
         } catch (error) {
+          callbackBackoff.recordRetry(key);
           options.log?.warn?.(
             `depth mesh terminal callback pending durable replay task=${entry.payload.taskId}: ${String(error)}`,
           );
@@ -164,32 +185,21 @@ export function createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor(opti
   };
 
   const deliverDurably = async (payload: DepthMeshTerminalCallbackPayload): Promise<void> => {
-    let entry;
     try {
-      entry = await callbackOutbox.enqueue(payload);
+      await callbackOutbox.enqueue(payload);
     } catch (error) {
       options.log?.warn?.(
         `depth mesh callback outbox persist failed task=${payload.taskId}: ${String(error)}`,
       );
       return;
     }
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await flushCallbackOutbox().catch(() => {});
-      const pending = (await callbackOutbox.list()).some(
-        (candidate) =>
-          candidate.identity === entry.identity && candidate.payloadDigest === entry.payloadDigest,
-      );
-      if (!pending) return;
-    }
+    await flushCallbackOutbox(true).catch(() => {});
   };
 
-  void flushCallbackOutbox().catch(() => {});
-  const callbackRetryTimer = setInterval(
-    () => {
-      if (!stopped) void flushCallbackOutbox().catch(() => {});
-    },
-    Math.max(250, options.callbackRetryIntervalMs ?? 5_000),
-  );
+  void flushCallbackOutbox(true).catch(() => {});
+  const callbackRetryTimer = setInterval(() => {
+    if (!stopped) void flushCallbackOutbox().catch(() => {});
+  }, callbackRetryIntervalMs);
   callbackRetryTimer.unref?.();
 
   const run = async (
@@ -378,6 +388,6 @@ export function createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor(opti
       stopped = true;
       clearInterval(callbackRetryTimer);
     },
-    flushCallbacksOnce: flushCallbackOutbox,
+    flushCallbacksOnce: () => flushCallbackOutbox(true),
   };
 }

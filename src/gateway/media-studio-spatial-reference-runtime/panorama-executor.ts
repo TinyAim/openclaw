@@ -11,6 +11,10 @@ import {
   type PanoramaCallbackOutboxEntry,
   type PanoramaTerminalCallbackPayload,
 } from "./panorama-callback-outbox.js";
+import {
+  createTerminalCallbackReplayBackoff,
+  readTerminalCallbackResponse,
+} from "./terminal-callback-delivery.js";
 
 const RUNTIME_TOKEN_HEADER = "x-wisclaw-media-gen-runtime-token";
 const GRANT_HEADER = "x-wisclaw-spatial-upload-grant";
@@ -21,6 +25,65 @@ const UPLOAD_PATH = "/v1/control/media-gen/runtime/spatial-reference/upload";
 const CALLBACK_PATH = "/v1/control/media-gen/runtime/spatial-environment-panorama/callback";
 
 type RuntimeFetch = typeof fetch;
+
+const TRANSIENT_IO_ATTEMPTS = 3;
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
+async function fetchWithTransientRetry(input: {
+  fetchImpl: RuntimeFetch;
+  url: URL;
+  init: RequestInit;
+  retryDelayMs: number;
+}): Promise<Response> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TRANSIENT_IO_ATTEMPTS; attempt += 1) {
+    try {
+      const response = await input.fetchImpl(input.url, input.init);
+      if (!isTransientHttpStatus(response.status) || attempt === TRANSIENT_IO_ATTEMPTS) {
+        return response;
+      }
+      await response.body?.cancel().catch(() => {});
+    } catch (error) {
+      lastError = error;
+      if (attempt === TRANSIENT_IO_ATTEMPTS) throw error;
+    }
+    if (input.retryDelayMs > 0) {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, input.retryDelayMs * attempt);
+      });
+    }
+  }
+  throw lastError ?? new Error("transient_fetch_failed");
+}
+
+function stageFailure(input: { stage: string; error: unknown }): {
+  code: string;
+  message: string;
+  diagnostic: string;
+} {
+  const error = input.error;
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const rawCode = rawMessage.split(":", 1)[0]?.trim();
+  const cause = error instanceof Error ? error.cause : undefined;
+  const causeCode =
+    cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string"
+      ? cause.code
+      : undefined;
+  const genericFetchFailure =
+    rawMessage === "fetch failed" || rawMessage === "transient_fetch_failed";
+  const code = genericFetchFailure
+    ? `panorama_${input.stage}_failed`
+    : rawCode || `panorama_${input.stage}_failed`;
+  const causeSuffix = causeCode ? ` (${causeCode})` : "";
+  return {
+    code,
+    message: `${input.stage}: ${rawMessage}${causeSuffix}`.slice(0, 200),
+    diagnostic: `${rawMessage}${causeSuffix}`,
+  };
+}
 
 function joinUrl(base: string, path: string): string {
   return `${base.replace(/\/+$/, "")}${path}`;
@@ -56,10 +119,11 @@ function ack(
 async function envelope<T>(response: Response): Promise<T> {
   const raw = (await response.json().catch(() => null)) as {
     data?: T;
+    code?: string;
     error?: { code?: string };
   } | null;
   if (!response.ok || !raw?.data) {
-    throw new Error(raw?.error?.code ?? `http_${response.status}`);
+    throw new Error(raw?.code ?? raw?.error?.code ?? `http_${response.status}`);
   }
   return raw.data;
 }
@@ -72,15 +136,20 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
   log?: { warn?: (message: string) => void };
   callbackOutbox?: PanoramaCallbackOutbox;
   callbackRetryIntervalMs?: number;
+  ioRetryDelayMs?: number;
 }): SpatialEnvironmentPanoramaRuntimeExecutor {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const cancelled = new Set<string>();
   const acknowledgements = new Map<string, SpatialEnvironmentPanoramaRuntimeResult>();
   const callbackOutbox = options.callbackOutbox ?? createInMemoryPanoramaCallbackOutbox();
+  const callbackRetryIntervalMs = Math.max(250, options.callbackRetryIntervalMs ?? 5_000);
+  const callbackBackoff = createTerminalCallbackReplayBackoff({
+    baseDelayMs: callbackRetryIntervalMs,
+  });
   let stopped = false;
   let flushing: Promise<void> | undefined;
 
-  const callback = async (body: unknown): Promise<void> => {
+  const callback = async (body: unknown) => {
     const response = await fetchImpl(joinUrl(options.controlApiUrl, CALLBACK_PATH), {
       method: "POST",
       headers: {
@@ -89,22 +158,34 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       },
       body: JSON.stringify(body),
     });
-    await envelope(response);
+    return readTerminalCallbackResponse<{ accepted: boolean }>(response);
   };
 
-  const flushCallbackOutbox = (): Promise<void> => {
+  const flushCallbackOutbox = (force = false): Promise<void> => {
     if (flushing) return flushing;
     flushing = (async () => {
       const entries = await callbackOutbox.list();
+      let attempted = 0;
       for (const entry of entries) {
         if (stopped) break;
+        const key = `${entry.identity}\n${entry.payloadDigest}`;
+        if (!force && !callbackBackoff.isDue(key)) continue;
+        if (attempted >= 25) break;
+        attempted += 1;
         try {
-          await callback(entry.payload);
+          const result = await callback(entry.payload);
+          if (result.disposition === "terminal_rejection") {
+            options.log?.warn?.(
+              `panorama terminal callback discarded task=${entry.payload.taskId} code=${result.code}`,
+            );
+          }
           await callbackOutbox.remove({
             identity: entry.identity,
             payloadDigest: entry.payloadDigest,
           });
+          callbackBackoff.clear(key);
         } catch (error) {
+          callbackBackoff.recordRetry(key);
           options.log?.warn?.(
             `panorama terminal callback pending durable replay task=${entry.payload.taskId}: ${String(error)}`,
           );
@@ -117,9 +198,8 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
   };
 
   const deliverDurably = async (payload: PanoramaTerminalCallbackPayload): Promise<void> => {
-    let entry;
     try {
-      entry = await callbackOutbox.enqueue(payload);
+      await callbackOutbox.enqueue(payload);
     } catch (error) {
       // Without a durable terminal declaration, uploaded output receipts are
       // deliberately not reinterpreted as Runtime success by Control API.
@@ -128,33 +208,24 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       );
       return;
     }
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await flushCallbackOutbox().catch((error) => {
-        options.log?.warn?.(
-          `panorama callback outbox flush failed task=${payload.taskId}: ${String(error)}`,
-        );
-      });
-      const stillPending = (await callbackOutbox.list()).some(
-        (candidate) =>
-          candidate.identity === entry.identity && candidate.payloadDigest === entry.payloadDigest,
+    await flushCallbackOutbox(true).catch((error) => {
+      options.log?.warn?.(
+        `panorama callback outbox flush failed task=${payload.taskId}: ${String(error)}`,
       );
-      if (!stillPending) return;
-    }
+    });
   };
 
-  void flushCallbackOutbox().catch(() => {});
-  const callbackRetryTimer = setInterval(
-    () => {
-      if (!stopped) void flushCallbackOutbox().catch(() => {});
-    },
-    Math.max(250, options.callbackRetryIntervalMs ?? 5_000),
-  );
+  void flushCallbackOutbox(true).catch(() => {});
+  const callbackRetryTimer = setInterval(() => {
+    if (!stopped) void flushCallbackOutbox().catch(() => {});
+  }, callbackRetryIntervalMs);
   callbackRetryTimer.unref?.();
 
   const run = async (
     input: SpatialEnvironmentPanoramaRuntimeRequest,
     accepted: SpatialEnvironmentPanoramaRuntimeResult,
   ): Promise<void> => {
+    let stage = "preflight";
     const baseCallback = {
       kind: "media_studio.spatial_environment_panorama.callback" as const,
       workspaceId: input.workspaceId,
@@ -179,17 +250,25 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       const sourceUrl = new URL(joinUrl(options.controlApiUrl, SOURCE_PATH));
       sourceUrl.searchParams.set("workspaceId", input.workspaceId);
       sourceUrl.searchParams.set("runtimeId", input.runtimeId);
-      const sourceResponse = await fetchImpl(sourceUrl, {
-        method: "POST",
-        headers: {
-          [RUNTIME_TOKEN_HEADER]: options.token,
-          [SOURCE_GRANT_HEADER]: input.sourceGrant.grantToken,
+      stage = "source_fetch";
+      const sourceResponse = await fetchWithTransientRetry({
+        fetchImpl,
+        url: sourceUrl,
+        retryDelayMs: Math.max(0, options.ioRetryDelayMs ?? 100),
+        init: {
+          method: "POST",
+          headers: {
+            [RUNTIME_TOKEN_HEADER]: options.token,
+            [SOURCE_GRANT_HEADER]: input.sourceGrant.grantToken,
+          },
         },
       });
       if (!sourceResponse.ok) {
         throw new Error(`source_redeem_http_${sourceResponse.status}`);
       }
+      stage = "source_read";
       const source = Buffer.from(await sourceResponse.arrayBuffer());
+      stage = "source_validate";
       const sourceDigest = createHash("sha256").update(source).digest("hex");
       if (
         input.sourceGrant.expectedSha256Hex &&
@@ -199,6 +278,7 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       }
       const { renderModelFreePanorama } =
         await import("../media-studio-spatial-environment-render/index.js");
+      stage = "render";
       const rendered = await renderModelFreePanorama({
         sourceImage: source,
         horizontalFovDegrees: input.horizontalFovDegrees,
@@ -236,6 +316,7 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
         a.slot === "quality_report" ? 1 : b.slot === "quality_report" ? -1 : 0,
       );
       for (const grant of orderedOutputGrants) {
+        stage = `upload_${grant.slot}`;
         const payload = payloads.get(grant.slot);
         if (!payload || grant.purpose !== "output_upload") {
           throw new Error(`output_grant_mismatch:${grant.slot}`);
@@ -270,17 +351,22 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
           stagedTerminalCallback = await callbackOutbox.enqueue(terminalCallback);
         }
         try {
-          const uploadResponse = await fetchImpl(uploadUrl, {
-            method: "POST",
-            headers: {
-              "content-type": payload.mimeType,
-              [RUNTIME_TOKEN_HEADER]: options.token,
-              [GRANT_HEADER]: grant.grantToken,
-              ...(terminalCallbackHeader
-                ? { [TERMINAL_CALLBACK_HEADER]: terminalCallbackHeader }
-                : {}),
+          const uploadResponse = await fetchWithTransientRetry({
+            fetchImpl,
+            url: uploadUrl,
+            retryDelayMs: Math.max(0, options.ioRetryDelayMs ?? 100),
+            init: {
+              method: "POST",
+              headers: {
+                "content-type": payload.mimeType,
+                [RUNTIME_TOKEN_HEADER]: options.token,
+                [GRANT_HEADER]: grant.grantToken,
+                ...(terminalCallbackHeader
+                  ? { [TERMINAL_CALLBACK_HEADER]: terminalCallbackHeader }
+                  : {}),
+              },
+              body: payload.bytes as unknown as BodyInit,
             },
-            body: payload.bytes as unknown as BodyInit,
           });
           const uploaded = await envelope<{
             artifactId: string;
@@ -314,12 +400,15 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       };
       await deliverDurably(successCallback);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const failure = stageFailure({ stage, error });
+      options.log?.warn?.(
+        `panorama execution failed task=${input.taskId} stage=${stage}: ${failure.diagnostic}`,
+      );
       await deliverDurably({
         ...baseCallback,
         status: cancelled.has(input.dispatchAttemptId) ? "cancelled" : "failed",
-        errorCode: message.split(":", 1)[0] || "panorama_render_failed",
-        errorMessage: message.slice(0, 200),
+        errorCode: failure.code,
+        errorMessage: failure.message,
       });
     }
   };
@@ -341,6 +430,6 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       stopped = true;
       clearInterval(callbackRetryTimer);
     },
-    flushCallbacksOnce: flushCallbackOutbox,
+    flushCallbacksOnce: () => flushCallbackOutbox(true),
   };
 }

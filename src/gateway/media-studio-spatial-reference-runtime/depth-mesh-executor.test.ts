@@ -14,7 +14,10 @@ vi.mock("../media-studio-spatial-depth-mesh-render/index.js", () => ({
 }));
 
 import type { SpatialEnvironmentDepthMeshRuntimeRequest } from "../media-studio-spatial-depth-mesh-render-http.js";
-import { createFileDepthMeshCallbackOutbox } from "./depth-mesh-callback-outbox.js";
+import {
+  createFileDepthMeshCallbackOutbox,
+  createInMemoryDepthMeshCallbackOutbox,
+} from "./depth-mesh-callback-outbox.js";
 import { createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor } from "./depth-mesh-executor.js";
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
@@ -271,7 +274,7 @@ describe("grant-based depth mesh Runtime executor", () => {
         callbackRetryIntervalMs: 60_000,
       });
       expect(await first.dispatch(request())).toMatchObject({ accepted: true });
-      await vi.waitFor(() => expect(failedCallbacks).toHaveLength(3));
+      await vi.waitFor(() => expect(failedCallbacks).toHaveLength(1));
       first.stop?.();
 
       const durableJson = await readFile(filePath, "utf8");
@@ -304,5 +307,51 @@ describe("grant-based depth mesh Runtime executor", () => {
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
+  });
+
+  it("discards a deterministic top-level 409 callback rejection once", async () => {
+    const input = request();
+    const outbox = createInMemoryDepthMeshCallbackOutbox();
+    await outbox.enqueue({
+      kind: "media_studio.spatial_environment_depth_mesh.callback",
+      workspaceId: input.workspaceId,
+      runtimeId: input.runtimeId,
+      taskId: input.taskId,
+      materializationId: input.materializationId,
+      executionId: "execution-a",
+      requestFingerprint: input.requestFingerprint,
+      executionFingerprint: input.executionFingerprint,
+      dispatchAttemptId: input.dispatchAttemptId,
+      sequence: input.sequence,
+      attempt: input.attempt,
+      status: "failed",
+      errorCode: "render_failed",
+    });
+    const callbacks: Record<string, unknown>[] = [];
+    const executor = createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor({
+      controlApiUrl: "https://control.example",
+      runtimeId: "runtime-a",
+      token: "runtime-token",
+      callbackOutbox: outbox,
+      callbackRetryIntervalMs: 60_000,
+      fetchImpl: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+        callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(
+          JSON.stringify({
+            success: false,
+            code: "SPATIAL_ENV_DEPTH_MESH_CALLBACK_TERMINAL_REJECTED",
+            message: "SPATIAL_ENV_DEPTH_MESH_CALLBACK:payload_conflict",
+            details: { retryable: false, callbackDisposition: "discard" },
+          }),
+          { status: 409 },
+        );
+      }) as typeof fetch,
+    });
+
+    await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+    await vi.waitFor(async () => expect(await outbox.list()).toHaveLength(0));
+    await executor.flushCallbacksOnce?.();
+    expect(callbacks).toHaveLength(1);
+    executor.stop?.();
   });
 });

@@ -39,17 +39,74 @@ function pngChunk(kind: string, data: Buffer): Buffer {
   return Buffer.concat([length, type, data, checksum]);
 }
 
-function opaqueGeneratedMask(width: number, height: number): Buffer {
+/**
+ * Greyscale PNG mask for quality evidence:
+ * - white (255) = inside walkable / claimed generated-approximate region
+ * - black (0) = outside
+ *
+ * The previous solid-white 64×36 stub looked blank on light Artifact Center
+ * canvases and carried no geometric signal.
+ */
+function maskDimensions(
+  sourceWidth: number,
+  sourceHeight: number,
+): {
+  width: number;
+  height: number;
+} {
+  const maxEdge = 256;
+  const long = Math.max(sourceWidth, sourceHeight, 1);
+  const scale = long > maxEdge ? maxEdge / long : 1;
+  return {
+    width: Math.max(8, Math.round(sourceWidth * scale)),
+    height: Math.max(8, Math.round(sourceHeight * scale)),
+  };
+}
+
+function pointInPolygon(x: number, y: number, polygon: readonly NormalizedPoint[]): boolean {
+  // Ray casting; polygon is already validated (3..32 normalized points).
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
+    const xi = polygon[i]!.x;
+    const yi = polygon[i]!.y;
+    const xj = polygon[j]!.x;
+    const yj = polygon[j]!.y;
+    if (yi === yj) continue;
+    const crosses = yi > y !== yj > y;
+    if (!crosses) continue;
+    const t = (y - yi) / (yj - yi);
+    if (x < xi + t * (xj - xi)) inside = !inside;
+  }
+  return inside;
+}
+
+function generatedRegionMaskFromWalkable(
+  sourceWidth: number,
+  sourceHeight: number,
+  walkableRegionNormalized: readonly NormalizedPoint[],
+): Buffer {
+  const { width, height } = maskDimensions(sourceWidth, sourceHeight);
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
   ihdr.writeUInt32BE(height, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 0;
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // greyscale
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const scanlines = Buffer.alloc(height * (width + 1), 0xff);
-  for (let y = 0; y < height; y += 1) scanlines[y * (width + 1)] = 0;
+  // Default black (outside). White only where the walkable polygon covers.
+  const scanlines = Buffer.alloc(height * (width + 1), 0);
+  for (let y = 0; y < height; y += 1) {
+    const row = y * (width + 1);
+    scanlines[row] = 0; // PNG filter None
+    const v = (y + 0.5) / height;
+    for (let x = 0; x < width; x += 1) {
+      const u = (x + 0.5) / width;
+      if (pointInPolygon(u, v, walkableRegionNormalized)) {
+        scanlines[row + 1 + x] = 0xff;
+      }
+    }
+  }
   return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     pngChunk("IHDR", ihdr),
@@ -316,7 +373,11 @@ export async function renderDeterministicDepthMesh(
     sourceImage: input.sourceImage,
     sourceMimeType: input.sourceMimeType,
   });
-  const generatedRegionMaskPng = opaqueGeneratedMask(64, 36);
+  const generatedRegionMaskPng = generatedRegionMaskFromWalkable(
+    input.calibration.sourceWidthPx,
+    input.calibration.sourceHeightPx,
+    input.calibration.walkableRegionNormalized,
+  );
   const qualityReport = {
     contractVersion: DEPTH_MESH_CONTRACT_VERSION,
     algorithmId: DEPTH_MESH_ALGORITHM_ID,
