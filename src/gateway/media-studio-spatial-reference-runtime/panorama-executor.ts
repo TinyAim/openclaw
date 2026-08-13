@@ -269,12 +269,19 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
       stage = "source_read";
       const source = Buffer.from(await sourceResponse.arrayBuffer());
       stage = "source_validate";
+      const sourceMimeType = (sourceResponse.headers.get("content-type") ?? "")
+        .toLowerCase()
+        .split(";", 1)[0]!
+        .trim();
       const sourceDigest = createHash("sha256").update(source).digest("hex");
       if (
-        input.sourceGrant.expectedSha256Hex &&
-        sourceDigest !== input.sourceGrant.expectedSha256Hex
+        !input.sourceGrant.allowedMimeTypes.includes(sourceMimeType) ||
+        source.length < 1 ||
+        source.length > input.sourceGrant.maxBytes ||
+        (input.sourceGrant.expectedSha256Hex &&
+          sourceDigest !== input.sourceGrant.expectedSha256Hex)
       ) {
-        throw new Error("source_checksum_mismatch");
+        throw new Error("source_receipt_mismatch");
       }
       const { renderModelFreePanorama } =
         await import("../media-studio-spatial-environment-render/index.js");
@@ -320,6 +327,13 @@ export function createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor(optio
         const payload = payloads.get(grant.slot);
         if (!payload || grant.purpose !== "output_upload") {
           throw new Error(`output_grant_mismatch:${grant.slot}`);
+        }
+        if (
+          !grant.allowedMimeTypes.includes(payload.mimeType) ||
+          payload.bytes.length < 1 ||
+          payload.bytes.length > grant.maxBytes
+        ) {
+          throw new Error(`output_contract_mismatch:${grant.slot}`);
         }
         const uploadUrl = new URL(joinUrl(options.controlApiUrl, UPLOAD_PATH));
         uploadUrl.searchParams.set("workspaceId", input.workspaceId);

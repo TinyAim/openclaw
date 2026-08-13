@@ -136,6 +136,9 @@ export function createControlApiMediaGenBridge(
           ...(input.capabilityRouteClaims && input.capabilityRouteClaims.length > 0
             ? { capabilityRouteClaims: input.capabilityRouteClaims }
             : {}),
+          ...(input.modelServingClaims && input.modelServingClaims.length > 0
+            ? { modelServingClaims: input.modelServingClaims }
+            : {}),
         },
         "media-gen runtime register",
       );

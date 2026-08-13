@@ -198,6 +198,10 @@ const loadSessionsHandlers = lazyHandlerModule(
   () => import("./server-methods/sessions.js"),
   (module) => module.sessionsHandlers,
 );
+const loadSubagentsHandlers = lazyHandlerModule(
+  () => import("./server-methods/subagents.js"),
+  (module) => module.subagentsHandlers,
+);
 const loadSkillsHandlers = lazyHandlerModule(
   () => import("./server-methods/skills.js"),
   (module) => module.skillsHandlers,
@@ -651,6 +655,16 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...createLazyCoreHandlers({
     methods: ["agent", "agent.identity.get", "agent.wait"],
     loadHandlers: loadAgentHandlers,
+  }),
+  ...createLazyCoreHandlers({
+    methods: [
+      "subagents.capabilities",
+      "subagents.list",
+      "subagents.get",
+      "subagents.spawn",
+      "subagents.kill",
+    ],
+    loadHandlers: loadSubagentsHandlers,
   }),
   ...createLazyCoreHandlers({
     methods: [

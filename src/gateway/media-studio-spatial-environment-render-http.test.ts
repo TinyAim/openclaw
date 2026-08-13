@@ -98,5 +98,37 @@ describe("model-free panorama Runtime HTTP contract", () => {
         outputUploadGrants: body().outputUploadGrants.slice(0, 2),
       }),
     ).toBeNull();
+    expect(
+      parseSpatialEnvironmentPanoramaRuntimeRequest({
+        ...body(),
+        sequence: 0,
+      }),
+    ).toBeNull();
+    expect(
+      parseSpatialEnvironmentPanoramaRuntimeRequest({
+        ...body(),
+        sourceGrant: {
+          ...body().sourceGrant,
+          allowedMimeTypes: ["text/plain"],
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseSpatialEnvironmentPanoramaRuntimeRequest({
+        ...body(),
+        outputUploadGrants: body().outputUploadGrants.map((grant, index) =>
+          index === 0 ? { ...grant, allowedMimeTypes: ["image/jpeg"] } : grant,
+        ),
+      }),
+    ).toBeNull();
+    expect(
+      parseSpatialEnvironmentPanoramaRuntimeRequest({
+        ...body(),
+        sourceGrant: {
+          ...body().sourceGrant,
+          expiresAt: "2026-08-09T12:16:00.000Z",
+        },
+      }),
+    ).toBeNull();
   });
 });

@@ -123,7 +123,6 @@ function frozenPlan(): MediaGenRuntimeFrozenPlanV2 {
       mapping("generationScenario", "native", { providerField: "scenario" }),
       mapping("outputAudioPolicy", "native", { providerField: "output.audio" }),
       mapping("compiledPrompt", "prompt", { providerField: "prompt" }),
-      mapping("narrative.compiledPrompt", "prompt", { providerField: "prompt" }),
       mapping("camera.cameraPrompt", "prompt", { providerField: "prompt" }),
       mapping("references.first_frame.0", "native", {
         providerSlot: "references.first_frame",

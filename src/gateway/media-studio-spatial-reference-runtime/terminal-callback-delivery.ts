@@ -32,19 +32,17 @@ export async function readTerminalCallbackResponse<T>(
 
   const code = callbackErrorCode(raw, response.status);
   const message = raw?.message ?? raw?.error?.message ?? "";
+  const callbackDisposition = raw?.details?.callbackDisposition;
   const explicitlyRetryable =
     raw?.details?.retryable === true ||
-    raw?.details?.callbackDisposition === "retry" ||
+    callbackDisposition === "retry" ||
     /_RETRYABLE$/i.test(code) ||
     /settlement_busy/i.test(message);
-  const terminalHttpStatus =
-    response.status === 400 ||
-    response.status === 409 ||
-    response.status === 410 ||
-    response.status === 412 ||
-    response.status === 422;
-
-  if (!explicitlyRetryable && terminalHttpStatus) {
+  // The owning Control API is the only authority that can classify an exact
+  // identity/payload/fence conflict as terminal. HTTP status alone is not
+  // sufficient: 409 is also used for settlement leases and an older/malformed
+  // response must stay in the durable outbox rather than being lost.
+  if (!explicitlyRetryable && callbackDisposition === "discard") {
     return { disposition: "terminal_rejection", code };
   }
   throw new Error(code);

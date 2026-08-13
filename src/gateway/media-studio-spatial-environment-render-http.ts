@@ -22,6 +22,12 @@ export const MEDIA_STUDIO_SPATIAL_ENVIRONMENT_PANORAMA_RENDER_PATH =
 
 const MAX_BODY_BYTES = 256 * 1024;
 
+const OUTPUT_MIME: Readonly<Record<string, string>> = Object.freeze({
+  environment_panorama: "image/png",
+  generated_region_mask: "image/png",
+  quality_report: "application/json",
+});
+
 export type SpatialEnvironmentPanoramaGrant = {
   grantToken: string;
   purpose: "source_download" | "output_upload";
@@ -121,7 +127,9 @@ function grant(
   const maxBytes = finite(raw?.maxBytes);
   const expiresAt = text(raw?.expiresAt);
   const allowedMimeTypes = Array.isArray(raw?.allowedMimeTypes)
-    ? raw.allowedMimeTypes.filter((item): item is string => typeof item === "string")
+    ? raw.allowedMimeTypes
+        .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        .map((item) => item.trim().toLowerCase())
     : [];
   const expectedSha256Hex = text(raw?.expectedSha256Hex);
   if (
@@ -137,9 +145,18 @@ function grant(
     (maxBytes ?? 0) < 1 ||
     !expiresAt ||
     !Number.isFinite(Date.parse(expiresAt)) ||
-    allowedMimeTypes.length < 1 ||
+    allowedMimeTypes.length !== 1 ||
+    allowedMimeTypes.length !== (raw?.allowedMimeTypes as unknown[])?.length ||
     (expectedSha256Hex !== undefined && !/^[0-9a-f]{64}$/.test(expectedSha256Hex))
   ) {
+    return undefined;
+  }
+  const mimeType = allowedMimeTypes[0]!;
+  const correctMime =
+    purpose === "output_upload"
+      ? OUTPUT_MIME[String(slot)] === mimeType
+      : slot === "source_image" && mimeType.startsWith("image/");
+  if (!correctMime || (purpose === "source_download" && !expectedSha256Hex)) {
     return undefined;
   }
   return {
@@ -204,7 +221,10 @@ export function parseSpatialEnvironmentPanoramaRuntimeRequest(
     !dispatchAttemptId ||
     !leaseExpiresAt ||
     !Number.isInteger(sequence) ||
+    (sequence ?? 0) < 1 ||
     !Number.isInteger(attempt) ||
+    (attempt ?? 0) < 1 ||
+    !Number.isFinite(Date.parse(leaseExpiresAt)) ||
     !sourceGrant ||
     sourceGrant.slot !== "source_image" ||
     rawOutputGrantCount !== 3 ||
@@ -213,6 +233,8 @@ export function parseSpatialEnvironmentPanoramaRuntimeRequest(
     !outputUploadGrants.some((item) => item.slot === "environment_panorama") ||
     !outputUploadGrants.some((item) => item.slot === "generated_region_mask") ||
     !outputUploadGrants.some((item) => item.slot === "quality_report") ||
+    sourceGrant.expiresAt !== leaseExpiresAt ||
+    outputUploadGrants.some((item) => item.expiresAt !== leaseExpiresAt) ||
     horizontalFovDegrees === undefined ||
     outputWidth === undefined
   ) {

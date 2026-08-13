@@ -137,7 +137,7 @@ function frozenPlan(
     constraintPlan: [
       mapping("generationScenario", "scenario"),
       mapping("outputAudioPolicy", "output.audio"),
-      mapping("narrative.compiledPrompt", "prompt", "prompt"),
+      mapping("compiledPrompt", "prompt", "prompt"),
       ...(["first_frame", "last_frame"] as const).map((role) => ({
         intentPath: `references.${role}.0`,
         sourceRef: `asset:asset-cogvideox3-${role}`,

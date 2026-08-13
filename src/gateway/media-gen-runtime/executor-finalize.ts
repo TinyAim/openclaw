@@ -189,10 +189,17 @@ export function createMediaGenRuntimeFinalizer(options: FinalizeOptions) {
 
     let artifact;
     try {
+      // Serving authorization is runtime-private and must never cross the
+      // Artifact/Control API boundary with otherwise stable output metadata.
+      const {
+        contentHeaders: _contentHeaders,
+        allowInsecureLoopback: _allowInsecureLoopback,
+        ...handoffOutput
+      } = output;
       artifact = await options.bridge.handoffArtifact({
         dispatch,
         runtimeJobId: job.vendorJobId,
-        output: { ...output, mimeType: downloaded.mimeType },
+        output: { ...handoffOutput, mimeType: downloaded.mimeType },
         bytes: downloaded.bytes,
         sha256: downloaded.sha256,
       });

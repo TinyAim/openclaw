@@ -110,7 +110,7 @@ function frozenPlan(
         messageKey: "media.audio_native",
       },
       {
-        intentPath: "narrative.compiledPrompt",
+        intentPath: "compiledPrompt",
         sourceRef: "pack:R1",
         sourceRevision: "R1",
         required: true,
@@ -257,7 +257,7 @@ describe("Luma exact Ray 2 Text-to-Video runtime", () => {
   it.each([
     "generationScenario",
     "outputAudioPolicy",
-    "narrative.compiledPrompt",
+    "compiledPrompt",
     "output.durationSec",
     "output.aspectRatio",
     "output.resolution",

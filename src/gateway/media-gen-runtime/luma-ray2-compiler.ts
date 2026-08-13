@@ -97,7 +97,7 @@ function validateMappings(input: MediaGenRuntimeVendorInput): string | null {
     { intentPath: "generationScenario", support: "native", providerField: "scenario" },
     { intentPath: "outputAudioPolicy", support: "native", providerField: "output.audio" },
     {
-      intentPath: "narrative.compiledPrompt",
+      intentPath: "compiledPrompt",
       support: "prompt",
       providerField: "prompt",
     },

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isIP } from "node:net";
 import type { MediaGenRuntimeFetch, MediaGenRuntimeVendorOutput } from "./types.js";
 
 // Vendor-output MEDIA download + validation helpers, split out of executor.ts to
@@ -20,6 +21,13 @@ export function normalizeMime(value: string | null | undefined): string {
 
 export function mediaMimeAllowed(value: string): boolean {
   return value.startsWith("video/") || value.startsWith("image/");
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[/u, "").replace(/\]$/u, "").toLowerCase();
+  if (host === "localhost" || host === "::1") return true;
+  if (isIP(host) !== 4) return false;
+  return host.split(".").map(Number)[0] === 127;
 }
 
 const CANONICAL_BASE64 = /^(?:[a-zA-Z0-9+/]{4})*(?:[a-zA-Z0-9+/]{2}==|[a-zA-Z0-9+/]{3}=)?$/u;
@@ -103,7 +111,15 @@ export async function downloadMedia(
     return inline;
   }
   const url = new URL(output.mediaRef);
-  if (url.protocol !== "https:" && !(options.allowInsecure && url.protocol === "http:")) {
+  const privateLoopbackHttp =
+    output.allowInsecureLoopback === true &&
+    url.protocol === "http:" &&
+    isLoopbackHost(url.hostname);
+  if (
+    url.protocol !== "https:" &&
+    !(options.allowInsecure && url.protocol === "http:") &&
+    !privateLoopbackHttp
+  ) {
     throw new Error("media output URL must be HTTPS");
   }
   if (!hostAllowed(url, options.allowedHosts)) {
@@ -112,7 +128,10 @@ export async function downloadMedia(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
-    const res = await options.fetchImpl(url.toString(), { signal: controller.signal });
+    const res = await options.fetchImpl(url.toString(), {
+      signal: controller.signal,
+      ...(output.contentHeaders ? { headers: output.contentHeaders } : {}),
+    });
     if (!res.ok) {
       throw new Error(`media output fetch failed with status ${res.status}`);
     }

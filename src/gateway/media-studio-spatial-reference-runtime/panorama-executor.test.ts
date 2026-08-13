@@ -197,7 +197,10 @@ describe("grant-based panorama Runtime executor", () => {
       if (href.includes("/spatial-reference/source")) {
         sourceAttempts += 1;
         if (sourceAttempts === 1) throw new TypeError("fetch failed");
-        return new Response(Buffer.from("source"), { status: 200 });
+        return new Response(Buffer.from("source"), {
+          status: 200,
+          headers: { "content-type": "image/png" },
+        });
       }
       if (href.includes("/spatial-reference/upload")) {
         const grant = String(

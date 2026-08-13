@@ -218,7 +218,7 @@ describe("operator subagent spawn ledger", () => {
 
   it("separates acceptance retention from exact runtime status durability", () => {
     expect(OPERATOR_SUBAGENT_SPAWN_CAPABILITY).toMatchObject({
-      schemaVersion: "openclaw-subagent-spawn-capability/v2",
+      schemaVersion: "openclaw-subagent-spawn-capability/v3",
       durablePrepare: true,
       durableIdempotency: true,
       exactStatusQuery: true,
@@ -226,6 +226,8 @@ describe("operator subagent spawn ledger", () => {
       statusDurability: "registry_with_accepted_tombstone_reconcile",
       restartRecovery: "outcome_unknown",
       acceptanceRetention: "no_silent_eviction",
+      hiddenSystemContextAtSpawn: true,
+      hiddenSystemContextReceipt: "sha256",
     });
     expect(OPERATOR_SUBAGENT_SPAWN_CAPABILITY).not.toHaveProperty("retention");
   });

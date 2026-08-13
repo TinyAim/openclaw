@@ -41,8 +41,12 @@ function pngChunk(kind: string, data: Buffer): Buffer {
 
 /**
  * Greyscale PNG mask for quality evidence:
- * - white (255) = inside walkable / claimed generated-approximate region
- * - black (0) = outside
+ * - white (255) = generated-approximate mesh surface exists for this source
+ *
+ * Walkability is intentionally not encoded here. It is a separate, stricter
+ * collision/navigation claim and already has its own polygon in the collision
+ * Artifact. The GLB spans the full calibrated plate, so a walkable-only mask
+ * would incorrectly claim that the remaining generated mesh does not exist.
  *
  * The previous solid-white 64×36 stub looked blank on light Artifact Center
  * canvases and carried no geometric signal.
@@ -63,28 +67,7 @@ function maskDimensions(
   };
 }
 
-function pointInPolygon(x: number, y: number, polygon: readonly NormalizedPoint[]): boolean {
-  // Ray casting; polygon is already validated (3..32 normalized points).
-  let inside = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i, i += 1) {
-    const xi = polygon[i]!.x;
-    const yi = polygon[i]!.y;
-    const xj = polygon[j]!.x;
-    const yj = polygon[j]!.y;
-    if (yi === yj) continue;
-    const crosses = yi > y !== yj > y;
-    if (!crosses) continue;
-    const t = (y - yi) / (yj - yi);
-    if (x < xi + t * (xj - xi)) inside = !inside;
-  }
-  return inside;
-}
-
-function generatedRegionMaskFromWalkable(
-  sourceWidth: number,
-  sourceHeight: number,
-  walkableRegionNormalized: readonly NormalizedPoint[],
-): Buffer {
+function generatedRegionMaskForSurface(sourceWidth: number, sourceHeight: number): Buffer {
   const { width, height } = maskDimensions(sourceWidth, sourceHeight);
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
@@ -94,18 +77,10 @@ function generatedRegionMaskFromWalkable(
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  // Default black (outside). White only where the walkable polygon covers.
-  const scanlines = Buffer.alloc(height * (width + 1), 0);
+  const scanlines = Buffer.alloc(height * (width + 1), 0xff);
   for (let y = 0; y < height; y += 1) {
     const row = y * (width + 1);
     scanlines[row] = 0; // PNG filter None
-    const v = (y + 0.5) / height;
-    for (let x = 0; x < width; x += 1) {
-      const u = (x + 0.5) / width;
-      if (pointInPolygon(u, v, walkableRegionNormalized)) {
-        scanlines[row + 1 + x] = 0xff;
-      }
-    }
   }
   return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
@@ -170,6 +145,9 @@ function validate(input: DeterministicDepthMeshRequest): void {
       adapter.samples.length !== adapter.width * adapter.height ||
       !unit(adapter.confidence) ||
       !/^sha256:[0-9a-f]{64}$/.test(adapter.componentManifestDigest) ||
+      adapter.commercialUseAllowed !== true ||
+      !adapter.allowedTerritories.length ||
+      adapter.allowedTerritories.some((territory) => !territory.trim()) ||
       !adapter.noticeRefs.length)
   )
     throw new DepthMeshRenderError(
@@ -352,9 +330,15 @@ export async function renderDeterministicDepthMesh(
     input.calibration.relativeDepthRange.near * geometry.scale,
   );
   const confidence = Math.max(
-    0.5,
+    0,
     Math.min(0.92, input.calibration.confidence * (input.depthAdapter?.confidence ?? 0.72)),
   );
+  if (confidence < 0.5) {
+    throw new DepthMeshRenderError(
+      "quality_gate_failed",
+      "combined calibration/depth confidence is below the bounded-navigation threshold",
+    );
+  }
   const collision = {
     contractVersion: "spatial_depth_collision/v1" as const,
     geometryTruth: "generated_approximate" as const,
@@ -373,27 +357,32 @@ export async function renderDeterministicDepthMesh(
     sourceImage: input.sourceImage,
     sourceMimeType: input.sourceMimeType,
   });
-  const generatedRegionMaskPng = generatedRegionMaskFromWalkable(
+  const generatedRegionMaskPng = generatedRegionMaskForSurface(
     input.calibration.sourceWidthPx,
     input.calibration.sourceHeightPx,
-    input.calibration.walkableRegionNormalized,
   );
+  const adapterCheckpointDigests = input.depthAdapter?.checkpointDigests ?? [];
+  const allowedTerritories = input.depthAdapter?.allowedTerritories ?? ["*"];
+  const noticeRefs = [
+    ...new Set([DEPTH_MESH_NOTICE_REF, ...(input.depthAdapter?.noticeRefs ?? [])]),
+  ];
   const qualityReport = {
     contractVersion: DEPTH_MESH_CONTRACT_VERSION,
     algorithmId: DEPTH_MESH_ALGORITHM_ID,
     geometryTruth: "generated_approximate" as const,
     navigationMode: "bounded_six_dof" as const,
-    usesTrainedWeights: false as const,
+    usesTrainedWeights: adapterCheckpointDigests.length > 0,
     modelDependencies: [] as const,
-    checkpointDigests: input.depthAdapter?.checkpointDigests ?? [],
+    checkpointDigests: adapterCheckpointDigests,
+    dependencyComponentManifestDigests: input.depthAdapter
+      ? [input.depthAdapter.componentManifestDigest]
+      : [],
     componentManifestCanonical: DEPTH_MESH_COMPONENT_MANIFEST_CANONICAL,
     componentManifestDigest: DEPTH_MESH_COMPONENT_MANIFEST_DIGEST,
     runtimeBuildDigest: DEPTH_MESH_RUNTIME_BUILD_DIGEST,
-    noticeRefs: input.depthAdapter
-      ? [DEPTH_MESH_NOTICE_REF, ...input.depthAdapter.noticeRefs]
-      : [DEPTH_MESH_NOTICE_REF],
+    noticeRefs,
     commercialUseAllowed: true as const,
-    allowedTerritories: ["*"] as const,
+    allowedTerritories,
     deterministic: true as const,
     source: {
       width: input.calibration.sourceWidthPx,

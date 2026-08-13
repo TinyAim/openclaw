@@ -51,6 +51,10 @@ export type MediaGenRuntimeVendorOutput = {
   mimeType: string;
   durationSec?: number;
   resolution?: string;
+  /** Runtime-private download headers. Finalization must strip these before Artifact handoff. */
+  contentHeaders?: Readonly<Record<string, string>>;
+  /** Runtime-private opt-in for plain HTTP only when `mediaRef` is loopback. */
+  allowInsecureLoopback?: boolean;
 };
 
 export type MediaGenRuntimeVendorJob =
@@ -112,11 +116,41 @@ export type MediaGenRuntimeCapabilityRouteClaim = {
   adapterRevision: string;
 };
 
+/**
+ * Operator-supplied serving identity for a private model endpoint. These claims
+ * describe the process that is actually serving on this runtime; they are not
+ * provider credentials and are still subject to Control API admission.
+ */
+export type MediaGenRuntimeModelServingClaim = {
+  modelId: string;
+  variant: string;
+  servingEngine: string;
+  servingEngineVersion: string;
+  servingProtocol: "sglang_video_v1" | "custom";
+  checkpointRevision: string;
+  checkpointDigest: string;
+  precision?: string;
+  status: "ready" | "loading" | "error" | "unknown";
+  maxConcurrentJobs?: number;
+};
+
 export type MediaGenRuntimeVendor = {
   presetId: string;
   isConfigured(): boolean;
+  /** Exact vendor-owned output origins that the shared downloader may trust. */
+  trustedOutputHosts?: readonly string[];
   /** Exact default routes implemented by this runtime vendor. */
   capabilityRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
+  /** Private serving identity reported by this vendor, never a secret. */
+  modelServingClaims?: readonly MediaGenRuntimeModelServingClaim[];
+  /**
+   * Re-sample live serving readiness immediately before a heartbeat. Static
+   * process-start configuration is never sufficient for a private model route.
+   */
+  registrationSnapshot?(): Promise<{
+    capabilityRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
+    modelServingClaims?: readonly MediaGenRuntimeModelServingClaim[];
+  }>;
   /**
    * CP3 §8 honesty gate — true only for a vendor that actually maps a multi-slot
    * `input.sources[]` onto its API (e.g. Vidu subject images[]). The factory advertises
@@ -169,6 +203,7 @@ export type MediaGenRuntimeBridge = {
     appliesLabeling: boolean;
     supportsMultiReference?: boolean;
     capabilityRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
+    modelServingClaims?: readonly MediaGenRuntimeModelServingClaim[];
   }): Promise<void>;
   resolveArtifactReference(input: {
     dispatch: MediaGenRuntimeDispatch;

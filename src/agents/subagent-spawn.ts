@@ -180,6 +180,21 @@ type SpawnSubagentParams = {
     mimeType?: string;
   }>;
   attachMountPath?: string;
+  /**
+   * Trusted operator-plane system context for the initial child turn. This is
+   * deliberately absent from the `sessions_spawn` tool schema; only an
+   * authenticated Gateway handler may populate it.
+   */
+  operatorExtraSystemPrompt?: string;
+  /**
+   * Server-owned Wisclaw session-binding reservation. Unlike `thread:true`,
+   * this does not claim a channel thread; it only permits a retained child
+   * session whose external ownership is committed by the Control API.
+   */
+  operatorSessionBinding?: {
+    kind: "wisclaw_session_binding";
+    reservationId: string;
+  };
 };
 
 type SpawnSubagentContext = {
@@ -1099,12 +1114,13 @@ export async function spawnSubagentDirect(
   const modelOverride = params.model;
   const thinkingOverrideRaw = params.thinking;
   const requestThreadBinding = params.thread === true;
+  const operatorSessionBinding = params.operatorSessionBinding;
   const sandboxMode = params.sandbox === "require" ? "require" : "inherit";
   const spawnMode = resolveSpawnMode({
     requestedMode: params.mode,
     threadRequested: requestThreadBinding,
   });
-  if (spawnMode === "session" && !requestThreadBinding) {
+  if (spawnMode === "session" && !requestThreadBinding && !operatorSessionBinding) {
     return {
       status: "error",
       error:
@@ -1442,6 +1458,10 @@ export async function spawnSubagentDirect(
     childDepth,
     maxSpawnDepth,
   });
+  const operatorExtraSystemPrompt = params.operatorExtraSystemPrompt?.trim();
+  if (operatorExtraSystemPrompt) {
+    childSystemPrompt = `${childSystemPrompt}\n\n${operatorExtraSystemPrompt}`;
+  }
 
   let retainOnSessionKeep = false;
   let attachmentsReceipt:

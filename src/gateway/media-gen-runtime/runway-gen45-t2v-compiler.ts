@@ -81,7 +81,7 @@ function validateMappings(input: MediaGenRuntimeVendorInput): string | null {
   const exactMappings = new Map<string, { support: "native" | "prompt"; providerField: string }>([
     ["generationScenario", { support: "native", providerField: "scenario" }],
     ["outputAudioPolicy", { support: "native", providerField: "output.audio" }],
-    ["narrative.compiledPrompt", { support: "prompt", providerField: "prompt" }],
+    ["compiledPrompt", { support: "prompt", providerField: "prompt" }],
     ["output.durationSec", { support: "native", providerField: "output.durationSec" }],
     ["output.aspectRatio", { support: "native", providerField: "output.aspectRatio" }],
     ["output.resolution", { support: "native", providerField: "output.resolution" }],

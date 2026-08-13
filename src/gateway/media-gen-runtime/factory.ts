@@ -4,6 +4,7 @@ import { createWebhookLabeler, createWebhookModeration } from "./compliance-hook
 import { createControlApiMediaGenBridge } from "./control-api-bridge.js";
 import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import { createGoogleCloudAccessTokenProvider } from "./google-cloud-auth.js";
+import { createH3BaseSglangVendors } from "./h3-base-sglang-factory.js";
 import { createHailuoH3RuntimeVendor } from "./hailuo-h3-vendor.js";
 import { createKlingRuntimeVendor } from "./kling-vendor.js";
 import { createLumaRuntimeVendor } from "./luma-vendor.js";
@@ -21,6 +22,7 @@ import type {
   MediaGenRuntimeConfigError,
   MediaGenRuntimeCapabilityRouteClaim,
   MediaGenRuntimeFetch,
+  MediaGenRuntimeModelServingClaim,
   MediaGenRuntimeVendor,
 } from "./types.js";
 import { createVeoRuntimeVendor, googleCloudProjectIdValid } from "./veo-vendor.js";
@@ -39,6 +41,7 @@ export type MediaGenRuntimeFromEnvResult =
       appliesLabeling: boolean;
       supportsMultiReference: boolean;
       capabilityRouteClaims: MediaGenRuntimeCapabilityRouteClaim[];
+      modelServingClaims: MediaGenRuntimeModelServingClaim[];
     }
   | { enabled: false; reason: string };
 
@@ -250,6 +253,10 @@ export function createOpenClawMediaGenRuntimeFromEnv(
   if (!bridge) {
     return { enabled: false, reason: "control-api URL, runtime id, or runtime token is missing" };
   }
+  const h3Base = createH3BaseSglangVendors(env, options.fetchImpl);
+  if (h3Base.error) {
+    return { enabled: false, reason: h3Base.error };
+  }
   const vendors = [
     maybeKlingVendor(env, options.fetchImpl),
     maybeViduVendor(env, options.fetchImpl),
@@ -260,6 +267,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     maybeHailuoVendor(env, options.fetchImpl),
     maybeCogVideoXVendor(env, options.fetchImpl),
     maybeVeoVendor(env, options.fetchImpl),
+    ...h3Base.vendors,
   ].filter((vendor): vendor is MediaGenRuntimeVendor => Boolean(vendor));
   if (vendors.length === 0) {
     return { enabled: false, reason: "no media-generation vendor credential is configured" };
@@ -281,7 +289,15 @@ export function createOpenClawMediaGenRuntimeFromEnv(
         "media-generation moderation and labeling webhooks are required before enabling a vendor executor",
     };
   }
-  const allowedMediaHosts = envList(env, "OPENCLAW_MEDIA_GEN_FETCH_HOST_ALLOWLIST");
+  const allowedMediaHosts = [
+    ...new Set([
+      ...envList(env, "OPENCLAW_MEDIA_GEN_FETCH_HOST_ALLOWLIST"),
+      // Exact vendor code, not operator input, owns these origins. This keeps a
+      // co-located H3 /content response inside the shared SSRF allow-list even
+      // when the deployment also has a non-empty cloud CDN allow-list.
+      ...vendors.flatMap((vendor) => [...(vendor.trustedOutputHosts ?? [])]),
+    ]),
+  ];
   const workspaces = envList(env, "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS");
   const runtimeReferenceMapEnvKey = env.OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON?.trim()
     ? "OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON"
@@ -408,18 +424,22 @@ export function createOpenClawMediaGenRuntimeFromEnv(
       : {}),
     ...(validateMediaBytes ? { validateMediaBytes } : {}),
   });
-  const supportedPresetIds = vendors.map((vendor) => vendor.presetId);
+  const supportedPresetIds = [...new Set(vendors.map((vendor) => vendor.presetId))];
   const heartbeatMs = envNumber(env, "OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS", 60_000);
   const enforcesModeration = Boolean(moderation);
   const appliesLabeling = Boolean(labeler);
-  const capabilityRouteClaims = vendors
-    .flatMap((vendor) => vendor.capabilityRouteClaims ?? [])
-    // Seedance's exact routes promise validated Artifact output. Do not make
-    // those routes operational unless the local quality validator was proven.
-    .filter((claim) => claim.presetId !== "seedance" || validateMediaBytes !== undefined)
-    // Luma I2V remains executable for historical frozen receipts, but its
-    // current runtime profile is not evidence-pinned for admission.
-    .filter((claim) => !(claim.presetId === "luma" && claim.mode === "image2video"));
+  const filterCapabilityRouteClaims = (claims: MediaGenRuntimeCapabilityRouteClaim[]) =>
+    claims
+      // Seedance's exact routes promise validated Artifact output. Do not make
+      // those routes operational unless the local quality validator was proven.
+      .filter((claim) => claim.presetId !== "seedance" || validateMediaBytes !== undefined)
+      // Luma I2V remains executable for historical frozen receipts, but its
+      // current runtime profile is not evidence-pinned for admission.
+      .filter((claim) => !(claim.presetId === "luma" && claim.mode === "image2video"));
+  const capabilityRouteClaims = filterCapabilityRouteClaims(
+    vendors.flatMap((vendor) => [...(vendor.capabilityRouteClaims ?? [])]),
+  );
+  const modelServingClaims = vendors.flatMap((vendor) => [...(vendor.modelServingClaims ?? [])]);
   // A vendor's local source-handling capability is not sufficient evidence for
   // Control API admission. Project the bit only when that same preset also has
   // an advertised image route after all evidence/quality filters above.
@@ -431,6 +451,52 @@ export function createOpenClawMediaGenRuntimeFromEnv(
       ),
   );
 
+  async function collectLiveRegistrationSnapshot(): Promise<{
+    capabilityRouteClaims: MediaGenRuntimeCapabilityRouteClaim[];
+    modelServingClaims: MediaGenRuntimeModelServingClaim[];
+    supportsMultiReference: boolean;
+  }> {
+    const snapshots = await Promise.all(
+      vendors.map(async (vendor) => {
+        if (!vendor.registrationSnapshot) {
+          return {
+            capabilityRouteClaims: [...(vendor.capabilityRouteClaims ?? [])],
+            modelServingClaims: [...(vendor.modelServingClaims ?? [])],
+          };
+        }
+        try {
+          const sampled = await vendor.registrationSnapshot();
+          return {
+            capabilityRouteClaims: [...(sampled.capabilityRouteClaims ?? [])],
+            modelServingClaims: [...(sampled.modelServingClaims ?? [])],
+          };
+        } catch {
+          return {
+            capabilityRouteClaims: [] as MediaGenRuntimeCapabilityRouteClaim[],
+            modelServingClaims: (vendor.modelServingClaims ?? []).map((claim) => ({
+              ...claim,
+              status: "error" as const,
+            })),
+          };
+        }
+      }),
+    );
+    const liveCapabilityRouteClaims = filterCapabilityRouteClaims(
+      snapshots.flatMap((snapshot) => snapshot.capabilityRouteClaims),
+    );
+    return {
+      capabilityRouteClaims: liveCapabilityRouteClaims,
+      modelServingClaims: snapshots.flatMap((snapshot) => snapshot.modelServingClaims),
+      supportsMultiReference: vendors.some(
+        (vendor) =>
+          vendor.supportsMultiReference === true &&
+          liveCapabilityRouteClaims.some(
+            (claim) => claim.presetId === vendor.presetId && claim.mode === "image2video",
+          ),
+      ),
+    };
+  }
+
   return {
     enabled: true,
     executor,
@@ -439,6 +505,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     appliesLabeling,
     supportsMultiReference,
     capabilityRouteClaims,
+    modelServingClaims,
     startHeartbeat() {
       if (workspaces.length === 0) {
         options.log?.warn?.(
@@ -448,31 +515,83 @@ export function createOpenClawMediaGenRuntimeFromEnv(
       }
       let stopped = false;
       const register = () => {
-        for (const workspaceId of workspaces) {
-          void bridge
-            .register({
-              workspaceId,
-              supportedPresetIds,
-              enforcesModeration,
-              appliesLabeling,
-              supportsMultiReference,
-              capabilityRouteClaims,
-            })
-            .then(() =>
-              options.log?.info?.(
-                `media-gen runtime heartbeat registered workspace=${workspaceId} runtime=${bridge.runtimeId}`,
+        void collectLiveRegistrationSnapshot()
+          .then((snapshot) => {
+            if (stopped) return;
+            const staticClaimKeys = new Set(
+              capabilityRouteClaims.map(
+                (claim) =>
+                  `${claim.presetId}\u0000${claim.mode}\u0000${claim.route.routeId}\u0000${claim.adapterRevision}`,
               ),
-            )
-            .catch((error) => {
-              if (!stopped) {
-                options.log?.warn?.(
-                  `media-gen runtime heartbeat failed workspace=${workspaceId}: ${
-                    error instanceof Error ? error.message : String(error)
-                  }`,
-                );
-              }
-            });
-        }
+            );
+            const hasDynamicPrivateClaims = snapshot.capabilityRouteClaims.some(
+              (claim) =>
+                !staticClaimKeys.has(
+                  `${claim.presetId}\u0000${claim.mode}\u0000${claim.route.routeId}\u0000${claim.adapterRevision}`,
+                ),
+            );
+            for (const workspaceId of workspaces) {
+              const registerSnapshot = () =>
+                bridge.register({
+                  workspaceId,
+                  supportedPresetIds,
+                  enforcesModeration,
+                  appliesLabeling,
+                  supportsMultiReference: snapshot.supportsMultiReference,
+                  capabilityRouteClaims: snapshot.capabilityRouteClaims,
+                  modelServingClaims: snapshot.modelServingClaims,
+                });
+              void registerSnapshot()
+                .then(() =>
+                  options.log?.info?.(
+                    `media-gen runtime heartbeat registered workspace=${workspaceId} runtime=${bridge.runtimeId}`,
+                  ),
+                )
+                .catch(async (error) => {
+                  // A newly healthy private model may still be quarantined by
+                  // Control API evidence/license/checkpoint pins. Preserve the
+                  // already-admitted provider routes instead of allowing that
+                  // one fail-closed claim to stale the entire runtime. The
+                  // private route is deliberately omitted on this retry.
+                  if (hasDynamicPrivateClaims && !stopped) {
+                    try {
+                      await bridge.register({
+                        workspaceId,
+                        supportedPresetIds,
+                        enforcesModeration,
+                        appliesLabeling,
+                        supportsMultiReference,
+                        capabilityRouteClaims,
+                        modelServingClaims: snapshot.modelServingClaims,
+                      });
+                      options.log?.warn?.(
+                        `media-gen runtime heartbeat registered without quarantined private routes workspace=${workspaceId} runtime=${bridge.runtimeId}`,
+                      );
+                      return;
+                    } catch {
+                      // Report the original exact-claim failure below; the retry
+                      // is only an availability-preserving fallback.
+                    }
+                  }
+                  if (!stopped) {
+                    options.log?.warn?.(
+                      `media-gen runtime heartbeat failed workspace=${workspaceId}: ${
+                        error instanceof Error ? error.message : String(error)
+                      }`,
+                    );
+                  }
+                });
+            }
+          })
+          .catch((error) => {
+            if (!stopped) {
+              options.log?.warn?.(
+                `media-gen runtime readiness snapshot failed: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            }
+          });
       };
       register();
       const timer = setInterval(register, heartbeatMs);

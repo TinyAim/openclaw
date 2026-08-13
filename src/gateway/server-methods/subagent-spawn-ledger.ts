@@ -394,7 +394,7 @@ export async function findOperatorSubagentAcceptedTombstone(input: {
 }
 
 export const OPERATOR_SUBAGENT_SPAWN_CAPABILITY = {
-  schemaVersion: "openclaw-subagent-spawn-capability/v2",
+  schemaVersion: "openclaw-subagent-spawn-capability/v3",
   method: "subagents.spawn",
   durablePrepare: true,
   durableIdempotency: true,
@@ -406,6 +406,8 @@ export const OPERATOR_SUBAGENT_SPAWN_CAPABILITY = {
   statusDurability: "registry_with_accepted_tombstone_reconcile",
   restartRecovery: "outcome_unknown",
   acceptanceRetention: "no_silent_eviction",
+  hiddenSystemContextAtSpawn: true,
+  hiddenSystemContextReceipt: "sha256",
 } as const;
 
 export const __testing = {

@@ -105,7 +105,7 @@ function frozenPlan(
         messageKey: "media.audio_native",
       },
       {
-        intentPath: "narrative.compiledPrompt",
+        intentPath: "compiledPrompt",
         sourceRef: "pack:R1",
         sourceRevision: "R1",
         required: true,

@@ -47,6 +47,26 @@ describe("Spatial terminal callback delivery policy", () => {
     });
   });
 
+  it("keeps an unclassified 409 in the outbox instead of guessing terminal", async () => {
+    await expect(
+      readTerminalCallbackResponse(
+        new Response(
+          JSON.stringify({
+            success: false,
+            code: "SPATIAL_ENV_CALLBACK_CONFLICT",
+          }),
+          { status: 409 },
+        ),
+      ),
+    ).rejects.toThrow("SPATIAL_ENV_CALLBACK_CONFLICT");
+  });
+
+  it("keeps malformed 4xx responses for replay unless Control API says discard", async () => {
+    await expect(
+      readTerminalCallbackResponse(new Response("not-json", { status: 400 })),
+    ).rejects.toThrow("http_400");
+  });
+
   it("backs retryable entries off exponentially with a bounded ceiling", () => {
     let now = 1_000;
     const backoff = createTerminalCallbackReplayBackoff({

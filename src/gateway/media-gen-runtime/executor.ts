@@ -73,7 +73,29 @@ const DEFAULT_FETCH_TIMEOUT_MS = 120_000;
 export function createOpenClawMediaGenRuntimeExecutor(
   options: MediaGenRuntimeExecutorOptions,
 ): MediaGenRuntimeHttpExecutor {
-  const vendors = new Map(options.vendors.map((vendor) => [vendor.presetId, vendor]));
+  const vendorsByPreset = new Map<string, MediaGenRuntimeVendor[]>();
+  for (const vendor of options.vendors) {
+    const group = vendorsByPreset.get(vendor.presetId) ?? [];
+    group.push(vendor);
+    vendorsByPreset.set(vendor.presetId, group);
+  }
+  // A preset is a product family, not an execution identity. Once cloud and
+  // private H3 coexist, selecting by preset alone can silently send local media
+  // to the wrong topology. Frozen route + adapter are the exact dispatch key.
+  const vendorFor = (dispatch: MediaGenRuntimeDispatch): MediaGenRuntimeVendor | undefined => {
+    const candidates = vendorsByPreset.get(dispatch.presetId) ?? [];
+    if (!dispatch.frozenPlan) return candidates.length === 1 ? candidates[0] : undefined;
+    const matches = candidates.filter((candidate) =>
+      candidate.capabilityRouteClaims?.some(
+        (claim) =>
+          claim.presetId === dispatch.presetId &&
+          claim.mode === dispatch.mode &&
+          claim.route.routeId === dispatch.frozenPlan!.providerRouteRef.routeId &&
+          claim.adapterRevision === dispatch.frozenPlan!.adapterRevision,
+      ),
+    );
+    return matches.length === 1 ? matches[0] : undefined;
+  };
   const jobs = new Map<string, MediaGenRuntimeTrackedJob>();
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const now = options.now ?? (() => new Date());
@@ -94,7 +116,7 @@ export function createOpenClawMediaGenRuntimeExecutor(
   });
 
   async function submit(dispatch: MediaGenRuntimeDispatch): Promise<MediaGenRuntimeResult> {
-    const vendor = vendors.get(dispatch.presetId);
+    const vendor = vendorFor(dispatch);
     if (!vendor)
       return failed(dispatch, "vendor_rejected", `unsupported preset ${dispatch.presetId}`);
     if (!vendor.isConfigured())
@@ -268,14 +290,14 @@ export function createOpenClawMediaGenRuntimeExecutor(
         return reconcileMediaGenRuntimeJob({
           dispatch: manuallyBoundReceipt ? { ...input, runtimeJobId: manuallyBoundReceipt } : input,
           tracked,
-          fallbackVendor: vendors.get(input.presetId),
+          fallbackVendor: vendorFor(input),
           finalize,
           remember: (job) => jobs.set(input.taskId, job),
           forget: () => jobs.delete(input.taskId),
         });
       }
       if (input.op === "retry") {
-        const vendor = vendors.get(input.presetId);
+        const vendor = vendorFor(input);
         if (!vendor)
           return failed(input, "vendor_rejected", `unsupported preset ${input.presetId}`);
         if (input.runtimeJobId) {
@@ -373,7 +395,7 @@ export function createOpenClawMediaGenRuntimeExecutor(
         trackedForTask ??
         (input.runtimeJobId
           ? {
-              vendor: vendors.get(input.presetId),
+              vendor: vendorFor(input),
               vendorJobId: input.runtimeJobId,
               ...(input.consentRef && { consentRef: input.consentRef }),
               ...(input.consentRefs && { consentRefs: input.consentRefs }),

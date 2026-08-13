@@ -183,7 +183,7 @@ function validateMappings(input: MediaGenRuntimeVendorInput): string | null {
       return `CogVideoX ${path} was not frozen as an exact native mapping.`;
     }
   }
-  const prompt = plan.constraintPlan.find((row) => row.intentPath === "narrative.compiledPrompt");
+  const prompt = plan.constraintPlan.find((row) => row.intentPath === "compiledPrompt");
   if (prompt?.support !== "prompt" || prompt.providerField !== "prompt") {
     return "The CogVideoX prompt was not frozen as the compiled provider prompt.";
   }

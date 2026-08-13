@@ -4,6 +4,7 @@ export const MEDIA_GENERATION_INTENT_REFERENCE_DURATION_SEC_MAX = 86_400 as cons
 export type MediaGenerationScenario =
   | "text_to_video"
   | "first_frame_to_video"
+  | "last_frame_to_video"
   | "first_last_frame_to_video"
   | "subject_reference_to_video"
   | "multimodal_reference_to_video"
@@ -15,6 +16,18 @@ export type MediaOutputAudioPolicy =
   | "native_generate"
   | "reference_conditioned"
   | "preserve_source";
+export type MediaExecutionTopology = "provider_api" | "self_hosted" | "hybrid";
+export type MediaServingProtocol = "sglang_video_v1" | "custom";
+export type MediaModelLicensePolicyRef = {
+  policyId: string;
+  revision: number;
+  digest: string;
+};
+export type MediaDataEgressPolicy = {
+  mode: "none" | "vendor" | "hybrid";
+  destinations?: string[];
+  sends?: string[];
+};
 export type MediaGenerationIntentReferenceRole =
   | "subject"
   | "first_frame"
@@ -107,6 +120,11 @@ export type MediaGenRuntimeFrozenPlanV2 = {
   };
   capabilityProfileRef: { profileId: string; revision: number; digest: string };
   adapterRevision: string;
+  executionTopology?: MediaExecutionTopology;
+  servingProtocol?: MediaServingProtocol;
+  licensePolicyRef?: MediaModelLicensePolicyRef;
+  dataEgress?: MediaDataEgressPolicy;
+  checkpointDigest?: string;
   runtimeRef: { runtimeId: string; lastSeenAt: string };
   constraintPlan: Array<{
     intentPath: string;

@@ -189,7 +189,7 @@ function exactFrozenPlan(input: {
     constraintPlan: [
       native("generationScenario", "scenario"),
       native("outputAudioPolicy", "output.audio"),
-      { ...native("narrative.compiledPrompt", "prompt"), support: "prompt" },
+      { ...native("compiledPrompt", "prompt"), support: "prompt" },
       ...(["first_frame", "last_frame"] as const).map((role) => ({
         intentPath: `references.${role}.0`,
         sourceRef: `asset:live-cogvideox3-${role}`,

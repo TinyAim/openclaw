@@ -101,7 +101,7 @@ function frozenPlan(
       native("generationScenario", "scenario"),
       native("outputAudioPolicy", "output.audio"),
       {
-        ...native("narrative.compiledPrompt", "prompt"),
+        ...native("compiledPrompt", "prompt"),
         support: "prompt",
       },
       native("output.durationSec", "output.durationSec"),

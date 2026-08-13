@@ -16,14 +16,19 @@ export type {
   MediaGenerationIntentReference,
   MediaGenerationIntentReferenceRole,
   MediaGenerationIntentV2,
+  MediaDataEgressPolicy,
+  MediaExecutionTopology,
   MediaGenerationScenario,
   MediaGenRuntimeFrozenPlanV2,
+  MediaModelLicensePolicyRef,
   MediaOutputAudioPolicy,
+  MediaServingProtocol,
 } from "./frozen-plan-types.js";
 
 const SCENARIOS = new Set<MediaGenerationScenario>([
   "text_to_video",
   "first_frame_to_video",
+  "last_frame_to_video",
   "first_last_frame_to_video",
   "subject_reference_to_video",
   "multimodal_reference_to_video",
@@ -163,6 +168,8 @@ function scenarioMatches(intent: MediaGenerationIntentV2): boolean {
         return intent.references.length === 0;
       case "first_frame_to_video":
         return exactRoles("first_frame") && counts.get("first_frame") === 1;
+      case "last_frame_to_video":
+        return exactRoles("last_frame") && counts.get("last_frame") === 1;
       case "first_last_frame_to_video":
         return (
           exactRoles("first_frame", "last_frame") &&
@@ -370,6 +377,11 @@ export function parseMediaGenRuntimeFrozenPlan(raw: unknown): MediaGenRuntimeFro
       "providerRouteRef",
       "capabilityProfileRef",
       "adapterRevision",
+      "executionTopology",
+      "servingProtocol",
+      "licensePolicyRef",
+      "dataEgress",
+      "checkpointDigest",
       "runtimeRef",
       "constraintPlan",
       "inputFingerprint",
@@ -381,6 +393,8 @@ export function parseMediaGenRuntimeFrozenPlan(raw: unknown): MediaGenRuntimeFro
   const intent = parseIntent(value.generationIntent);
   const route = record(value.providerRouteRef);
   const profile = record(value.capabilityProfileRef);
+  const license = value.licensePolicyRef === undefined ? undefined : record(value.licensePolicyRef);
+  const egress = value.dataEgress === undefined ? undefined : record(value.dataEgress);
   const runtime = record(value.runtimeRef);
   const mappings = parseMappings(value.constraintPlan);
   if (
@@ -414,6 +428,53 @@ export function parseMediaGenRuntimeFrozenPlan(raw: unknown): MediaGenRuntimeFro
     profile.revision < 1 ||
     typeof profile.digest !== "string" ||
     !SHA.test(profile.digest) ||
+    (value.executionTopology !== undefined &&
+      !["provider_api", "self_hosted", "hybrid"].includes(String(value.executionTopology))) ||
+    (value.servingProtocol !== undefined &&
+      !["sglang_video_v1", "custom"].includes(String(value.servingProtocol))) ||
+    (value.licensePolicyRef !== undefined &&
+      (!license ||
+        !exact(license, ["policyId", "revision", "digest"]) ||
+        !token(license.policyId) ||
+        typeof license.revision !== "number" ||
+        !Number.isInteger(license.revision) ||
+        license.revision < 1 ||
+        typeof license.digest !== "string" ||
+        !SHA.test(license.digest))) ||
+    (value.dataEgress !== undefined &&
+      (!egress ||
+        !exact(egress, ["mode", "destinations", "sends"]) ||
+        !["none", "vendor", "hybrid"].includes(String(egress.mode)) ||
+        (egress.destinations !== undefined &&
+          (!Array.isArray(egress.destinations) ||
+            egress.destinations.some((item) => !token(item)))) ||
+        (egress.sends !== undefined &&
+          (!Array.isArray(egress.sends) || egress.sends.some((item) => !token(item)))) ||
+        (egress.mode === "none" &&
+          ((Array.isArray(egress.destinations) && egress.destinations.length > 0) ||
+            (Array.isArray(egress.sends) && egress.sends.length > 0))))) ||
+    (value.checkpointDigest !== undefined &&
+      (typeof value.checkpointDigest !== "string" || !SHA.test(value.checkpointDigest))) ||
+    (value.executionTopology === undefined &&
+      (value.servingProtocol !== undefined ||
+        value.licensePolicyRef !== undefined ||
+        value.dataEgress !== undefined ||
+        value.checkpointDigest !== undefined)) ||
+    (value.executionTopology === "provider_api" &&
+      (value.servingProtocol !== undefined ||
+        value.licensePolicyRef !== undefined ||
+        value.checkpointDigest !== undefined ||
+        (egress != null && egress.mode !== "vendor"))) ||
+    (value.executionTopology === "self_hosted" &&
+      (value.servingProtocol === undefined ||
+        !license ||
+        egress?.mode !== "none" ||
+        typeof value.checkpointDigest !== "string")) ||
+    (value.executionTopology === "hybrid" &&
+      (value.servingProtocol === undefined ||
+        !license ||
+        egress?.mode !== "hybrid" ||
+        typeof value.checkpointDigest !== "string")) ||
     !exact(runtime, ["runtimeId", "lastSeenAt"]) ||
     !token(runtime.runtimeId) ||
     typeof runtime.lastSeenAt !== "string" ||

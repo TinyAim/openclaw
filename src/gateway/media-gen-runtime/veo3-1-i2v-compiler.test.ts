@@ -112,7 +112,7 @@ function frozenPlan(
     constraintPlan: [
       constraint("generationScenario", "native", { providerField: "scenario" }),
       constraint("outputAudioPolicy", "native", { providerField: "output.audio" }),
-      constraint("narrative.compiledPrompt", "prompt", { providerField: "prompt" }),
+      constraint("compiledPrompt", "prompt", { providerField: "prompt" }),
       constraint("camera.cameraPrompt", "prompt", { providerField: "prompt" }),
       constraint("references.first_frame.0", "native", {
         providerSlot: "references.first_frame",

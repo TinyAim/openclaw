@@ -269,6 +269,13 @@ export const CORE_GATEWAY_METHOD_SPECS: readonly CoreGatewayMethodSpec[] = [
   { name: "agents.workspace.list", scope: "operator.read" },
   { name: "agents.workspace.get", scope: "operator.read" },
   { name: "tts.speak", scope: "operator.write" },
+  // Wisclaw operator-plane collaboration. These stay at the tail so
+  // established advertised method indices remain stable for older clients.
+  { name: "subagents.capabilities", scope: "operator.read" },
+  { name: "subagents.list", scope: "operator.read" },
+  { name: "subagents.get", scope: "operator.read" },
+  { name: "subagents.spawn", scope: "operator.admin" },
+  { name: "subagents.kill", scope: "operator.admin" },
 ] as const;
 
 const CORE_GATEWAY_METHOD_SPEC_BY_NAME: ReadonlyMap<string, CoreGatewayMethodSpec> = new Map(

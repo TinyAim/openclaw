@@ -133,7 +133,7 @@ function validateMappings(input: MediaGenRuntimeVendorInput): string | null {
   >([
     ["generationScenario", { support: "native", providerField: "scenario" }],
     ["outputAudioPolicy", { support: "native", providerField: "output.audio" }],
-    ["narrative.compiledPrompt", { support: "prompt", providerField: "prompt" }],
+    ["compiledPrompt", { support: "prompt", providerField: "prompt" }],
     ["camera.cameraPrompt", { support: "prompt", providerField: "prompt" }],
     ["references.first_frame.0", { support: "native", providerSlot: "references.first_frame" }],
     ["output.durationSec", { support: "native", providerField: "output.durationSec" }],
@@ -169,7 +169,7 @@ function validateMappings(input: MediaGenRuntimeVendorInput): string | null {
   for (const intentPath of [
     "generationScenario",
     "outputAudioPolicy",
-    "narrative.compiledPrompt",
+    "compiledPrompt",
     "references.first_frame.0",
     "output.durationSec",
     "output.aspectRatio",

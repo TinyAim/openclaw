@@ -31,7 +31,7 @@ function constraint(
 ): MediaGenRuntimeFrozenPlanV2["constraintPlan"][number] {
   return {
     intentPath,
-    sourceRef: intentPath === "narrative.compiledPrompt" ? "pack:R1" : "shot:R1",
+    sourceRef: intentPath === "compiledPrompt" ? "pack:R1" : "shot:R1",
     sourceRevision: "R1",
     required: true,
     support,
@@ -99,7 +99,7 @@ function frozenPlan(): MediaGenRuntimeFrozenPlanV2 {
     constraintPlan: [
       constraint("generationScenario", "native", "scenario"),
       constraint("outputAudioPolicy", "native", "output.audio"),
-      constraint("narrative.compiledPrompt", "prompt", "prompt"),
+      constraint("compiledPrompt", "prompt", "prompt"),
       constraint("output.durationSec", "native", "output.durationSec"),
       constraint("output.aspectRatio", "native", "output.aspectRatio"),
       constraint("output.resolution", "native", "output.resolution"),

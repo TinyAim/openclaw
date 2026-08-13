@@ -15,8 +15,9 @@ export const DEPTH_MESH_RUNTIME_BUILD_DIGEST = `sha256:${createHash("sha256")
       DEPTH_MESH_CONTRACT_VERSION,
       DEPTH_MESH_ALGORITHM_ID,
       DEPTH_MESH_COMPONENT_MANIFEST_DIGEST,
-      // v2: generated-region mask encodes walkable polygon (not solid white stub).
-      "renderDeterministicDepthMesh:v2",
+      // v3: mask covers the actual generated mesh surface; walkability stays
+      // in the separate collision proof instead of being conflated with it.
+      "renderDeterministicDepthMesh:v3",
     ].join("\n"),
     "utf8",
   )
@@ -47,6 +48,8 @@ export type DepthAdapterRaster = {
   confidence: number;
   componentManifestDigest: string;
   checkpointDigests: readonly string[];
+  commercialUseAllowed: true;
+  allowedTerritories: readonly string[];
   noticeRefs: readonly string[];
   samples: Uint16Array;
 };
@@ -91,15 +94,16 @@ export type DepthMeshQualityReport = {
   algorithmId: typeof DEPTH_MESH_ALGORITHM_ID;
   geometryTruth: "generated_approximate";
   navigationMode: "bounded_six_dof";
-  usesTrainedWeights: false;
+  usesTrainedWeights: boolean;
   modelDependencies: readonly [];
   checkpointDigests: readonly string[];
+  dependencyComponentManifestDigests: readonly string[];
   componentManifestCanonical: typeof DEPTH_MESH_COMPONENT_MANIFEST_CANONICAL;
   componentManifestDigest: typeof DEPTH_MESH_COMPONENT_MANIFEST_DIGEST;
   runtimeBuildDigest: typeof DEPTH_MESH_RUNTIME_BUILD_DIGEST;
   noticeRefs: readonly string[];
   commercialUseAllowed: true;
-  allowedTerritories: readonly ["*"];
+  allowedTerritories: readonly string[];
   deterministic: true;
   source: { width: number; height: number; mimeType: string };
   mesh: { vertexCount: number; triangleCount: number; textured: true };
@@ -126,6 +130,7 @@ export class DepthMeshRenderError extends Error {
       | "invalid_calibration"
       | "invalid_depth_adapter"
       | "invalid_scale_anchor"
+      | "quality_gate_failed"
       | "mesh_generation_failed",
     message: string,
   ) {

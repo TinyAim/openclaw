@@ -117,7 +117,7 @@ function frozenPlan(): MediaGenRuntimeFrozenPlanV2 {
     constraintPlan: [
       mapping("generationScenario", "native", { providerField: "scenario" }),
       mapping("outputAudioPolicy", "native", { providerField: "output.audio" }),
-      mapping("narrative.compiledPrompt", "prompt", { providerField: "prompt" }),
+      mapping("compiledPrompt", "prompt", { providerField: "prompt" }),
       mapping("camera.cameraPrompt", "prompt", { providerField: "prompt" }),
       mapping("references.first_frame.0", "native", {
         providerSlot: "references.first_frame",

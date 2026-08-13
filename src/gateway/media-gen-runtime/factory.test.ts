@@ -23,6 +23,27 @@ function requestUrl(input: RequestInfo | URL): string {
   return input instanceof URL ? input.href : input.url;
 }
 
+function h3Fl2vaEnv(status: "ready" | "loading"): Record<string, string> {
+  const pin = (profileId: string) => ({
+    profileId,
+    revision: 1,
+    digest: `sha256:${"8".repeat(64)}`,
+  });
+  return {
+    OPENCLAW_H3_BASE_FL2VA_SGLANG_VERSION: "14ffd447a4bc431c67e33e1743e076e0f53780c8",
+    OPENCLAW_H3_BASE_FL2VA_CHECKPOINT_REVISION: "minimax-h3-base-test",
+    OPENCLAW_H3_BASE_FL2VA_CHECKPOINT_DIGEST: `sha256:${"9".repeat(64)}`,
+    OPENCLAW_H3_BASE_FL2VA_PRECISION: "bf16",
+    OPENCLAW_H3_BASE_FL2VA_STATUS: status,
+    OPENCLAW_H3_BASE_FL2VA_PROFILE_REFS_JSON: JSON.stringify({
+      text_to_video: pin("hailuo.openclaw-runtime.h3_base_fl2va.text2video.v1"),
+      first_frame_to_video: pin("hailuo.openclaw-runtime.h3_base_fl2va.image2video.v1"),
+      last_frame_to_video: pin("hailuo.openclaw-runtime.h3_base_fl2va.image2video.v1"),
+      first_last_frame_to_video: pin("hailuo.openclaw-runtime.h3_base_fl2va.image2video.v1"),
+    }),
+  };
+}
+
 describe("OpenClaw media-generation runtime env factory", () => {
   it("stays disabled unless explicitly enabled", () => {
     const result = createOpenClawMediaGenRuntimeFromEnv({ env: {} });
@@ -35,6 +56,136 @@ describe("OpenClaw media-generation runtime env factory", () => {
       log: { info: vi.fn(), warn: vi.fn() },
     });
     expect(result.enabled).toBe(true);
+  });
+
+  it("registers exact H3 Base route and model-serving claims without duplicating the preset", async () => {
+    const calls: unknown[] = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const value = requestUrl(url);
+      if (value.endsWith("/health")) {
+        return new Response(JSON.stringify({ status: "ok" }));
+      }
+      if (value.endsWith("/v1/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "MiniMaxAI/MiniMax-H3" }] }));
+      }
+      calls.push(typeof init?.body === "string" ? JSON.parse(init.body) : undefined);
+      return new Response(JSON.stringify({ data: { ok: true } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      fetchImpl,
+      env: baseEnabledEnv(h3Fl2vaEnv("ready")),
+    });
+
+    expect(result.enabled).toBe(true);
+    if (!result.enabled) return;
+    expect(result.supportedPresetIds).toEqual(["kling", "hailuo"]);
+    expect(result.capabilityRouteClaims).toEqual([expect.objectContaining({ presetId: "kling" })]);
+    expect(result.modelServingClaims).toEqual([
+      expect.objectContaining({
+        modelId: "MiniMax-H3-Base",
+        variant: "fl2va",
+        servingEngine: "sglang",
+        status: "ready",
+      }),
+    ]);
+
+    const stop = result.startHeartbeat();
+    await vi.waitFor(() => expect(calls).toHaveLength(1));
+    stop();
+    expect(calls[0]).toMatchObject({
+      supportedPresetIds: ["kling", "hailuo"],
+      capabilityRouteClaims: expect.arrayContaining([
+        expect.objectContaining({
+          presetId: "hailuo",
+          route: expect.objectContaining({
+            routeId: "hailuo.h3_base.fl2va.selfhosted.sglang_v1",
+          }),
+        }),
+      ]),
+      modelServingClaims: [expect.objectContaining({ variant: "fl2va" })],
+    });
+  });
+
+  it("keeps other vendors registered while an H3 model is loading", async () => {
+    const registrations: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (requestUrl(url).includes("/runtime/register")) {
+        registrations.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      }
+      return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      fetchImpl,
+      env: baseEnabledEnv(h3Fl2vaEnv("loading")),
+    });
+    expect(result.enabled).toBe(true);
+    if (!result.enabled) return;
+    const stop = result.startHeartbeat();
+    await vi.waitFor(() => expect(registrations).toHaveLength(1));
+    stop();
+    expect(registrations[0]).toMatchObject({
+      capabilityRouteClaims: [expect.objectContaining({ presetId: "kling" })],
+      modelServingClaims: [
+        expect.objectContaining({
+          variant: "fl2va",
+          status: "loading",
+        }),
+      ],
+    });
+  });
+
+  it("retries without a quarantined live H3 route so provider routes stay fresh", async () => {
+    const registrations: Array<Record<string, unknown>> = [];
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const value = requestUrl(url);
+      if (value.endsWith("/health")) {
+        return new Response(JSON.stringify({ status: "ok" }));
+      }
+      if (value.endsWith("/v1/models")) {
+        return new Response(JSON.stringify({ data: [{ id: "MiniMaxAI/MiniMax-H3" }] }));
+      }
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      registrations.push(body);
+      const claims = body.capabilityRouteClaims as Array<{
+        route?: { routeId?: string };
+      }>;
+      const includesH3 = claims.some(
+        (claim) => claim.route?.routeId === "hailuo.h3_base.fl2va.selfhosted.sglang_v1",
+      );
+      return new Response(
+        JSON.stringify(
+          includesH3
+            ? { error: { code: "MEDIA_GEN_RUNTIME_CAPABILITY_PROFILE_MISMATCH" } }
+            : { data: { ok: true } },
+        ),
+        { status: includesH3 ? 400 : 200 },
+      );
+    }) as unknown as typeof fetch;
+    const result = createOpenClawMediaGenRuntimeFromEnv({
+      fetchImpl,
+      env: baseEnabledEnv(h3Fl2vaEnv("ready")),
+      log: { info: vi.fn(), warn: vi.fn() },
+    });
+    expect(result.enabled).toBe(true);
+    if (!result.enabled) return;
+    const stop = result.startHeartbeat();
+    await vi.waitFor(() => expect(registrations).toHaveLength(2));
+    stop();
+    expect(registrations[0]?.capabilityRouteClaims).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          route: expect.objectContaining({
+            routeId: "hailuo.h3_base.fl2va.selfhosted.sglang_v1",
+          }),
+        }),
+      ]),
+    );
+    expect(registrations[1]?.capabilityRouteClaims).toEqual([
+      expect.objectContaining({ presetId: "kling" }),
+    ]);
   });
 
   it("rejects invalid quality gate tokens (fail-closed, never default on)", () => {

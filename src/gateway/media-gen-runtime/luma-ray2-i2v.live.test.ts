@@ -172,7 +172,7 @@ function exactFrozenPlan(): MediaGenRuntimeFrozenPlanV2 {
     constraintPlan: [
       native("generationScenario", "scenario"),
       native("outputAudioPolicy", "output.audio"),
-      { ...native("narrative.compiledPrompt", "prompt"), support: "prompt" },
+      { ...native("compiledPrompt", "prompt"), support: "prompt" },
       {
         intentPath: "references.first_frame.0",
         sourceRef: `runtime-local:${RUNTIME_HANDLE}`,

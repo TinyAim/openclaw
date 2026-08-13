@@ -1074,6 +1074,48 @@ describe("spawnSubagentDirect seam flow", () => {
     expect(params.extraSystemPrompt).toBe("system-prompt");
   });
 
+  it("delivers operator Project Context only in the initial system prompt", async () => {
+    const calls: Array<{ method?: string; params?: unknown }> = [];
+    hoisted.callGatewayMock.mockImplementation(
+      async (request: { method?: string; params?: unknown }) => {
+        calls.push(request);
+        if (request.method === "agent") {
+          return { runId: "run-project-context", status: "accepted", acceptedAt: 1000 };
+        }
+        if (request.method?.startsWith("sessions.")) {
+          return { ok: true };
+        }
+        return {};
+      },
+    );
+    installSessionStoreCaptureMock(hoisted.updateSessionStoreMock);
+    const projectContext = "# Project Context\n\nApproved facts only.";
+
+    const result = await spawnSubagentDirect(
+      {
+        task: "Review the implementation",
+        mode: "session",
+        operatorExtraSystemPrompt: projectContext,
+        operatorSessionBinding: {
+          kind: "wisclaw_session_binding",
+          reservationId: "reservation-1234567890",
+        },
+      },
+      {
+        agentSessionKey: "agent:main:main",
+        agentChannel: "discord",
+      },
+    );
+
+    expect(result).toMatchObject({ status: "accepted", mode: "session" });
+    const agentCall = calls.find((call) => call.method === "agent");
+    const params = agentCall?.params as { message?: string; extraSystemPrompt?: string };
+    expect(params.message).toContain("Review the implementation");
+    expect(params.message).not.toContain("Approved facts only");
+    expect(params.extraSystemPrompt).toContain("system-prompt");
+    expect(params.extraSystemPrompt).toContain(projectContext);
+  });
+
   it("returns an error when the initial child session patch is rejected", async () => {
     hoisted.callGatewayMock.mockImplementation(
       async (request: { method?: string; params?: unknown }) => {
