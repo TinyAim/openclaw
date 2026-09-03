@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveStateDir } from "../config/paths.js";
 import { withFileLock } from "../infra/file-lock.js";
-import { loadJsonFile } from "../infra/json-file.js";
+import { loadJsonFileThroughSymlink } from "../infra/json-file.js";
 import { writeJsonAtomic } from "../infra/json-files.js";
 import {
   sanitizeDurableChatTerminal,
@@ -141,7 +141,7 @@ function loadLedger(): DurableChatOutcomeFile {
   if (!fs.existsSync(pathname)) {
     return emptyLedger();
   }
-  const raw = loadJsonFile(pathname);
+  const raw = loadJsonFileThroughSymlink(pathname);
   if (!raw || typeof raw !== "object") {
     throw new Error("Durable chat outcome ledger is unreadable; refusing to dispatch.");
   }

@@ -4,7 +4,7 @@ import path from "node:path";
 import type { SpawnSubagentResult } from "../../agents/subagents/spawn/subagent-spawn-contract.js";
 import { resolveStateDir } from "../../config/paths.js";
 import { withFileLock } from "../../infra/file-lock.js";
-import { loadJsonFile } from "../../infra/json-file.js";
+import { loadJsonFileThroughSymlink } from "../../infra/json-file.js";
 import { writeJsonAtomic } from "../../infra/json-files.js";
 
 type OperatorSpawnResult = Omit<SpawnSubagentResult, "status"> & {
@@ -104,7 +104,7 @@ function loadLedger(): SpawnLedgerFile {
   if (!fs.existsSync(pathname)) {
     return { version: 1, entries: {} };
   }
-  const raw = loadJsonFile(pathname);
+  const raw = loadJsonFileThroughSymlink(pathname);
   if (!raw || typeof raw !== "object") {
     throw new Error("Operator subagent spawn ledger is unreadable; refusing to dispatch.");
   }
