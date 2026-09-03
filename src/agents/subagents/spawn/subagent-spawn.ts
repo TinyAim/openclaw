@@ -301,6 +301,10 @@ export async function spawnSubagentDirect(
       childDepth,
       maxSpawnDepth,
     });
+    const operatorExtraSystemPrompt = params.operatorExtraSystemPrompt?.trim();
+    if (operatorExtraSystemPrompt) {
+      childSystemPrompt = `${childSystemPrompt}\n\n${operatorExtraSystemPrompt}`;
+    }
     if (params.outputSchema) {
       childSystemPrompt = `${childSystemPrompt}\n\nCall structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.`;
     }

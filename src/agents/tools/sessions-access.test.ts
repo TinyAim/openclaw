@@ -51,13 +51,13 @@ function makeConfig(overrides: Partial<OpenClawConfig> = {}): OpenClawConfig {
 }
 
 describe("resolveSessionToolsVisibility", () => {
-  it("defaults to agent when unset or invalid", () => {
-    expect(resolveSessionToolsVisibility(makeConfig())).toBe("agent");
+  it("defaults to tree when unset or invalid", () => {
+    expect(resolveSessionToolsVisibility(makeConfig())).toBe("tree");
     expect(
       resolveSessionToolsVisibility({
         tools: { sessions: { visibility: "invalid" } },
       } as unknown as OpenClawConfig),
-    ).toBe("agent");
+    ).toBe("tree");
   });
 
   it("accepts known visibility values case-insensitively", () => {

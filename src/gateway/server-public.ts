@@ -74,4 +74,8 @@ export type GatewayServerOptions = {
   startupConfigSnapshotRead?: import("../config/io.js").ReadConfigFileSnapshotWithPluginMetadataResult;
   /** Restart request override; direct servers fail closed on restart-required reloads. */
   hotReloadRecovery?: GatewayRestartEmitter;
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
 };

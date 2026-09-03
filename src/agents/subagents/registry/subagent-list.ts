@@ -67,7 +67,7 @@ function resolveStorePathForKey(cfg: OpenClawConfig, parsed?: ParsedAgentSession
 }
 
 /** Resolve persisted session metadata for a session key, caching per store path. */
-function resolveSessionEntryForKey(params: {
+export function resolveSessionEntryForKey(params: {
   cfg: OpenClawConfig;
   key: string;
   cache: Map<string, Record<string, SessionEntry>>;

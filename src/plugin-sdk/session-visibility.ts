@@ -104,7 +104,7 @@ export async function listSpawnedSessionKeys(params: {
   return result.value;
 }
 
-/** Resolve configured session-tool visibility, defaulting invalid or missing values to agent. */
+/** Resolve configured session-tool visibility, defaulting invalid or missing values to tree. */
 export function resolveSessionToolsVisibility(cfg: OpenClawConfig): SessionToolsVisibility {
   const raw = (cfg.tools as { sessions?: { visibility?: unknown } } | undefined)?.sessions
     ?.visibility;
@@ -112,7 +112,9 @@ export function resolveSessionToolsVisibility(cfg: OpenClawConfig): SessionTools
   if (value === "self" || value === "tree" || value === "agent" || value === "all") {
     return value;
   }
-  return "agent";
+  // Wisclaw managed agents keep the pre-2026.8.2 narrow default. Explicit
+  // `agent` / `all` remain available when operators set them.
+  return "tree";
 }
 
 /** Resolve visibility after applying sandbox clamps for spawned-session-only agents. */

@@ -118,6 +118,10 @@ export async function createGatewayHttpTransport(params: {
   getResolvedAuth: () => ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
   joinRateLimiter?: AuthRateLimiter;
   gatewayTls?: GatewayTlsRuntime;
   hooksConfig: () => HooksConfigResolved | null;
@@ -345,6 +349,12 @@ export async function createGatewayHttpTransport(params: {
       resolvedAuth: params.resolvedAuth,
       getResolvedAuth: params.getResolvedAuth,
       rateLimiter: params.rateLimiter,
+      mediaGenRuntimeExecutor: params.mediaGenRuntimeExecutor,
+      spatialReferenceRuntimeExecutor: params.spatialReferenceRuntimeExecutor,
+      spatialEnvironmentPanoramaRuntimeExecutor:
+        params.spatialEnvironmentPanoramaRuntimeExecutor,
+      spatialEnvironmentDepthMeshRuntimeExecutor:
+        params.spatialEnvironmentDepthMeshRuntimeExecutor,
       joinRateLimiter: params.joinRateLimiter,
       handleNodeWorkerBundleTransferRequest: params.handleNodeWorkerBundleTransferRequest,
       handleWorkerBootstrapArtifactTransferRequest:

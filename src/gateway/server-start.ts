@@ -59,8 +59,51 @@ export async function startGatewayServerCore(
     shutdownRuntime,
   } = gatewayKernel;
   try {
+    const envMediaGenRuntime =
+      opts.mediaGenRuntimeExecutor === undefined &&
+      process.env.OPENCLAW_MEDIA_GEN_RUNTIME_EXECUTOR_ENABLED === "1"
+        ? (await import("./media-gen-runtime/index.js")).createOpenClawMediaGenRuntimeFromEnv({
+            log: {
+              info: (msg) => log.info(msg),
+              warn: (msg) => log.warn(msg),
+            },
+          })
+        : {
+            enabled: false as const,
+            reason: "media-gen runtime executor not requested",
+          };
+    const envSpatialReferenceRuntime =
+      opts.spatialReferenceRuntimeExecutor === undefined &&
+      opts.spatialEnvironmentPanoramaRuntimeExecutor === undefined &&
+      opts.spatialEnvironmentDepthMeshRuntimeExecutor === undefined
+        ? (await import("./media-studio-spatial-reference-runtime/index.js")).createMediaStudioSpatialReferenceRuntimeFromEnv(
+            {
+              log: {
+                info: (msg) => log.info(msg),
+                warn: (msg) => log.warn(msg),
+              },
+            },
+          )
+        : { enabled: false as const, reason: "spatial runtime executor option provided" };
     const transport = await createGatewayHttpTransport({
       ...gatewayKernel.createHttpTransportOptions(),
+      mediaGenRuntimeExecutor: opts.mediaGenRuntimeExecutor ??
+        (envMediaGenRuntime.enabled ? envMediaGenRuntime.executor : undefined),
+      spatialReferenceRuntimeExecutor:
+        opts.spatialReferenceRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled
+          ? envSpatialReferenceRuntime.executor
+          : undefined),
+      spatialEnvironmentPanoramaRuntimeExecutor:
+        opts.spatialEnvironmentPanoramaRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled
+          ? envSpatialReferenceRuntime.panoramaExecutor
+          : undefined),
+      spatialEnvironmentDepthMeshRuntimeExecutor:
+        opts.spatialEnvironmentDepthMeshRuntimeExecutor ??
+        (envSpatialReferenceRuntime.enabled
+          ? envSpatialReferenceRuntime.depthMeshExecutor
+          : undefined),
       ...(!gatewayKernel.minimalTestGateway && gatewayKernel.tailscaleMode !== "off"
         ? {
             prepareManagedTailscaleIngress: async (backend) => {

@@ -105,7 +105,7 @@ export function resolveSubagentSpawnRequest(
       "sessions_spawn collect=true requires mode=run and thread=false.",
     );
   }
-  if (spawnMode === "session" && !requestThreadBinding) {
+  if (spawnMode === "session" && !requestThreadBinding && !params.operatorSessionBinding) {
     return rejectSubagentSpawnRequest(
       "error",
       'sessions_spawn(mode="session") requires thread=true so the subagent can stay bound to a channel thread. ' +

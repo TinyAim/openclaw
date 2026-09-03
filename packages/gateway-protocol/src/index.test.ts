@@ -936,8 +936,11 @@ describe("validateChatSendParams", () => {
         expectedSessionRoutingContract: "per-sender|main|main",
       },
       { ...base, fastAutoOnSeconds: 2 },
+      { ...base, durableOutcome: true },
+      { ...base, durableOutcome: false },
     ]);
     expectRejected(validateChatSendParams, [{ ...base, fastAutoOnSeconds: 0 }]);
+    expectRejected(validateChatSendParams, [{ ...base, durableOutcome: "yes" }]);
   });
 
   it("accepts one-turn queue mode overrides", () => {

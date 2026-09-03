@@ -112,6 +112,18 @@ const getChannelAvatarHttpModule = createLazyRuntimeModule(
 );
 const getModelsHttpModule = createLazyRuntimeModule(() => import("./models-http.js"));
 const getOpenAiHttpModule = createLazyRuntimeModule(() => import("./openai-http.js"));
+const getMediaGenRuntimeHttpModule = createLazyRuntimeModule(
+  () => import("./media-gen-runtime-http.js"),
+);
+const getMediaStudioSpatialReferenceHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-reference-render-http.js"),
+);
+const getMediaStudioSpatialEnvironmentPanoramaHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-environment-render-http.js"),
+);
+const getMediaStudioSpatialEnvironmentDepthMeshHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-depth-mesh-render-http.js"),
+);
 const getOpenResponsesHttpModule = createLazyRuntimeModule(() => import("./openresponses-http.js"));
 const getSessionHistoryHttpModule = createLazyRuntimeModule(
   () => import("./sessions-history-http.js"),
@@ -168,6 +180,10 @@ export function createGatewayHttpServer(opts: {
   getResolvedAuth?: () => ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
   /** Strict limiter for the public join-code exchange, including loopback. */
   joinRateLimiter?: AuthRateLimiter;
   /** Authenticator/dispatcher for the reserved node worker bundle namespace. */
@@ -511,6 +527,44 @@ export function createGatewayHttpServer(opts: {
             config: openAiChatCompletionsConfig,
             resolveGatewayContext: opts.getGatewayRequestContext?.()?.resolveGatewayContext,
           }),
+      );
+      addAdmittedStage(Boolean(opts.spatialReferenceRuntimeExecutor), async () =>
+        opts.spatialReferenceRuntimeExecutor
+          ? (await getMediaStudioSpatialReferenceHttpModule()).handleMediaStudioSpatialReferenceRenderHttpRequest(
+              req,
+              res,
+              {
+                ...routeAuth,
+                executor: opts.spatialReferenceRuntimeExecutor,
+              },
+            )
+          : false,
+      );
+      addAdmittedStage(Boolean(opts.spatialEnvironmentPanoramaRuntimeExecutor), async () =>
+        opts.spatialEnvironmentPanoramaRuntimeExecutor
+          ? (
+              await getMediaStudioSpatialEnvironmentPanoramaHttpModule()
+            ).handleMediaStudioSpatialEnvironmentPanoramaHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialEnvironmentPanoramaRuntimeExecutor,
+            })
+          : false,
+      );
+      addAdmittedStage(Boolean(opts.spatialEnvironmentDepthMeshRuntimeExecutor), async () =>
+        opts.spatialEnvironmentDepthMeshRuntimeExecutor
+          ? (
+              await getMediaStudioSpatialEnvironmentDepthMeshHttpModule()
+            ).handleMediaStudioSpatialEnvironmentDepthMeshHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialEnvironmentDepthMeshRuntimeExecutor,
+            })
+          : false,
+      );
+      addAdmittedStage(true, async () =>
+        (await getMediaGenRuntimeHttpModule()).handleMediaGenRuntimeHttpRequest(req, res, {
+          ...routeAuth,
+          executor: opts.mediaGenRuntimeExecutor,
+        }),
       );
       const approvalDocument = isControlUiApprovalDocumentPath({
         basePath: controlUiBasePath,

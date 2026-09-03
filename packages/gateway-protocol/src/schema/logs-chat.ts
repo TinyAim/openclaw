@@ -248,6 +248,9 @@ export const ChatSendParamsSchema = closedObject({
   expectedSessionRoutingContract: Type.Optional(NonEmptyString),
   expectedPermissionMode: Type.Optional(Type.Union([SessionPermissionModeSchema, Type.Null()])),
   expectedToolOverrides: Type.Optional(Type.Union([SessionToolOverridesSchema, Type.Null()])),
+  // Opt-in for callers that require idempotency outcomes to survive a
+  // gateway process restart. Ordinary interactive chat remains process-local.
+  durableOutcome: Type.Optional(Type.Boolean()),
   idempotencyKey: NonEmptyString,
 });
 

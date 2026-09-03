@@ -250,6 +250,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   "system-changes": () =>
     import("./server-methods/system-changes.js").then((module) => module.systemChangesHandlers),
   wizard: () => import("./server-methods/wizard.js").then((module) => module.wizardHandlers),
+  subagents: () =>
+    import("./server-methods/subagents.js").then((module) => module.subagentsHandlers),
 } satisfies Record<CoreGatewayHandlerFamily, CoreGatewayHandlerModuleLoader>;
 
 function authorizeGatewayMethod(
