@@ -1,5 +1,6 @@
 // Agents gateway methods expose agent listing, config mutation, workspace file
 // reads/writes, identity merging, and safe deletion for operator clients.
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { normalizeOptionalString as resolveOptionalStringParam } from "@openclaw/normalization-core/string-coerce";
@@ -764,11 +765,42 @@ function prepareJournaledAgentDirOwnership(
   registerResolvedAgentDir({ agentId, agentDir });
 }
 
+function sha256Utf8(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
+
+function sha256Buffer(buffer: Buffer): string {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
 function respondWorkspaceFileUnsafe(respond: RespondFn, name: string): void {
   respond(
     false,
     undefined,
     errorShape(ErrorCodes.INVALID_REQUEST, `unsafe workspace file "${name}"`),
+  );
+}
+
+function respondWorkspaceFileConditionalWriteConflict(
+  respond: RespondFn,
+  name: string,
+  expectedHash: string | null,
+  actualHash: string | null,
+): void {
+  respond(
+    false,
+    undefined,
+    errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      `conditional write conflict for workspace file "${name}"`,
+      {
+        details: {
+          type: "workspace_file_conditional_write_conflict",
+          expectedHash,
+          actualHash,
+        },
+      },
+    ),
   );
 }
 
@@ -1599,6 +1631,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
           size: safeRead.stat.size,
           updatedAtMs: Math.floor(safeRead.stat.mtimeMs),
           content: safeRead.buffer.toString("utf-8"),
+          contentHash: sha256Buffer(safeRead.buffer),
         },
       },
       undefined,
@@ -1621,9 +1654,32 @@ export const agentsHandlers: GatewayRequestHandlers = {
     await fs.mkdir(workspaceDir, { recursive: true });
     const filePath = path.join(workspaceDir, name);
     const content = params.content;
+    const expectedHash = params.expectedHash;
     let workspaceRoot: WorkspaceRoot;
     try {
       workspaceRoot = await agentsHandlerDeps.root(workspaceDir);
+      if (expectedHash !== undefined) {
+        let actualHash: string | null = null;
+        try {
+          const current = await workspaceRoot.read(name, {
+            hardlinks: "reject",
+            nonBlockingRead: true,
+          });
+          actualHash = sha256Buffer(current.buffer);
+        } catch (err) {
+          if (!isMissingPathError(err)) {
+            if (err instanceof FsSafeError) {
+              respondWorkspaceFileUnsafe(respond, name);
+              return;
+            }
+            throw err;
+          }
+        }
+        if (actualHash !== expectedHash) {
+          respondWorkspaceFileConditionalWriteConflict(respond, name, expectedHash, actualHash);
+          return;
+        }
+      }
       await workspaceRoot.write(name, content, { encoding: "utf8" });
     } catch (err) {
       if (!(err instanceof FsSafeError)) {
@@ -1646,6 +1702,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
           size: meta?.size,
           updatedAtMs: meta?.updatedAtMs,
           content,
+          contentHash: sha256Utf8(content),
         },
       },
       undefined,

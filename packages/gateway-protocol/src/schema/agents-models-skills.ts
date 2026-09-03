@@ -218,6 +218,12 @@ export const AgentsDeleteResultSchema = closedObject({
   purgeFailed: Type.Optional(Type.Literal(true)),
 });
 
+const AgentFileContentHashSchema = Type.String({
+  minLength: 64,
+  maxLength: 64,
+  pattern: "^[a-f0-9]{64}$",
+});
+
 /** File metadata and optional content for agent-local editable files. */
 export const AgentsFileEntrySchema = closedObject({
   name: NonEmptyString,
@@ -230,6 +236,7 @@ export const AgentsFileEntrySchema = closedObject({
   size: Type.Optional(Type.Integer({ minimum: 0 })),
   updatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
   content: Type.Optional(Type.String()),
+  contentHash: Type.Optional(AgentFileContentHashSchema),
 });
 
 /** Lists editable files for one agent. */
@@ -262,6 +269,7 @@ export const AgentsFilesSetParamsSchema = closedObject({
   agentId: NonEmptyString,
   name: NonEmptyString,
   content: Type.String(),
+  expectedHash: Type.Optional(Type.Union([AgentFileContentHashSchema, Type.Null()])),
 });
 
 /** Result returned after writing an editable agent file. */
