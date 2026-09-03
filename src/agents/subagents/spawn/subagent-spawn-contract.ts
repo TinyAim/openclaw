@@ -37,6 +37,21 @@ export type SpawnSubagentParams = {
     mimeType?: string;
   }>;
   attachMountPath?: string;
+  /**
+   * Trusted operator-plane system context for the initial child turn. This is
+   * deliberately absent from the `sessions_spawn` tool schema; only an
+   * authenticated Gateway handler may populate it.
+   */
+  operatorExtraSystemPrompt?: string;
+  /**
+   * Server-owned Wisclaw session-binding reservation. Unlike `thread:true`,
+   * this does not claim a channel thread; it only permits a retained child
+   * session whose external ownership is committed by the Control API.
+   */
+  operatorSessionBinding?: {
+    kind: "wisclaw_session_binding";
+    reservationId: string;
+  };
 };
 
 export type SpawnSubagentContext = SpawnedToolContext & {

@@ -161,6 +161,7 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   "system-changes": () =>
     import("./system-changes.js").then((module) => module.systemChangesHandlers),
   wizard: () => import("./wizard.js").then((module) => module.wizardHandlers),
+  subagents: () => import("./subagents.js").then((module) => module.subagentsHandlers),
 } satisfies Record<CoreGatewayHandlerFamily, CoreGatewayHandlerModuleLoader>;
 
 export const coreGatewayHandlers: GatewayRequestHandlers = Object.fromEntries(
