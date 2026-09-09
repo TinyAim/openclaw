@@ -65,7 +65,6 @@ function resolveProbeAccountEnabled(params: {
   account: unknown;
   diagnostics: string[];
 }): boolean {
-  const fallback = readBooleanField(params.account, "enabled") ?? true;
   try {
     return resolveChannelAccountEnabled({
       plugin: params.plugin,
@@ -76,7 +75,7 @@ function resolveProbeAccountEnabled(params: {
     params.diagnostics.push(
       `${params.plugin.id}:${params.accountId}: failed to evaluate enabled state (${formatErrorMessage(error)}).`,
     );
-    return fallback;
+    return false;
   }
 }
 
@@ -87,7 +86,6 @@ async function resolveProbeAccountConfigured(params: {
   account: unknown;
   diagnostics: string[];
 }): Promise<boolean> {
-  const fallback = readBooleanField(params.account, "configured") ?? true;
   try {
     return await resolveChannelAccountConfigured({
       plugin: params.plugin,
@@ -99,7 +97,7 @@ async function resolveProbeAccountConfigured(params: {
     params.diagnostics.push(
       `${params.plugin.id}:${params.accountId}: failed to evaluate configured state (${formatErrorMessage(error)}).`,
     );
-    return fallback;
+    return false;
   }
 }
 

@@ -221,6 +221,11 @@ export function createOpenClawMediaGenRuntimeExecutor(
       source,
       ...(sources && { sources }),
       ...(dispatch.frozenPlan && { frozenPlan: dispatch.frozenPlan }),
+      ...(dispatch.executionAttempt !== undefined && {
+        executionAttempt: dispatch.executionAttempt,
+      }),
+      ...(dispatch.frozenPlanDigest && { frozenPlanDigest: dispatch.frozenPlanDigest }),
+      ...(dispatch.spatialInputEnvelope && { spatialInputEnvelope: dispatch.spatialInputEnvelope }),
     });
     if (job.state === "failed") {
       return failed(
@@ -263,7 +268,19 @@ export function createOpenClawMediaGenRuntimeExecutor(
       }),
     });
     if (job.state === "succeeded") {
-      return finalize(dispatch, job, moderationApplied, dispatch.consentRef, dispatch.consentRefs);
+      const settled = await finalize(
+        dispatch,
+        job,
+        moderationApplied,
+        dispatch.consentRef,
+        dispatch.consentRefs,
+      );
+      return {
+        ...settled,
+        ...(job.spatialInputAcceptance && {
+          spatialInputAcceptance: job.spatialInputAcceptance,
+        }),
+      };
     }
     return {
       taskId: dispatch.taskId,
@@ -275,6 +292,9 @@ export function createOpenClawMediaGenRuntimeExecutor(
         providerRequestDigest: job.providerRequestDigest,
       }),
       ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+      ...(job.spatialInputAcceptance && {
+        spatialInputAcceptance: job.spatialInputAcceptance,
+      }),
     };
   }
 

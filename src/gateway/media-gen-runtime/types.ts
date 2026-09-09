@@ -2,6 +2,8 @@ import type {
   MediaGenReferenceRole,
   MediaGenRuntimeDispatch,
   MediaGenRuntimeResult,
+  MediaGenRuntimeSpatialInputAcceptance,
+  MediaGenRuntimeSpatialInputEnvelope,
 } from "../media-gen-runtime-http.js";
 import type { MediaGenRuntimeFrozenPlanV2 } from "./frozen-plan.js";
 import type { MediaGenProviderRuntimeObservation } from "./provider-observation.js";
@@ -25,6 +27,8 @@ export type MediaGenRuntimeSource =
 export type MediaGenRuntimeSourceSlot = {
   role: MediaGenReferenceRole;
   ordinal: number;
+  /** Control-plane artifact identity retained for exact native Spatial binding. */
+  artifactId?: string;
   source: MediaGenRuntimeSource;
 };
 
@@ -44,6 +48,9 @@ export type MediaGenRuntimeVendorInput = {
    */
   sources?: MediaGenRuntimeSourceSlot[];
   frozenPlan?: MediaGenRuntimeFrozenPlanV2;
+  executionAttempt?: number;
+  frozenPlanDigest?: string;
+  spatialInputEnvelope?: MediaGenRuntimeSpatialInputEnvelope;
 };
 
 export type MediaGenRuntimeVendorOutput = {
@@ -63,6 +70,7 @@ export type MediaGenRuntimeVendorJob =
       vendorJobId: string;
       providerRequestDigest?: string;
       providerObservation?: MediaGenProviderRuntimeObservation;
+      spatialInputAcceptance?: MediaGenRuntimeSpatialInputAcceptance;
     }
   | {
       state: "succeeded";
@@ -70,6 +78,7 @@ export type MediaGenRuntimeVendorJob =
       output: MediaGenRuntimeVendorOutput;
       providerRequestDigest?: string;
       providerObservation?: MediaGenProviderRuntimeObservation;
+      spatialInputAcceptance?: MediaGenRuntimeSpatialInputAcceptance;
     }
   | {
       state: "failed";

@@ -359,6 +359,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       if (input.mode !== "anchored-shell" && input.argv.length === 0) {
         throw new Error("spawn argv cannot be empty");
       }
+      if (input.mode === "child" && input.deferWorkerStart && !input.ownedWorker) {
+        throw new Error("deferred worker start requires owned worker supervision");
+      }
       // Reserve the join before construction: a timeout result does not release
       // resources acquired later, or hide cleanup when readiness rejects after spawn.
       const cleanup = createDeferredCore();
@@ -406,6 +409,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
                 secretInput: input.secretInput,
                 abortSignal: constructionAbort.signal,
                 onSpawnCleanup,
+                ownedWorker: input.ownedWorker,
+                workerStartHandshake: input.workerStartHandshake,
+                onWorkerMessage: input.onWorkerMessage,
               });
       const extinctionPromise = adapterPromise
         .then(
@@ -602,8 +608,20 @@ export function createProcessSupervisor(): ProcessSupervisor & {
           requestCancel(reason);
         },
         detachOutput,
+        ...(input.mode === "child" && input.ownedWorker && input.deferWorkerStart
+          ? { openStartGate: async () => await adapter.openStartGate?.() }
+          : {}),
+        ...(input.mode === "child" && input.ownedWorker
+          ? {
+              sendWorkerMessage: async (message: unknown) =>
+                await adapter.sendWorkerMessage?.(message),
+            }
+          : {}),
       };
 
+      if (input.mode === "child" && input.ownedWorker && !input.deferWorkerStart) {
+        await adapter.openStartGate?.();
+      }
       if (forcedReason) {
         managedRun.cancel(forcedReason);
       }

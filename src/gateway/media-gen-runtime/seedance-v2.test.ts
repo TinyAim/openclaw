@@ -187,7 +187,12 @@ function sourceSlot(
   ref: MediaGenerationIntentReference,
   source: MediaGenRuntimeSourceSlot["source"],
 ): MediaGenRuntimeSourceSlot {
-  return { role: ref.role, ordinal: ref.ordinal, source };
+  return {
+    role: ref.role,
+    ordinal: ref.ordinal,
+    ...(ref.source.kind === "artifact" ? { artifactId: ref.source.artifactId } : {}),
+    source,
+  };
 }
 
 function vendorInput(
@@ -260,6 +265,28 @@ describe("Seedance Runtime Adapter V2", () => {
     expect(
       parseDispatch({ ...base, op: "submit", prompt: "prompt", frozenPlan })?.frozenPlan,
     ).toEqual(frozenPlan);
+    expect(
+      parseDispatch({
+        ...base,
+        op: "submit",
+        prompt: "prompt",
+        frozenPlan,
+        executionAttempt: 1,
+        frozenPlanDigest: `sha256:${"e".repeat(64)}`,
+        spatialInputEnvelope: {
+          schemaVersion: 1,
+          envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+          references: [
+            {
+              artifactId: "artifact-subject-0",
+              checksum: `sha256:${"b".repeat(64)}`,
+              role: "subject",
+              ordinal: 0,
+            },
+          ],
+        },
+      }),
+    ).toMatchObject({ executionAttempt: 1, spatialInputEnvelope: { schemaVersion: 1 } });
     const staleCompiledPromptPath = structuredClone(frozenPlan);
     staleCompiledPromptPath.constraintPlan = staleCompiledPromptPath.constraintPlan.map((row) =>
       row.intentPath === "compiledPrompt"
@@ -563,6 +590,69 @@ describe("Seedance Runtime Adapter V2", () => {
     });
   });
 
+  it("binds Spatial acceptance only after native content mapping receives a job receipt", async () => {
+    const bytes = Buffer.from("first-frame-spatial");
+    const ref = reference({
+      role: "first_frame",
+      ordinal: 0,
+      mediaClass: "image",
+      digest: sha(bytes),
+    });
+    const frozenPlan = plan({
+      references: [ref],
+      scenario: "first_frame_to_video",
+      audio: "silent",
+    });
+    const input: MediaGenRuntimeVendorInput = {
+      ...vendorInput(frozenPlan, [
+        sourceSlot(ref, { bytes, mimeType: "image/png", sha256: sha(bytes) }),
+      ]),
+      executionAttempt: 1,
+      frozenPlanDigest: `sha256:${"e".repeat(64)}`,
+      spatialInputEnvelope: {
+        schemaVersion: 1,
+        envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+        references: [
+          {
+            assetRefId: "aref-first-frame",
+            artifactId: "artifact-first_frame-0",
+            checksum: `sha256:${sha(bytes)}`,
+            role: "first_frame",
+            ordinal: 0,
+          },
+        ],
+      },
+    };
+    const vendor = createSeedanceV2RuntimeVendor({
+      apiKey: "ark-key",
+      fetchImpl: vi.fn(
+        async () => new Response(JSON.stringify({ id: "ark-spatial-1" }), { status: 200 }),
+      ) as unknown as typeof fetch,
+    });
+    await expect(vendor.submit(input)).resolves.toMatchObject({
+      state: "processing",
+      vendorJobId: job("image2video", "ark-spatial-1"),
+      spatialInputAcceptance: {
+        envelopeDigest: input.spatialInputEnvelope!.envelopeDigest,
+        executionAttempt: 1,
+        frozenPlanDigest: input.frozenPlanDigest,
+        runtimeJobId: job("image2video", "ark-spatial-1"),
+        references: input.spatialInputEnvelope!.references,
+      },
+    });
+    await expect(
+      vendor.submit({
+        ...input,
+        spatialInputEnvelope: {
+          ...input.spatialInputEnvelope!,
+          references: [
+            { ...input.spatialInputEnvelope!.references[0]!, checksum: `sha256:${"f".repeat(64)}` },
+          ],
+        },
+      }),
+    ).resolves.toMatchObject({ state: "failed", reason: "vendor_rejected" });
+  });
+
   it("runs submit to quality gate to Artifact Center through the existing executor", async () => {
     const bytes = Buffer.from("subject-0");
     const ref = reference({ role: "subject", ordinal: 0, mediaClass: "image", digest: sha(bytes) });
@@ -638,11 +728,35 @@ describe("Seedance Runtime Adapter V2", () => {
       durationSec: 6,
       resolution: "1080p",
       params: { ratio: "9:16" },
+      executionAttempt: 1,
+      frozenPlanDigest: `sha256:${"e".repeat(64)}`,
       frozenPlan,
+      spatialInputEnvelope: {
+        schemaVersion: 1,
+        envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+        references: [
+          {
+            assetRefId: "aref-subject",
+            artifactId: "artifact-subject-0",
+            checksum: `sha256:${sha(bytes)}`,
+            role: "subject",
+            ordinal: 0,
+          },
+        ],
+      },
     };
     const submitted = await executor.dispatch(dispatch);
     const runtimeJobId = job("image2video", "ark-job-vertical");
-    expect(submitted).toMatchObject({ status: "processing", runtimeJobId });
+    expect(submitted).toMatchObject({
+      status: "processing",
+      runtimeJobId,
+      spatialInputAcceptance: {
+        executionAttempt: 1,
+        frozenPlanDigest: dispatch.frozenPlanDigest,
+        runtimeJobId,
+        references: dispatch.spatialInputEnvelope!.references,
+      },
+    });
     const completed = await executor.dispatch({
       op: "poll",
       taskId: dispatch.taskId,

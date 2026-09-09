@@ -72,6 +72,7 @@ export async function resolveMediaGenRuntimeSources(input: {
     sources.push({
       role,
       ordinal,
+      artifactId: slot.artifactId,
       source: await input.bridge.resolveArtifactReference({
         dispatch,
         artifactId: slot.artifactId,

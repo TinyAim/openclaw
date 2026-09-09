@@ -47,14 +47,18 @@ async function withServer(
   });
 }
 
-async function post(url: string, authorization?: string): Promise<Response> {
+async function post(
+  url: string,
+  authorization?: string,
+  body: MediaGenRuntimeDispatch | Record<string, unknown> = dispatchBody(),
+): Promise<Response> {
   return await fetch(`${url}${MEDIA_GEN_RUNTIME_DISPATCH_PATH}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       ...(authorization ? { authorization } : {}),
     },
-    body: JSON.stringify(dispatchBody()),
+    body: JSON.stringify(body),
   });
 }
 
@@ -86,6 +90,21 @@ describe("media-generation runtime gateway registration", () => {
         runtimeJobId: "runtime-job-1",
       });
       expect(executor.dispatch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("rejects an unnegotiated Spatial envelope before an executor can run", async () => {
+    const executor = { dispatch: vi.fn() };
+    await withServer({ executor }, async (url) => {
+      const response = await post(url, "Bearer test-token", {
+        ...dispatchBody(),
+        spatialInputEnvelope: {
+          schemaVersion: 1,
+          envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+        },
+      });
+      expect(response.status).toBe(400);
+      expect(executor.dispatch).not.toHaveBeenCalled();
     });
   });
 

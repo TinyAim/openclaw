@@ -8,6 +8,7 @@ import type {
   MediaGenReferenceSlot,
   MediaGenRuntimeDispatch,
   MediaGenRuntimeReference,
+  MediaGenRuntimeSpatialInputEnvelope,
 } from "./media-gen-runtime-http.js";
 import { parseMediaGenRuntimeFrozenPlan } from "./media-gen-runtime/frozen-plan.js";
 
@@ -194,6 +195,50 @@ function parseConsent(value: unknown): MediaGenRuntimeDispatch["consent"] | null
   };
 }
 
+function parseSpatialInputEnvelope(
+  value: unknown,
+): MediaGenRuntimeSpatialInputEnvelope | null | undefined {
+  if (value === undefined) return undefined;
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    typeof value.envelopeDigest !== "string" ||
+    !/^spa_env:sha256:[a-f0-9]{64}$/u.test(value.envelopeDigest) ||
+    !Array.isArray(value.references) ||
+    value.references.length === 0
+  )
+    return null;
+  const references = [] as MediaGenRuntimeSpatialInputEnvelope["references"][number][];
+  const identities = new Set<string>();
+  for (const raw of value.references) {
+    if (
+      !isRecord(raw) ||
+      typeof raw.artifactId !== "string" ||
+      !asNonEmptyString(raw.artifactId) ||
+      typeof raw.checksum !== "string" ||
+      !SHA256_DIGEST.test(raw.checksum) ||
+      typeof raw.role !== "string" ||
+      !asNonEmptyString(raw.role) ||
+      typeof raw.ordinal !== "number" ||
+      !Number.isSafeInteger(raw.ordinal) ||
+      raw.ordinal < 0 ||
+      (raw.assetRefId !== undefined && !asNonEmptyString(raw.assetRefId))
+    )
+      return null;
+    const identity = `${raw.role}\u0000${raw.ordinal}`;
+    if (identities.has(identity)) return null;
+    identities.add(identity);
+    references.push({
+      ...(typeof raw.assetRefId === "string" ? { assetRefId: raw.assetRefId } : {}),
+      artifactId: raw.artifactId,
+      checksum: raw.checksum,
+      role: raw.role,
+      ordinal: raw.ordinal,
+    });
+  }
+  return { schemaVersion: 1, envelopeDigest: value.envelopeDigest, references };
+}
+
 export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
   if (!isRecord(value)) {
     return null;
@@ -203,6 +248,7 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
   const reference = parseReference(value.reference);
   const references = parseReferences(value.references);
   const consent = parseConsent(value.consent);
+  const spatialInputEnvelope = parseSpatialInputEnvelope(value.spatialInputEnvelope);
   if (
     !op ||
     !OPS.has(op) ||
@@ -210,7 +256,8 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
     !MODES.has(mode) ||
     reference === null ||
     references === null ||
-    consent === null
+    consent === null ||
+    spatialInputEnvelope === null
   ) {
     return null;
   }
@@ -286,7 +333,7 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
   let frozenPlanDigest: string | undefined;
   if (hasExecutionAttempt) {
     if (
-      op !== "reconcile" ||
+      (op !== "submit" && op !== "retry" && op !== "reconcile") ||
       typeof value.executionAttempt !== "number" ||
       !Number.isSafeInteger(value.executionAttempt) ||
       value.executionAttempt <= 0 ||
@@ -298,6 +345,14 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
     executionAttempt = value.executionAttempt;
     frozenPlanDigest = value.frozenPlanDigest;
   }
+  if (
+    spatialInputEnvelope &&
+    ((op !== "submit" && op !== "retry") ||
+      executionAttempt === undefined ||
+      !frozenPlanDigest ||
+      !frozenPlan)
+  )
+    return null;
   return {
     op: op as MediaGenRuntimeDispatch["op"],
     taskId,
@@ -319,6 +374,9 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
       ? { executionAttempt, frozenPlanDigest }
       : {}),
     ...(frozenPlan && { frozenPlan }),
+    ...(spatialInputEnvelope && executionAttempt !== undefined && frozenPlanDigest && frozenPlan
+      ? { spatialInputEnvelope }
+      : {}),
   };
 }
 

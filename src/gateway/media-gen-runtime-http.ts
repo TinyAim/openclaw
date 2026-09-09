@@ -24,6 +24,7 @@ import {
 export const MEDIA_GEN_RUNTIME_DISPATCH_PATH = "/v1/runtime/media-gen/dispatch";
 
 const MAX_BODY_BYTES = 256 * 1024;
+const SAFE_SHA256_DIGEST = /^sha256:[a-f0-9]{64}$/u;
 const STATUSES = new Set(["processing", "succeeded", "failed", "canceled", "submission_unknown"]);
 const FAILURE_REASONS = new Set([
   "auth",
@@ -100,6 +101,28 @@ export type MediaGenRuntimeDispatch = {
   executionAttempt?: number;
   frozenPlanDigest?: string;
   frozenPlan?: MediaGenRuntimeFrozenPlanV2;
+  spatialInputEnvelope?: MediaGenRuntimeSpatialInputEnvelope;
+};
+
+export type MediaGenRuntimeSpatialInputReference = {
+  assetRefId?: string;
+  artifactId: string;
+  checksum: string;
+  role: string;
+  ordinal: number;
+};
+
+export type MediaGenRuntimeSpatialInputEnvelope = {
+  schemaVersion: 1;
+  envelopeDigest: string;
+  references: readonly MediaGenRuntimeSpatialInputReference[];
+};
+
+export type MediaGenRuntimeSpatialInputAcceptance = MediaGenRuntimeSpatialInputEnvelope & {
+  executionAttempt: number;
+  frozenPlanDigest: string;
+  runtimeJobId: string;
+  providerRequestDigest: string;
 };
 
 export type MediaGenRuntimeResult = {
@@ -111,6 +134,7 @@ export type MediaGenRuntimeResult = {
   runtimeJobId?: string;
   providerRequestDigest?: string;
   providerObservation?: MediaGenProviderRuntimeObservation;
+  spatialInputAcceptance?: MediaGenRuntimeSpatialInputAcceptance;
   failureReason?:
     | "auth"
     | "quota"
@@ -226,6 +250,79 @@ function parseRuntimeStopOutcome(value: unknown): MediaGenRuntimeStopOutcome | u
     : undefined;
 }
 
+function parseSpatialInputAcceptance(
+  value: unknown,
+): MediaGenRuntimeSpatialInputAcceptance | undefined {
+  if (!isRecord(value)) return undefined;
+  const allowed = new Set([
+    "schemaVersion",
+    "envelopeDigest",
+    "references",
+    "executionAttempt",
+    "frozenPlanDigest",
+    "runtimeJobId",
+    "providerRequestDigest",
+  ]);
+  if (
+    Object.keys(value).some((key) => !allowed.has(key)) ||
+    value.schemaVersion !== 1 ||
+    typeof value.envelopeDigest !== "string" ||
+    !/^spa_env:sha256:[a-f0-9]{64}$/u.test(value.envelopeDigest) ||
+    !Array.isArray(value.references) ||
+    value.references.length === 0 ||
+    typeof value.executionAttempt !== "number" ||
+    !Number.isSafeInteger(value.executionAttempt) ||
+    value.executionAttempt < 1 ||
+    typeof value.frozenPlanDigest !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.frozenPlanDigest) ||
+    typeof value.runtimeJobId !== "string" ||
+    !value.runtimeJobId.trim() ||
+    typeof value.providerRequestDigest !== "string" ||
+    !/^sha256:[a-f0-9]{64}$/u.test(value.providerRequestDigest)
+  )
+    return undefined;
+  const references: MediaGenRuntimeSpatialInputReference[] = [];
+  const identities = new Set<string>();
+  for (const raw of value.references) {
+    if (!isRecord(raw)) return undefined;
+    const keys = new Set(["assetRefId", "artifactId", "checksum", "role", "ordinal"]);
+    if (
+      Object.keys(raw).some((key) => !keys.has(key)) ||
+      (raw.assetRefId !== undefined &&
+        (typeof raw.assetRefId !== "string" || !raw.assetRefId.trim())) ||
+      typeof raw.artifactId !== "string" ||
+      !raw.artifactId.trim() ||
+      typeof raw.checksum !== "string" ||
+      !/^sha256:[a-f0-9]{64}$/u.test(raw.checksum) ||
+      typeof raw.role !== "string" ||
+      !raw.role.trim() ||
+      typeof raw.ordinal !== "number" ||
+      !Number.isSafeInteger(raw.ordinal) ||
+      raw.ordinal < 0
+    )
+      return undefined;
+    const identity = `${raw.role}\u0000${raw.ordinal}`;
+    if (identities.has(identity)) return undefined;
+    identities.add(identity);
+    references.push({
+      ...(raw.assetRefId ? { assetRefId: raw.assetRefId } : {}),
+      artifactId: raw.artifactId,
+      checksum: raw.checksum,
+      role: raw.role,
+      ordinal: raw.ordinal,
+    });
+  }
+  return {
+    schemaVersion: 1,
+    envelopeDigest: value.envelopeDigest,
+    references,
+    executionAttempt: value.executionAttempt,
+    frozenPlanDigest: value.frozenPlanDigest,
+    runtimeJobId: value.runtimeJobId,
+    providerRequestDigest: value.providerRequestDigest,
+  };
+}
+
 function normalizeResult(
   dispatch: MediaGenRuntimeDispatch,
   result: unknown,
@@ -240,6 +337,10 @@ function normalizeResult(
   const failureReason = result.failureReason;
   const runtimeJobId = asNonEmptyString(result.runtimeJobId);
   const providerRequestDigest = asNonEmptyString(result.providerRequestDigest);
+  const spatialInputAcceptance =
+    result.spatialInputAcceptance === undefined
+      ? undefined
+      : parseSpatialInputAcceptance(result.spatialInputAcceptance);
   const providerObservation =
     result.providerObservation === undefined
       ? undefined
@@ -277,6 +378,12 @@ function normalizeResult(
       (!providerRequestDigest || !/^sha256:[a-f0-9]{64}$/u.test(providerRequestDigest))) ||
     (result.providerObservation !== undefined && !providerObservation) ||
     (result.runtimeStopOutcome !== undefined && !runtimeStopOutcome) ||
+    (result.spatialInputAcceptance !== undefined && !spatialInputAcceptance) ||
+    (spatialInputAcceptance !== undefined &&
+      ((status !== "processing" && status !== "succeeded") ||
+        runtimeJobId !== spatialInputAcceptance.runtimeJobId ||
+        providerRequestDigest !== spatialInputAcceptance.providerRequestDigest ||
+        providerObservation?.operation !== "submit")) ||
     (status === "processing" && !runtimeJobId) ||
     (runtimeStopOutcome !== undefined && status !== "canceled") ||
     (runtimeStopOutcome !== undefined &&
@@ -305,6 +412,7 @@ function normalizeResult(
     runtimeJobId: runtimeJobId ?? undefined,
     providerRequestDigest: providerRequestDigest ?? undefined,
     providerObservation: providerObservation ?? undefined,
+    spatialInputAcceptance,
     artifact: result.artifact,
     failureReason: failureReason as MediaGenRuntimeResult["failureReason"] | undefined,
     failureMessage: asNonEmptyString(result.failureMessage) ?? undefined,

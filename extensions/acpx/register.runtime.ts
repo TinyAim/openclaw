@@ -68,7 +68,11 @@ async function startRealService(
           }
           // Publication is a synchronous compare-and-replace: another plugin
           // generation cannot be adopted between the ownership check and write.
-          registerAcpRuntimeBackend({ id: ACPX_BACKEND_ID, ...backend });
+          registerAcpRuntimeBackend({
+            id: ACPX_BACKEND_ID,
+            ...backend,
+            healthy: backend.healthy ?? (() => true),
+          });
           publishedRuntime = backend.runtime;
           state.ownedRuntime = backend.runtime;
         },
@@ -148,6 +152,7 @@ export function createAcpxRuntimeService(
       registerAcpRuntimeBackend({
         id: ACPX_BACKEND_ID,
         runtime: deferredRuntime,
+        healthy: () => true,
       });
       ctx.logger.info("embedded acpx runtime backend registered lazily");
     },

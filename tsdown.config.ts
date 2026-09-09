@@ -412,6 +412,8 @@ function buildCoreDistEntries(): Record<string, string> {
       "src/config/sessions/session-model-context.worker.ts",
     "config/sessions/disk-budget.worker": "src/config/sessions/disk-budget.worker.ts",
     "agents/model-provider-auth.worker": "src/agents/model-provider-auth.worker.ts",
+    "gateway/media-studio-spatial-reference-runtime/v2-renderer.worker":
+      "src/gateway/media-studio-spatial-reference-runtime/v2-renderer.worker.ts",
     ...runtimeProcessBuildEntries,
     ...runtimeProcessDeclarationEntries,
     "system-agent/setup-inference-detection.worker":
