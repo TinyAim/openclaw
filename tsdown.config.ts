@@ -382,6 +382,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/compaction-planning.worker": "src/agents/compaction-planning.worker.ts",
     "agents/model-provider-auth.worker": "src/agents/model-provider-auth.worker.ts",
     "agents/prepared-model-catalog.worker": "src/agents/prepared-model-catalog.worker.ts",
+    "gateway/media-studio-spatial-reference-runtime/v2-renderer.worker":
+      "src/gateway/media-studio-spatial-reference-runtime/v2-renderer.worker.ts",
     ...runtimeProcessBuildEntries,
     ...runtimeProcessDeclarationEntries,
     "system-agent/setup-inference-detection.worker":

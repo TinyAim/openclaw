@@ -42,7 +42,7 @@ const ACP_BACKENDS_BY_ID = resolveAcpRuntimeRegistryGlobalState().backendsById;
 
 function isBackendHealthy(backend: AcpRuntimeBackend): boolean {
   if (!backend.healthy) {
-    return true;
+    return false;
   }
   try {
     return backend.healthy();

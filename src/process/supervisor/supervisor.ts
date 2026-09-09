@@ -309,6 +309,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
       if (input.mode === "child" && input.argv.length === 0) {
         throw new Error("spawn argv cannot be empty");
       }
+      if (input.mode === "child" && input.deferWorkerStart && !input.ownedWorker) {
+        throw new Error("deferred worker start requires owned worker supervision");
+      }
       const adapter =
         input.mode === "pty"
           ? await (async () => {
@@ -339,6 +342,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
                 input: input.input,
                 stdinMode: input.stdinMode,
                 secretInput: input.secretInput,
+                ownedWorker: input.ownedWorker,
+                workerStartHandshake: input.workerStartHandshake,
+                onWorkerMessage: input.onWorkerMessage,
               });
 
       registry.updateState(runId, forcedReason ? "exiting" : "running", {
@@ -519,6 +525,15 @@ export function createProcessSupervisor(): ProcessSupervisor & {
           stdoutListener = undefined;
           stderrListener = undefined;
         },
+        ...(input.mode === "child" && input.ownedWorker && input.deferWorkerStart
+          ? { openStartGate: async () => await adapter.openStartGate?.() }
+          : {}),
+        ...(input.mode === "child" && input.ownedWorker
+          ? {
+              sendWorkerMessage: async (message: unknown) =>
+                await adapter.sendWorkerMessage?.(message),
+            }
+          : {}),
       };
 
       active.set(runId, {
@@ -526,6 +541,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
         scopeKey,
         waitForExtinction: async () => await extinctionPromise,
       });
+      if (input.mode === "child" && input.ownedWorker && !input.deferWorkerStart) {
+        await adapter.openStartGate?.();
+      }
       if (forcedReason) {
         managedRun.cancel(forcedReason);
       }

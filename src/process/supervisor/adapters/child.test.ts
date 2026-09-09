@@ -189,6 +189,28 @@ describe("createChildAdapter", () => {
     expect(disconnectMock).toHaveBeenCalledOnce();
   });
 
+  it("waits for an opted-in worker ready message before opening its private start gate", async () => {
+    const { child, sendMock } = createStubChild();
+    spawnWithFallbackMock.mockResolvedValue({ child, usedFallback: false });
+    const adapter = await createChildAdapter({
+      argv: ["node", "worker"],
+      ownedWorker: true,
+      workerStartHandshake: true,
+    });
+
+    const opening = adapter.openStartGate?.();
+    expect(sendMock).not.toHaveBeenCalled();
+    child.emit("message", { type: "openclaw-worker-ready-v1" });
+    await Promise.resolve();
+    expect(sendMock).toHaveBeenCalledWith(
+      { type: "openclaw-worker-start-v1" },
+      expect.any(Function),
+    );
+    child.emit("message", { type: "openclaw-worker-started-v1" });
+    await opening;
+    adapter.dispose();
+  });
+
   it.each([
     { order: "disconnect first", events: ["disconnect", "exit", "stdout", "stderr"] },
     { order: "disconnect last", events: ["stdout", "stderr", "exit", "disconnect"] },

@@ -20,7 +20,7 @@ export function isAcpRuntimeSpawnAvailable(params: {
     return false;
   }
   if (!backend.healthy) {
-    return true;
+    return false;
   }
   try {
     return backend.healthy();

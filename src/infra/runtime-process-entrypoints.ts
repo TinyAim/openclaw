@@ -42,4 +42,9 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../process/supervisor/service-child-windows-job-anchor",
     distWorkerPath: "process/supervisor/service-child-windows-job-anchor.js",
   },
+  spatialReferenceGuardian: {
+    currentModuleUrl,
+    sourceWorkerName: "../gateway/media-studio-spatial-reference-runtime/spatial-guardian.worker",
+    distWorkerPath: "gateway/media-studio-spatial-reference-runtime/spatial-guardian.worker.js",
+  },
 } as const;

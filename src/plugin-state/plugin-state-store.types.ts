@@ -43,6 +43,25 @@ export type PluginStateSyncKeyedStore<T> = {
   clear(): void;
 };
 
+/**
+ * Deliberately narrow synchronous transaction surface for trusted core state
+ * owners. It is not part of the plugin runtime API: callers can touch only
+ * the declared keys and may stage JSON-compatible values or deletions.
+ */
+export type CorePluginStateSyncTransaction<T> = {
+  lookup(key: string): T | undefined;
+  set(key: string, value: T, opts?: { ttlMs?: number }): void;
+  delete(key: string): void;
+};
+
+/** Internal-only extension returned solely for `core:*` owners. */
+export type CorePluginStateSyncKeyedStore<T> = Required<PluginStateSyncKeyedStore<T>> & {
+  transaction<TResult>(
+    keys: readonly string[],
+    mutate: (transaction: CorePluginStateSyncTransaction<T>) => TResult,
+  ): TResult;
+};
+
 /** Options for opening a keyed plugin-state namespace. */
 export type PluginStateOverflowPolicy = "evict-oldest" | "reject-new";
 

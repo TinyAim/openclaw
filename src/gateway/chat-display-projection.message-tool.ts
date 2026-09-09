@@ -351,7 +351,7 @@ function isSuccessfulMessageToolResultPayload(message: Record<string, unknown>):
     readToolResultOkValue(message.output) ??
     readToolResultOkValue(message.content) ??
     readToolResultOkValue(message.text);
-  return ok !== false;
+  return ok === true;
 }
 
 function readMessageToolSourceReplySink(

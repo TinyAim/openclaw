@@ -13,11 +13,14 @@ import {
   pluginStateRegister,
   pluginStateRegisterIfAbsent,
   pluginStateRegisterSequencedJournalEntry,
+  pluginStateTransaction,
   pluginStateUpdate,
 } from "./plugin-state-store.sqlite.js";
 import type {
   OpenKeyedStoreOptions,
   PluginStateEntry,
+  CorePluginStateSyncKeyedStore,
+  CorePluginStateSyncTransaction,
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
   PluginStateOverflowPolicy,
@@ -37,6 +40,8 @@ import {
 export type {
   OpenKeyedStoreOptions,
   PluginStateEntry,
+  CorePluginStateSyncKeyedStore,
+  CorePluginStateSyncTransaction,
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "./plugin-state-store.types.js";
@@ -492,8 +497,82 @@ export function importPluginStateEntriesForDoctor(
 /** Opens a sync plugin-state namespace for a trusted core owner id. */
 export function createCorePluginStateSyncKeyedStore<T>(
   options: OpenKeyedStoreOptions & { ownerId: `core:${string}` },
-): Required<PluginStateSyncKeyedStore<T>> {
-  return createSyncKeyedStoreForPluginId<T>(options.ownerId, options);
+): CorePluginStateSyncKeyedStore<T> {
+  const store = createSyncKeyedStoreForPluginId<T>(options.ownerId, options);
+  const namespace = validateNamespace(options.namespace);
+  const maxEntries = validateMaxEntries(options.maxEntries);
+  const overflowPolicy = optionPolicy.resolveOverflowPolicy(options.overflowPolicy);
+  const defaultTtlMs = validateOptionalTtlMs(options.defaultTtlMs);
+  const env = options.env;
+  return {
+    ...store,
+    transaction<TResult>(
+      keys: readonly string[],
+      mutate: (transaction: CorePluginStateSyncTransaction<T>) => TResult,
+    ): TResult {
+      if (keys.length === 0 || keys.length > 2 || new Set(keys).size !== keys.length) {
+        throw invalidInput(
+          "trusted core plugin state transactions require one or two distinct keys",
+        );
+      }
+      const normalizedKeys = keys.map((key) => validateKey(key, "register"));
+      return pluginStateTransaction({
+        pluginId: options.ownerId,
+        namespace,
+        keys: normalizedKeys,
+        maxEntries,
+        overflowPolicy,
+        mutate: (current) => {
+          const staged = new Map<string, { valueJson: string; ttlMs?: number } | undefined>();
+          const transaction: CorePluginStateSyncTransaction<T> = {
+            lookup(key: string) {
+              const normalizedKey = validateKey(key, "lookup");
+              if (!current.has(normalizedKey))
+                throw invalidInput("trusted core transaction key was not declared", "lookup");
+              const stagedValue = staged.get(normalizedKey);
+              if (staged.has(normalizedKey))
+                return stagedValue === undefined
+                  ? undefined
+                  : (JSON.parse(stagedValue.valueJson) as T);
+              return current.get(normalizedKey) as T | undefined;
+            },
+            set(key, value, opts) {
+              const prepared = prepareRegisterParams(key, value, defaultTtlMs, opts);
+              if (!current.has(prepared.key))
+                throw invalidInput("trusted core transaction key was not declared");
+              staged.set(prepared.key, prepared);
+            },
+            delete(key) {
+              const normalizedKey = validateKey(key, "delete");
+              if (!current.has(normalizedKey))
+                throw invalidInput("trusted core transaction key was not declared", "delete");
+              staged.set(normalizedKey, undefined);
+            },
+          };
+          const result = mutate(transaction);
+          if (result && typeof result === "object" && "then" in (result as object)) {
+            throw invalidInput(
+              "trusted core plugin state transactions must use a synchronous mutator",
+            );
+          }
+          const values = new Map<string, { valueJson: string; ttlMs?: number } | undefined>();
+          for (const key of normalizedKeys) {
+            if (staged.has(key)) {
+              values.set(key, staged.get(key));
+            } else {
+              const value = current.get(key);
+              values.set(
+                key,
+                value === undefined ? undefined : prepareRegisterParams(key, value, defaultTtlMs),
+              );
+            }
+          }
+          return { result, values };
+        },
+        ...(env ? { env } : {}),
+      });
+    },
+  };
 }
 
 /** Clears plugin-state rows and option signatures for tests. */

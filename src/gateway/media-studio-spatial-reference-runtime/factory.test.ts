@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createMediaStudioSpatialReferenceRuntimeFromEnv } from "./factory.js";
 
@@ -8,7 +9,7 @@ describe("Spatial reference Runtime env factory", () => {
       bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response(JSON.stringify({ data: { ok: true } }), { status: 200 });
     }) as unknown as typeof fetch;
-    const runtime = createMediaStudioSpatialReferenceRuntimeFromEnv({
+    const runtime = await createMediaStudioSpatialReferenceRuntimeFromEnv({
       env: {
         OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED: "1",
         OPENCLAW_MEDIA_GEN_CONTROL_API_URL: "https://control.example",
@@ -86,14 +87,53 @@ describe("Spatial reference Runtime env factory", () => {
     });
   });
 
-  it("fails closed without explicit enable or machine credentials", () => {
-    expect(createMediaStudioSpatialReferenceRuntimeFromEnv({ env: {} })).toMatchObject({
+  it("fails closed without explicit enable or machine credentials", async () => {
+    await expect(
+      createMediaStudioSpatialReferenceRuntimeFromEnv({ env: {} }),
+    ).resolves.toMatchObject({
       enabled: false,
     });
-    expect(
+    await expect(
       createMediaStudioSpatialReferenceRuntimeFromEnv({
         env: { OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED: "1" },
       }),
-    ).toMatchObject({ enabled: false, reason: expect.stringContaining("missing") });
+    ).resolves.toMatchObject({ enabled: false, reason: expect.stringContaining("missing") });
+    await expect(
+      createMediaStudioSpatialReferenceRuntimeFromEnv({
+        env: {
+          OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED: "1",
+          OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED: "1",
+          OPENCLAW_MEDIA_GEN_CONTROL_API_URL: "https://control.example",
+          OPENCLAW_MEDIA_GEN_RUNTIME_ID: "runtime-1",
+          OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN: "token-1",
+        },
+      }),
+    ).resolves.toMatchObject({
+      enabled: false,
+      reason: expect.stringContaining("v2 bundle directory or Chromium executable"),
+    });
+  });
+
+  it("does not probe a source/tsx worker as though it were a packaged Runtime", async () => {
+    const runtime = await createMediaStudioSpatialReferenceRuntimeFromEnv({
+      env: {
+        OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED: "1",
+        OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED: "1",
+        OPENCLAW_MEDIA_GEN_CONTROL_API_URL: "https://control.example",
+        OPENCLAW_MEDIA_GEN_RUNTIME_ID: "runtime-1",
+        OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN: "token-1",
+        OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_BUNDLE_DIR: path.resolve(
+          process.cwd(),
+          "../../../apps/control_surface/spatial_babylon/dist",
+        ),
+        // The assertion is evaluated before Chromium probing, so an existing
+        // non-Chromium executable is enough to prove source mode is rejected.
+        OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_CHROMIUM_PATH: process.execPath,
+      },
+    });
+    expect(runtime).toMatchObject({
+      enabled: false,
+      reason: "v2 packaged renderer worker is unavailable",
+    });
   });
 });

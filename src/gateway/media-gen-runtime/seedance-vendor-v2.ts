@@ -354,6 +354,15 @@ export function createSeedanceV2RuntimeVendor(
           state: "processing",
           vendorJobId: encodeJobReceipt(mode, json.id),
           providerRequestDigest: compiled.providerRequestDigest,
+          ...(compiled.spatialInputEnvelope && {
+            spatialInputAcceptance: {
+              ...compiled.spatialInputEnvelope,
+              executionAttempt: input.executionAttempt!,
+              frozenPlanDigest: input.frozenPlanDigest!,
+              runtimeJobId: encodeJobReceipt(mode, json.id),
+              providerRequestDigest: compiled.providerRequestDigest,
+            },
+          }),
         },
         mode,
         {

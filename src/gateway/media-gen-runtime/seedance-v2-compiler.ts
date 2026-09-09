@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { MediaGenRuntimeSpatialInputEnvelope } from "../media-gen-runtime-http.js";
 import type { MediaGenerationIntentReference } from "./frozen-plan.js";
 import { validateSeedanceV2MultimodalV5Intent } from "./seedance-v2-multimodal-v5.js";
 import type {
@@ -54,7 +55,12 @@ export type SeedanceV2CreateBody = {
 };
 
 export type SeedanceV2CompileResult =
-  | { ok: true; body: SeedanceV2CreateBody; providerRequestDigest: string }
+  | {
+      ok: true;
+      body: SeedanceV2CreateBody;
+      providerRequestDigest: string;
+      spatialInputEnvelope?: MediaGenRuntimeSpatialInputEnvelope;
+    }
   | { ok: false; message: string };
 
 const RATIOS = new Set<SeedanceV2CreateBody["ratio"]>([
@@ -268,6 +274,35 @@ function validateFrozenIdentity(input: MediaGenRuntimeVendorInput): string | nul
   return null;
 }
 
+/**
+ * Bind a Spatial receipt only to source slots which the compiler has already
+ * checksum-verified and inserted into the native Seedance content array.
+ */
+function mappedSpatialInputEnvelope(
+  input: MediaGenRuntimeVendorInput,
+  slots: Map<string, MediaGenRuntimeSourceSlot>,
+): MediaGenRuntimeSpatialInputEnvelope | null | undefined {
+  const envelope = input.spatialInputEnvelope;
+  if (!envelope) return undefined;
+  if (!input.executionAttempt || !input.frozenPlanDigest) return null;
+  const frozenReferences = input.frozenPlan!.generationIntent.references;
+  for (const tuple of envelope.references) {
+    const key = `${tuple.role}:${tuple.ordinal}`;
+    const reference = frozenReferences.find((item) => `${item.role}:${item.ordinal}` === key);
+    const slot = slots.get(key);
+    const sourceChecksum = normalizedSha(slot?.source.sha256);
+    if (
+      !reference ||
+      !slot ||
+      slot.artifactId !== tuple.artifactId ||
+      sourceChecksum !== tuple.checksum ||
+      normalizedSha(reference.sourceDigest) !== tuple.checksum
+    )
+      return null;
+  }
+  return envelope;
+}
+
 /** Compile only documented Ark fields; `params` is validated, never forwarded. */
 export function compileSeedanceV2Request(
   input: MediaGenRuntimeVendorInput,
@@ -354,6 +389,10 @@ export function compileSeedanceV2Request(
     }
     content.push(mapped);
   }
+  const spatialInputEnvelope = mappedSpatialInputEnvelope(input, correlated.slots);
+  if (spatialInputEnvelope === null) {
+    return fail("The Spatial envelope does not match the native Seedance source mapping.");
+  }
   const body: SeedanceV2CreateBody = {
     model: SEEDANCE_V2_MODEL_ID,
     content,
@@ -366,5 +405,6 @@ export function compileSeedanceV2Request(
     ok: true,
     body,
     providerRequestDigest: `sha256:${createHash("sha256").update(JSON.stringify(body)).digest("hex")}`,
+    ...(spatialInputEnvelope ? { spatialInputEnvelope } : {}),
   };
 }

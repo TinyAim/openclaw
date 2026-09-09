@@ -24,10 +24,15 @@ import { createMediaStudioSpatialEnvironmentDepthMeshRuntimeExecutor } from "./d
 import { createMediaStudioSpatialReferenceRuntimeExecutor } from "./executor.js";
 import { createFilePanoramaCallbackOutbox } from "./panorama-callback-outbox.js";
 import { createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor } from "./panorama-executor.js";
+import { createSpatialReferenceJournal } from "./reference-journal.js";
+import type { SpatialReferenceV2BuildManifestInput } from "./v2-build-manifest.js";
+import { createSpatialReferenceV2Renderer } from "./v2-renderer.js";
+import { resolveSpatialReferenceV2RuntimeToolchain } from "./v2-runtime-admission.js";
 
 const REGISTER_PATH = "/v1/control/media-gen/runtime/register";
 const RUNTIME_TOKEN_HEADER = "x-wisclaw-media-gen-runtime-token";
 export const SPATIAL_REFERENCE_RUNTIME_CONTRACT = "spatial_reference_render/v1";
+export const SPATIAL_REFERENCE_RUNTIME_CONTRACT_V2 = "spatial_reference_render/v2";
 export const SPATIAL_REFERENCE_RUNTIME_BUILD_DIGEST = `sha256:${createHash("sha256")
   .update("openclaw-spatial-reference-render:v1")
   .digest("hex")}`;
@@ -41,7 +46,7 @@ export type SpatialReferenceRuntimeCapability = {
   contractVersion: string;
   rendererBuildDigest: string;
   supportedProfiles: readonly ["proxy_previs"];
-  supportedOutputSlots: readonly ["composition_frame"];
+  supportedOutputSlots: readonly string[];
   maxWidth: number;
   maxHeight: number;
   maxPixels: number;
@@ -141,13 +146,13 @@ function envList(env: RuntimeEnv, key: string): string[] {
     .filter(Boolean);
 }
 
-export function createMediaStudioSpatialReferenceRuntimeFromEnv(
+export async function createMediaStudioSpatialReferenceRuntimeFromEnv(
   options: {
     env?: RuntimeEnv;
     fetchImpl?: RuntimeFetch;
     log?: { info?: (message: string) => void; warn?: (message: string) => void };
   } = {},
-): MediaStudioSpatialReferenceRuntimeFromEnv {
+): Promise<MediaStudioSpatialReferenceRuntimeFromEnv> {
   const env = options.env ?? process.env;
   if (!envBool(env, "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED")) {
     return {
@@ -173,18 +178,85 @@ export function createMediaStudioSpatialReferenceRuntimeFromEnv(
       reason: "control-api URL, runtime id, or runtime token is missing",
     };
   }
+  const journalKey = createHash("sha256")
+    .update(`${controlApiUrl}|${runtimeId}`)
+    .digest("hex")
+    .slice(0, 20);
+  // Qualification and dispatch inspect one durable owner, namespace and legacy
+  // import boundary.  The factory never adds an in-memory mutex or a second
+  // store to decide whether a renderer may start.
+  const journal = createSpatialReferenceJournal({
+    env: env as NodeJS.ProcessEnv,
+    namespace: `reference-${journalKey}`,
+    legacyFilePath: path.join(
+      resolveStateDir(env as NodeJS.ProcessEnv),
+      "media-studio",
+      `spatial-reference-journal-${journalKey}.json`,
+    ),
+  });
+  // The child receives only this state locator and namespace, never the
+  // runtime registration token, callback URL, grants, or render request.
+  const guardianJournal = {
+    stateDir: resolveStateDir(env as NodeJS.ProcessEnv),
+    namespace: `reference-${journalKey}`,
+  };
+  const v2Requested = envBool(env, "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED");
+  const v2Toolchain = v2Requested
+    ? await resolveSpatialReferenceV2RuntimeToolchain({
+        bundleDir: envString(env, "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_BUNDLE_DIR"),
+        chromiumExecutablePath: envString(
+          env,
+          "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_CHROMIUM_PATH",
+        ),
+        journal,
+        runtimeId,
+        guardianJournal,
+      })
+    : undefined;
+  if (v2Requested && (!v2Toolchain || "reason" in v2Toolchain)) {
+    return {
+      enabled: false,
+      reason:
+        v2Toolchain && "reason" in v2Toolchain ? v2Toolchain.reason : "v2 toolchain is unavailable",
+    };
+  }
+  const enabledV2Toolchain = v2Requested
+    ? (v2Toolchain as {
+        referenceRenderHtmlPath: string;
+        chromiumExecutablePath: string;
+        rendererBuildDigest: string;
+        buildIdentity: {
+          advertisedDigest: string;
+          manifestInput: Omit<SpatialReferenceV2BuildManifestInput, "rendererModuleUrl">;
+        };
+      })
+    : undefined;
   const workspaces = envList(env, "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS");
   const heartbeatMs = envNumber(env, "OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS", 60_000);
   const capability: SpatialReferenceRuntimeCapability = {
-    contractVersion: SPATIAL_REFERENCE_RUNTIME_CONTRACT,
-    rendererBuildDigest: SPATIAL_REFERENCE_RUNTIME_BUILD_DIGEST,
-    // Current relay does not redeem source cutout grants. Advertising only
-    // proxy_previs keeps reference_composite fail-closed and honest.
+    contractVersion: v2Requested
+      ? SPATIAL_REFERENCE_RUNTIME_CONTRACT_V2
+      : SPATIAL_REFERENCE_RUNTIME_CONTRACT,
+    rendererBuildDigest: v2Requested
+      ? enabledV2Toolchain!.rendererBuildDigest
+      : SPATIAL_REFERENCE_RUNTIME_BUILD_DIGEST,
+    // v2 uses the frozen static state and state(t) frames, but deliberately
+    // keeps reference_composite unavailable until source plate composition is
+    // implemented rather than silently dropping source grants.
     supportedProfiles: ["proxy_previs"],
-    supportedOutputSlots: ["composition_frame"],
-    maxWidth: 8192,
-    maxHeight: 8192,
-    maxPixels: 33_554_432,
+    supportedOutputSlots: v2Requested
+      ? [
+          "composition_frame",
+          "motion_reference_video",
+          "start_frame",
+          "end_frame",
+          "topdown_frame",
+          "keyframe",
+        ]
+      : ["composition_frame"],
+    maxWidth: v2Requested ? 1280 : 8192,
+    maxHeight: v2Requested ? 1280 : 8192,
+    maxPixels: v2Requested ? 921_600 : 33_554_432,
     supportsCancel: true,
   };
   const panoramaCapability: SpatialEnvironmentPanoramaRuntimeCapability = {
@@ -241,8 +313,19 @@ export function createMediaStudioSpatialReferenceRuntimeFromEnv(
     controlApiUrl,
     runtimeId,
     token,
+    journal,
+    guardianJournal,
     fetchImpl,
     log: options.log,
+    ...(v2Requested
+      ? {
+          v2Renderer: createSpatialReferenceV2Renderer({
+            chromiumExecutablePath: enabledV2Toolchain!.chromiumExecutablePath,
+            referenceRenderHtmlPath: enabledV2Toolchain!.referenceRenderHtmlPath,
+            buildIdentity: enabledV2Toolchain!.buildIdentity,
+          }),
+        }
+      : {}),
   });
   const panoramaExecutor = createMediaStudioSpatialEnvironmentPanoramaRuntimeExecutor({
     controlApiUrl,
@@ -342,6 +425,7 @@ export function createMediaStudioSpatialReferenceRuntimeFromEnv(
       return () => {
         stopped = true;
         clearInterval(timer);
+        executor.stop();
         panoramaExecutor.stop?.();
         depthMeshExecutor.stop?.();
       };

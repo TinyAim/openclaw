@@ -987,6 +987,177 @@ export function pluginStateUpdate(params: {
   }
 }
 
+/**
+ * Execute a bounded, same-owner keyed mutation in one SQLite immediate
+ * transaction. This primitive deliberately receives pre-serialized values;
+ * the trusted-core facade remains responsible for key/JSON/TTL validation.
+ */
+export function pluginStateTransaction<TResult>(params: {
+  pluginId: string;
+  namespace: string;
+  keys: readonly string[];
+  maxEntries: number;
+  overflowPolicy: PluginStateOverflowPolicy;
+  mutate: (current: ReadonlyMap<string, unknown | undefined>) => {
+    result: TResult;
+    values: ReadonlyMap<string, { valueJson: string; ttlMs?: number } | undefined>;
+  };
+  env?: NodeJS.ProcessEnv;
+}): TResult {
+  if (
+    params.keys.length === 0 ||
+    params.keys.length > 2 ||
+    new Set(params.keys).size !== params.keys.length
+  ) {
+    throw createPluginStateError({
+      code: "PLUGIN_STATE_INVALID_INPUT",
+      operation: "register",
+      message: "Trusted core plugin state transactions require one or two distinct keys.",
+    });
+  }
+  try {
+    return runWriteTransaction(
+      "register",
+      (store) => {
+        const now = Date.now();
+        deleteExpiredPluginStateEntries(store.db, now, {
+          pluginId: params.pluginId,
+          namespace: params.namespace,
+        });
+        const rows = new Map<string, PluginStateRow | undefined>();
+        const current = new Map<string, unknown | undefined>();
+        for (const key of params.keys) {
+          const row = selectPluginStateEntry(store.db, {
+            pluginId: params.pluginId,
+            namespace: params.namespace,
+            key,
+            now,
+          });
+          rows.set(key, row);
+          current.set(key, row ? parseStoredJson(row.value_json, "register") : undefined);
+        }
+        const mutation = params.mutate(current);
+        if (
+          mutation &&
+          typeof mutation === "object" &&
+          "then" in mutation &&
+          typeof (mutation as { then?: unknown }).then === "function"
+        ) {
+          throw createPluginStateError({
+            code: "PLUGIN_STATE_INVALID_INPUT",
+            operation: "register",
+            message: "Trusted core plugin state transactions must use a synchronous mutator.",
+            path: store.path,
+          });
+        }
+        if (!(mutation.values instanceof Map)) {
+          throw createPluginStateError({
+            code: "PLUGIN_STATE_INVALID_INPUT",
+            operation: "register",
+            message: "Trusted core plugin state transaction returned invalid staged values.",
+            path: store.path,
+          });
+        }
+        for (const key of mutation.values.keys()) {
+          if (!rows.has(key)) {
+            throw createPluginStateError({
+              code: "PLUGIN_STATE_INVALID_INPUT",
+              operation: "register",
+              message: "Trusted core plugin state transaction staged an undeclared key.",
+              path: store.path,
+            });
+          }
+        }
+        const finalValues = new Map<string, { valueJson: string; ttlMs?: number } | undefined>();
+        for (const key of params.keys) finalValues.set(key, mutation.values.get(key));
+        const inserted = params.keys.filter((key) => !rows.get(key) && finalValues.get(key)).length;
+        const deleted = params.keys.filter((key) => rows.get(key) && !finalValues.get(key)).length;
+        if (params.overflowPolicy === "reject-new") {
+          const namespaceCount = countLivePluginStateNamespaceEntries(store.db, {
+            pluginId: params.pluginId,
+            namespace: params.namespace,
+            now,
+          });
+          if (namespaceCount - deleted + inserted > params.maxEntries) {
+            throw createPluginStateError({
+              code: "PLUGIN_STATE_LIMIT_EXCEEDED",
+              operation: "register",
+              message: `Plugin state namespace ${params.namespace} for ${params.pluginId} reached its ${params.maxEntries}-row limit.`,
+              path: store.path,
+            });
+          }
+          const pluginCount = countLivePluginStateEntries(store.db, {
+            pluginId: params.pluginId,
+            now,
+          });
+          if (pluginCount - deleted + inserted > resolveMaxPluginStateEntriesPerPlugin()) {
+            throw createPluginStateError({
+              code: "PLUGIN_STATE_LIMIT_EXCEEDED",
+              operation: "register",
+              message: `Plugin state for ${params.pluginId} reached the ${resolveMaxPluginStateEntriesPerPlugin()} live row limit.`,
+              path: store.path,
+            });
+          }
+        }
+        for (const key of params.keys) {
+          const next = finalValues.get(key);
+          if (!next) {
+            if (rows.get(key)) {
+              deletePluginStateEntry(store.db, {
+                pluginId: params.pluginId,
+                namespace: params.namespace,
+                key,
+              });
+            }
+            continue;
+          }
+          const expiresAt = resolvePluginStateExpiresAtMs({
+            ttlMs: next.ttlMs,
+            now,
+            operation: "register",
+            path: store.path,
+          });
+          upsertPluginStateEntry(
+            store.db,
+            bindPluginStateEntry({
+              pluginId: params.pluginId,
+              namespace: params.namespace,
+              key,
+              valueJson: next.valueJson,
+              createdAt: now,
+              expiresAt,
+            }),
+          );
+        }
+        if (params.overflowPolicy !== "reject-new") {
+          for (const key of params.keys) {
+            if (finalValues.get(key)) {
+              enforcePostRegisterLimits({
+                store,
+                pluginId: params.pluginId,
+                namespace: params.namespace,
+                maxEntries: params.maxEntries,
+                overflowPolicy: params.overflowPolicy,
+                now,
+                protectedKey: key,
+              });
+            }
+          }
+        }
+        return mutation.result;
+      },
+      envOptions(params.env),
+    );
+  } catch (error) {
+    throw wrapPluginStateError(
+      error,
+      "register",
+      "PLUGIN_STATE_WRITE_FAILED",
+      "Failed to transactionally update plugin state entries.",
+    );
+  }
+}
+
 export function pluginStateLookup(params: {
   pluginId: string;
   namespace: string;
