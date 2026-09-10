@@ -667,6 +667,7 @@ describe("Spatial reference SQLite execution journal", () => {
       runId: "run-test",
     });
     await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
+    await value.recordSpawnIntent({ identity, owner, nowMs: 2, guardian });
     await value.recordWorkerPrepared({ identity, owner, nowMs: 2, guardian, worker });
     await value.authorizeWorkerStart({ identity, owner, nowMs: 3, guardian, worker });
     await value.checkpoint({
