@@ -1,4 +1,8 @@
-import type { MediaGenRuntimeDispatch, MediaGenRuntimeResult } from "../media-gen-runtime-http.js";
+import type {
+  MediaGenRuntimeDispatch,
+  MediaGenRuntimeResult,
+  MediaGenRuntimeSpatialInputAcceptance,
+} from "../media-gen-runtime-http.js";
 import type { createMediaGenRuntimeFinalizer } from "./executor-finalize.js";
 import {
   canceledRuntimeResult as canceled,
@@ -12,6 +16,8 @@ export type MediaGenRuntimeTrackedJob = {
   consentRef?: string;
   consentRefs?: string[];
   providerRequestDigest?: string;
+  /** Runtime-local cache of the exact sender acceptance for same-process recovery. */
+  spatialInputAcceptance?: MediaGenRuntimeSpatialInputAcceptance;
 };
 
 type ReconcileInput = {
@@ -39,6 +45,15 @@ function submissionUnknown(
     ...(runtimeJobId ? { runtimeJobId } : {}),
     ...(providerRequestDigest ? { providerRequestDigest } : {}),
   };
+}
+
+function spatialAcceptance(
+  job: MediaGenRuntimeVendorJob,
+  tracked?: MediaGenRuntimeTrackedJob,
+): MediaGenRuntimeSpatialInputAcceptance | undefined {
+  return job.state === "processing" || job.state === "succeeded"
+    ? (job.spatialInputAcceptance ?? tracked?.spatialInputAcceptance)
+    : undefined;
 }
 
 /**
@@ -86,6 +101,7 @@ export async function reconcileMediaGenRuntimeJob(
     );
   }
   const providerRequestDigest = job.providerRequestDigest ?? tracked?.providerRequestDigest;
+  const acceptedSpatialInput = spatialAcceptance(job, tracked);
   input.remember({
     vendor,
     vendorJobId: runtimeJobId,
@@ -96,6 +112,7 @@ export async function reconcileMediaGenRuntimeJob(
       ? { consentRefs: dispatch.consentRefs ?? tracked?.consentRefs }
       : {}),
     ...(providerRequestDigest ? { providerRequestDigest } : {}),
+    ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
   });
 
   if (job.state === "processing") {
@@ -107,10 +124,11 @@ export async function reconcileMediaGenRuntimeJob(
       runtimeJobId,
       ...(providerRequestDigest ? { providerRequestDigest } : {}),
       ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+      ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
     };
   }
   if (job.state === "succeeded") {
-    return input.finalize(
+    const settled = await input.finalize(
       dispatch,
       job,
       false,
@@ -118,6 +136,10 @@ export async function reconcileMediaGenRuntimeJob(
       dispatch.consentRefs ?? tracked?.consentRefs,
       providerRequestDigest,
     );
+    return {
+      ...settled,
+      ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
+    };
   }
   if (job.state === "canceled") {
     input.forget();

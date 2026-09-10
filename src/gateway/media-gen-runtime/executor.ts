@@ -3,6 +3,7 @@ import type {
   MediaGenRuntimeDispatch,
   MediaGenRuntimeHttpExecutor,
   MediaGenRuntimeResult,
+  MediaGenRuntimeSpatialInputAcceptance,
 } from "../media-gen-runtime-http.js";
 import { cancelMediaGenRuntimeJob } from "./executor-cancel.js";
 import { createMediaGenRuntimeFinalizer } from "./executor-finalize.js";
@@ -54,6 +55,14 @@ export type MediaGenRuntimeExecutorOptions = {
    * It is consulted only by `reconcile` and can never fall through to submit.
    */
   resolveReconcileJobReceipt?: (dispatch: MediaGenRuntimeDispatch) => string | undefined;
+  /** Persist and recover the exact Spatial sender acceptance for one attempt. */
+  persistSpatialInputAcceptance?: (
+    dispatch: MediaGenRuntimeDispatch,
+    acceptance: MediaGenRuntimeSpatialInputAcceptance,
+  ) => void;
+  resolveReconcileSpatialInputAcceptance?: (
+    dispatch: MediaGenRuntimeDispatch,
+  ) => MediaGenRuntimeSpatialInputAcceptance | undefined;
   /**
    * Optional quality gate after download, before Artifact handoff.
    * Factory wires this from OPENCLAW_MEDIA_GEN_QUALITY_GATE; unit tests omit it.
@@ -227,6 +236,30 @@ export function createOpenClawMediaGenRuntimeExecutor(
       ...(dispatch.frozenPlanDigest && { frozenPlanDigest: dispatch.frozenPlanDigest }),
       ...(dispatch.spatialInputEnvelope && { spatialInputEnvelope: dispatch.spatialInputEnvelope }),
     });
+    const spatialInputAcceptance =
+      job.state === "processing" || job.state === "succeeded"
+        ? job.spatialInputAcceptance
+        : undefined;
+    if (spatialInputAcceptance && options.persistSpatialInputAcceptance) {
+      try {
+        // This is deliberately before the in-memory binding and before the
+        // response: a lost response must still be recoverable without a new
+        // provider create.
+        options.persistSpatialInputAcceptance(dispatch, spatialInputAcceptance);
+      } catch {
+        return {
+          taskId: dispatch.taskId,
+          workspaceId: dispatch.workspaceId,
+          correlationId: dispatch.correlationId,
+          status: "submission_unknown",
+          failureReason: "internal",
+          failureMessage:
+            "The Spatial acceptance could not be durably recorded; reconciliation is required.",
+          providerRequestDigest:
+            job.providerRequestDigest ?? spatialInputAcceptance.providerRequestDigest,
+        };
+      }
+    }
     if (job.state === "failed") {
       return failed(
         dispatch,
@@ -265,6 +298,9 @@ export function createOpenClawMediaGenRuntimeExecutor(
       ...(dispatch.consentRefs && { consentRefs: dispatch.consentRefs }),
       ...(job.providerRequestDigest && {
         providerRequestDigest: job.providerRequestDigest,
+      }),
+      ...(job.spatialInputAcceptance && {
+        spatialInputAcceptance: job.spatialInputAcceptance,
       }),
     });
     if (job.state === "succeeded") {
@@ -307,9 +343,21 @@ export function createOpenClawMediaGenRuntimeExecutor(
           !input.runtimeJobId && !tracked
             ? options.resolveReconcileJobReceipt?.(input)?.trim()
             : undefined;
+        const resolvedRuntimeJobId = input.runtimeJobId ?? manuallyBoundReceipt;
+        const recoveredVendor = resolvedRuntimeJobId ? vendorFor(input) : undefined;
+        const recoveredAcceptance = options.resolveReconcileSpatialInputAcceptance?.(input);
+        const recoveredTracked: MediaGenRuntimeTrackedJob | undefined =
+          tracked ??
+          (resolvedRuntimeJobId && recoveredVendor
+            ? {
+                vendor: recoveredVendor,
+                vendorJobId: resolvedRuntimeJobId,
+                ...(recoveredAcceptance ? { spatialInputAcceptance: recoveredAcceptance } : {}),
+              }
+            : undefined);
         return reconcileMediaGenRuntimeJob({
           dispatch: manuallyBoundReceipt ? { ...input, runtimeJobId: manuallyBoundReceipt } : input,
-          tracked,
+          tracked: recoveredTracked,
           fallbackVendor: vendorFor(input),
           finalize,
           remember: (job) => jobs.set(input.taskId, job),
@@ -326,6 +374,10 @@ export function createOpenClawMediaGenRuntimeExecutor(
             ? await vendor.reconcile(input.runtimeJobId)
             : await vendor.poll(input.runtimeJobId);
           const providerRequestDigest = job.providerRequestDigest ?? prior?.providerRequestDigest;
+          const jobSpatialInputAcceptance =
+            job.state === "processing" || job.state === "succeeded"
+              ? job.spatialInputAcceptance
+              : undefined;
           jobs.set(input.taskId, {
             vendor,
             vendorJobId: input.runtimeJobId,
@@ -334,6 +386,12 @@ export function createOpenClawMediaGenRuntimeExecutor(
             ...(providerRequestDigest && {
               providerRequestDigest,
             }),
+            ...((jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance)
+              ? {
+                  spatialInputAcceptance:
+                    jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance,
+                }
+              : {}),
           });
           if (job.state === "processing") {
             return {
@@ -346,10 +404,16 @@ export function createOpenClawMediaGenRuntimeExecutor(
                 providerRequestDigest,
               }),
               ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+              ...((jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance)
+                ? {
+                    spatialInputAcceptance:
+                      jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance,
+                  }
+                : {}),
             };
           }
           if (job.state === "succeeded") {
-            return finalize(
+            const settled = await finalize(
               input,
               job,
               false,
@@ -357,6 +421,15 @@ export function createOpenClawMediaGenRuntimeExecutor(
               input.consentRefs,
               providerRequestDigest,
             );
+            return {
+              ...settled,
+              ...((jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance)
+                ? {
+                    spatialInputAcceptance:
+                      jobSpatialInputAcceptance ?? prior?.spatialInputAcceptance,
+                  }
+                : {}),
+            };
           }
           if (job.state === "canceled") {
             jobs.delete(input.taskId);
@@ -411,11 +484,12 @@ export function createOpenClawMediaGenRuntimeExecutor(
             )
           : failed(input, "internal", "The runtime job binding did not match the requested task.");
       }
-      const tracked =
+      const untrackedVendor = input.runtimeJobId ? vendorFor(input) : undefined;
+      const tracked: MediaGenRuntimeTrackedJob | undefined =
         trackedForTask ??
-        (input.runtimeJobId
+        (input.runtimeJobId && untrackedVendor
           ? {
-              vendor: vendorFor(input),
+              vendor: untrackedVendor,
               vendorJobId: input.runtimeJobId,
               ...(input.consentRef && { consentRef: input.consentRef }),
               ...(input.consentRefs && { consentRefs: input.consentRefs }),
@@ -449,6 +523,12 @@ export function createOpenClawMediaGenRuntimeExecutor(
               }
             : {}),
           ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+          ...((job.spatialInputAcceptance ?? tracked.spatialInputAcceptance)
+            ? {
+                spatialInputAcceptance:
+                  job.spatialInputAcceptance ?? tracked.spatialInputAcceptance,
+              }
+            : {}),
         };
       }
       if (job.state === "failed") {
@@ -483,7 +563,7 @@ export function createOpenClawMediaGenRuntimeExecutor(
           ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
         };
       }
-      return finalize(
+      const settled = await finalize(
         input,
         job,
         false,
@@ -491,6 +571,14 @@ export function createOpenClawMediaGenRuntimeExecutor(
         tracked.consentRefs ?? input.consentRefs,
         tracked.providerRequestDigest,
       );
+      return {
+        ...settled,
+        ...((job.spatialInputAcceptance ?? tracked.spatialInputAcceptance)
+          ? {
+              spatialInputAcceptance: job.spatialInputAcceptance ?? tracked.spatialInputAcceptance,
+            }
+          : {}),
+      };
     },
   };
 }

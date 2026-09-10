@@ -119,6 +119,7 @@ export async function createGatewayHttpTransport(params: {
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
   mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  mediaGenRuntimeImageExecutor?: import("./media-gen-runtime/image-http.js").ImageRouteExecutor;
   spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
   spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
   spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
@@ -350,11 +351,10 @@ export async function createGatewayHttpTransport(params: {
       getResolvedAuth: params.getResolvedAuth,
       rateLimiter: params.rateLimiter,
       mediaGenRuntimeExecutor: params.mediaGenRuntimeExecutor,
+      mediaGenRuntimeImageExecutor: params.mediaGenRuntimeImageExecutor,
       spatialReferenceRuntimeExecutor: params.spatialReferenceRuntimeExecutor,
-      spatialEnvironmentPanoramaRuntimeExecutor:
-        params.spatialEnvironmentPanoramaRuntimeExecutor,
-      spatialEnvironmentDepthMeshRuntimeExecutor:
-        params.spatialEnvironmentDepthMeshRuntimeExecutor,
+      spatialEnvironmentPanoramaRuntimeExecutor: params.spatialEnvironmentPanoramaRuntimeExecutor,
+      spatialEnvironmentDepthMeshRuntimeExecutor: params.spatialEnvironmentDepthMeshRuntimeExecutor,
       joinRateLimiter: params.joinRateLimiter,
       handleNodeWorkerBundleTransferRequest: params.handleNodeWorkerBundleTransferRequest,
       handleWorkerBootstrapArtifactTransferRequest:

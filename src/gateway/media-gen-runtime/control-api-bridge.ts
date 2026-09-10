@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import type { MediaGenRuntimeDispatch } from "../media-gen-runtime-http.js";
 import type {
+  MediaGenRuntimeArtifactHandoffIdentity,
   MediaGenRuntimeArtifactRef,
   MediaGenRuntimeBridge,
   MediaGenRuntimeByteSource,
@@ -75,7 +75,7 @@ async function readBoundedBody(res: Response, maxBytes: number, context: string)
 function buildHandoffUrl(
   baseUrl: string,
   runtimeId: string,
-  dispatch: MediaGenRuntimeDispatch,
+  dispatch: MediaGenRuntimeArtifactHandoffIdentity,
   runtimeJobId: string,
   output: MediaGenRuntimeVendorOutput,
   sha256: string,

@@ -1,3 +1,4 @@
+import { getRuntimeConfig } from "../../config/io.js";
 import type { MediaGenRuntimeHttpExecutor } from "../media-gen-runtime-http.js";
 import { createCogVideoX3RuntimeVendor } from "./cogvideox3-vendor.js";
 import { createWebhookLabeler, createWebhookModeration } from "./compliance-hooks.js";
@@ -6,6 +7,11 @@ import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import { createGoogleCloudAccessTokenProvider } from "./google-cloud-auth.js";
 import { createH3BaseSglangVendors } from "./h3-base-sglang-factory.js";
 import { createHailuoH3RuntimeVendor } from "./hailuo-h3-vendor.js";
+import {
+  createMediaGenRuntimeImageExecutor,
+  type MediaGenRuntimeImageRoute,
+  type ImageRouteExecutor,
+} from "./image-http.js";
 import { createKlingRuntimeVendor } from "./kling-vendor.js";
 import { createLumaRuntimeVendor } from "./luma-vendor.js";
 import {
@@ -17,6 +23,7 @@ import { parseReconcileJobBindings, resolveReconcileJobReceipt } from "./reconci
 import { parseRuntimeReferenceMap } from "./runtime-reference-map.js";
 import { createRunwayRuntimeVendor } from "./runway-vendor.js";
 import { createSeedanceV2RuntimeVendor } from "./seedance-vendor-v2.js";
+import { createMediaGenRuntimeSpatialAcceptanceStore } from "./spatial-acceptance-store.js";
 import type {
   MediaGenRuntimeBridge,
   MediaGenRuntimeConfigError,
@@ -35,6 +42,7 @@ export type MediaGenRuntimeFromEnvResult =
   | {
       enabled: true;
       executor: MediaGenRuntimeHttpExecutor;
+      imageExecutor?: ImageRouteExecutor;
       startHeartbeat: () => () => void;
       supportedPresetIds: string[];
       enforcesModeration: boolean;
@@ -75,6 +83,37 @@ function envBool(env: MediaGenRuntimeEnv, key: string): boolean {
 function envNumber(env: MediaGenRuntimeEnv, key: string, fallback: number): number {
   const parsed = Number(env[key]);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseImageRoute(env: MediaGenRuntimeEnv): MediaGenRuntimeImageRoute | null | undefined {
+  if (!envBool(env, "OPENCLAW_MEDIA_GEN_IMAGE_EXECUTOR_ENABLED")) return undefined;
+  const raw = envString(env, "OPENCLAW_MEDIA_GEN_IMAGE_ROUTE_JSON");
+  if (!raw) return null;
+  try {
+    const value = JSON.parse(raw) as Record<string, unknown>;
+    const required = [
+      "providerId",
+      "modelId",
+      "routeId",
+      "endpointId",
+      "region",
+      "accountTier",
+      "adapterRevision",
+      "profileId",
+      "profileRevision",
+      "profileDigest",
+    ];
+    if (required.some((key) => typeof value[key] !== "string" || !(value[key] as string).trim()))
+      return null;
+    if (
+      !Number.isSafeInteger(value.profileRevision) ||
+      !/^sha256:[a-f0-9]{64}$/u.test(value.profileDigest as string)
+    )
+      return null;
+    return value as unknown as MediaGenRuntimeImageRoute;
+  } catch {
+    return null;
+  }
 }
 
 function maybeKlingVendor(
@@ -299,6 +338,11 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     ]),
   ];
   const workspaces = envList(env, "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS");
+  const runtimeId = envString(env, "OPENCLAW_MEDIA_GEN_RUNTIME_ID", "MEDIAGEN_RUNTIME_ID");
+  const imageRoute = parseImageRoute(env);
+  if (imageRoute === null) {
+    return { enabled: false, reason: "OPENCLAW_MEDIA_GEN_IMAGE_ROUTE_JSON is invalid" };
+  }
   const runtimeReferenceMapEnvKey = env.OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON?.trim()
     ? "OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON"
     : "OPENCLAW_SEEDANCE_RUNTIME_REFERENCE_MAP_JSON";
@@ -319,6 +363,10 @@ export function createOpenClawMediaGenRuntimeFromEnv(
       reason: "OPENCLAW_MEDIA_GEN_RECONCILE_JOB_BINDINGS_JSON is invalid",
     };
   }
+  const spatialAcceptanceStore = createMediaGenRuntimeSpatialAcceptanceStore({
+    env: env as NodeJS.ProcessEnv,
+    runtimeId,
+  });
   // Quality gate (P2): DEFAULT OFF until installer/bundle proves ffprobe/ffmpeg.
   // - off: no validation hook
   // - on: enable validation only when bootstrap finds both tools; otherwise
@@ -415,15 +463,23 @@ export function createOpenClawMediaGenRuntimeFromEnv(
           },
         }
       : {}),
-    ...(reconcileJobBindings.size > 0
-      ? {
-          resolveReconcileJobReceipt: (dispatch) => {
-            return resolveReconcileJobReceipt(reconcileJobBindings, dispatch);
-          },
-        }
-      : {}),
+    resolveReconcileJobReceipt: (dispatch) =>
+      resolveReconcileJobReceipt(reconcileJobBindings, dispatch) ??
+      spatialAcceptanceStore.resolveRuntimeJobId(dispatch),
+    persistSpatialInputAcceptance: (dispatch, acceptance) =>
+      spatialAcceptanceStore.persist(dispatch, acceptance),
+    resolveReconcileSpatialInputAcceptance: (dispatch) => spatialAcceptanceStore.resolve(dispatch),
     ...(validateMediaBytes ? { validateMediaBytes } : {}),
   });
+  const imageExecutor = imageRoute
+    ? createMediaGenRuntimeImageExecutor({
+        env,
+        runtimeId,
+        route: imageRoute,
+        bridge,
+        getConfig: getRuntimeConfig,
+      })
+    : undefined;
   const supportedPresetIds = [...new Set(vendors.map((vendor) => vendor.presetId))];
   const heartbeatMs = envNumber(env, "OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS", 60_000);
   const enforcesModeration = Boolean(moderation);
@@ -500,6 +556,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
   return {
     enabled: true,
     executor,
+    ...(imageExecutor ? { imageExecutor } : {}),
     supportedPresetIds,
     enforcesModeration,
     appliesLabeling,

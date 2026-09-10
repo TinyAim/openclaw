@@ -221,12 +221,31 @@ function isExactScopeExtinct(
   return Boolean(
     recovery.worker &&
     recovery.proof &&
-    recovery.worker.pid === row.worker?.pid &&
-    recovery.worker.startTime === row.worker?.startTime &&
-    recovery.proof.protocol === "windows_job_v1" &&
-    recovery.proof.activeProcessCount === 0 &&
-    recovery.proof.workerPid === recovery.worker.pid &&
-    recovery.proof.workerStartTime === recovery.worker.startTime,
+    exactScopeProof(recovery.worker, recovery.proof, row.worker),
+  );
+}
+
+function exactScopeProof(
+  observedWorker: Pick<SpatialReferenceJournalWorker, "pid" | "startTime">,
+  proof: NonNullable<SpatialReferenceJournalScopeRecovery["proof"]>,
+  rowWorker?: SpatialReferenceJournalWorker,
+): boolean {
+  if (
+    !rowWorker ||
+    rowWorker.pid !== observedWorker.pid ||
+    rowWorker.startTime !== observedWorker.startTime
+  )
+    return false;
+  if (proof.protocol === "windows_job_v1") {
+    return (
+      proof.activeProcessCount === 0 &&
+      proof.workerPid === observedWorker.pid &&
+      proof.workerStartTime === observedWorker.startTime
+    );
+  }
+  return (
+    proof.processGroupId === observedWorker.pid &&
+    (proof.rootState === "dead" || proof.rootState === "reused")
   );
 }
 
@@ -932,14 +951,7 @@ export function createSpatialReferenceJournalStore(params: {
             fail("JOURNAL_SCOPE_OBSERVATION_INVALID");
           }
           const proof = input.observation.proof;
-          if (
-            !proof ||
-            proof.protocol !== "windows_job_v1" ||
-            proof.activeProcessCount !== 0 ||
-            proof.workerPid !== worker.pid ||
-            proof.workerStartTime !== worker.startTime ||
-            !proof.jobIncarnationId
-          ) {
+          if (!proof || !exactScopeProof(worker, proof, current.worker)) {
             fail("JOURNAL_SCOPE_OBSERVATION_INVALID");
           }
         } else if (input.observation.proof) {
@@ -999,15 +1011,11 @@ export function createSpatialReferenceJournalStore(params: {
           : Boolean(
               recovery.worker &&
               recovery.proof &&
-              row.worker &&
-              recovery.worker.pid === row.worker.pid &&
-              recovery.worker.startTime === row.worker.startTime &&
-              recovery.proof.protocol === "windows_job_v1" &&
-              recovery.proof.activeProcessCount === 0 &&
               !(
                 recovery.guardian.pid === recovery.owner.pid &&
                 recovery.guardian.pidStartTimeMs === recovery.owner.pidStartTimeMs
-              ),
+              ) &&
+              exactScopeProof(recovery.worker, recovery.proof, row.worker),
             );
       if (!exactScope) return { state: "unknown", row: clone(row) };
       if (

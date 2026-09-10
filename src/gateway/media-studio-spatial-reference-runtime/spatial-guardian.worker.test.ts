@@ -77,6 +77,7 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
       pidStartTimeMs: parentStartTime,
       ownerInstanceId: "guardian-integration-instance",
     };
+    const nowMs = Date.now();
     const journal = createSpatialReferenceJournal({
       env: { OPENCLAW_STATE_DIR: directory },
       namespace: "guardian-integration-journal",
@@ -108,8 +109,8 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
       identity,
       owner,
       expectedOutputs: expected,
-      nowMs: 1,
-      leaseExpiresAtMs: 100_000,
+      nowMs,
+      leaseExpiresAtMs: nowMs + 100_000,
       scopeKey,
       runId,
     });
@@ -152,7 +153,7 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
         guardianBuildDigest: identity.rendererBuildDigest,
         armedAtMs: 1,
       };
-      await journal.armScopeGuardian({ identity, owner, guardian, nowMs: 1 });
+      await journal.armScopeGuardian({ identity, owner, guardian, nowMs });
       await run.openStartGate?.();
       await run.sendWorkerMessage?.({
         type: "spatial-guardian-journal-context-v1",
@@ -215,13 +216,25 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           type: "spatial-guardian-scope-observation-v1",
           generation,
           sequence: 2,
-          reason: "posix_scope_unproven",
+          state: "extinct",
+          proof: {
+            protocol: "posix_group_observation_v1",
+            processGroupId: expect.any(Number),
+            rootState: "dead",
+          },
         }),
       );
       await expect(journal.get(identity.key)).resolves.toMatchObject({
         launchState: "start_authorized",
         worker: { scopeId: scopeKey, runId },
-        scopeRecovery: { state: "unknown", reason: "scope_observation_unknown" },
+        scopeRecovery: {
+          state: "extinct",
+          proof: {
+            protocol: "posix_group_observation_v1",
+            processGroupId: expect.any(Number),
+            rootState: "dead",
+          },
+        },
       });
     } finally {
       await rm(directory, { recursive: true, force: true });

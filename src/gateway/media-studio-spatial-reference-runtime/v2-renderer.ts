@@ -18,6 +18,7 @@ import {
   type SpatialReferenceV2BuildManifestInput,
   type SpatialReferenceV2ResourceProfile,
 } from "./v2-build-manifest.js";
+import { createSpatialReferenceV2GuardianProtocol } from "./v2-guardian-protocol.js";
 import {
   assertSpatialReferenceV2InputLimits,
   assertSpatialReferenceV2MissingOutputs,
@@ -370,6 +371,14 @@ async function runSupervisedWorker(params: {
   let invalidToolchainProof: Error | undefined;
   let outcome: "completed" | "cancelled" | "failed" | "stop-unconfirmed" = "failed";
   let workerFailureCode: string | undefined;
+  const guardianProtocol = createSpatialReferenceV2GuardianProtocol(generation);
+  const rejectGuardianCheckpoints = (code: string): void => {
+    workerFailureCode ??= code;
+    const error = new Error(code);
+    rejectSpawnIntent?.(error);
+    rejectWorkerPrepared?.(error);
+    rejectStartAuthorized?.(error);
+  };
   const stop = () => supervisor.cancelScope(scopeKey, "manual-cancel");
   params.signal.addEventListener("abort", stop, { once: true });
   try {
@@ -402,18 +411,27 @@ async function runSupervisedWorker(params: {
       onWorkerMessage: (message: unknown) => {
         if (!message || typeof message !== "object" || Array.isArray(message)) return;
         const event = message as Record<string, unknown>;
-        if (
-          event.type === "spatial-guardian-spawn-intent-v1" &&
-          event.generation === generation &&
-          event.sequence === 0
-        ) {
+        const protocol = guardianProtocol.consume(event);
+        if (protocol?.kind === "protocol-error") {
+          rejectGuardianCheckpoints(protocol.code);
+          return;
+        }
+        if (!protocol || protocol.kind === "failure") {
+          if (protocol?.kind === "failure") {
+            workerFailureCode =
+              typeof event.code === "string" && /^spatial_v2_[a-z0-9_]{1,120}$/.test(event.code)
+                ? event.code
+                : "spatial_v2_guardian_failed";
+            rejectGuardianCheckpoints(workerFailureCode);
+          }
+          return;
+        }
+        if (protocol.kind === "spawn-intent") {
           resolveSpawnIntent?.();
           return;
         }
         if (
-          event.type === "spatial-guardian-worker-prepared-v1" &&
-          event.generation === generation &&
-          event.sequence === 1 &&
+          protocol.kind === "worker-prepared" &&
           event.worker &&
           typeof event.worker === "object" &&
           !Array.isArray(event.worker)
@@ -437,9 +455,7 @@ async function runSupervisedWorker(params: {
           return;
         }
         if (
-          event.type === "spatial-guardian-start-authorized-v1" &&
-          event.generation === generation &&
-          event.sequence === 2 &&
+          protocol.kind === "start-authorized" &&
           event.worker &&
           typeof event.worker === "object" &&
           !Array.isArray(event.worker)
@@ -459,9 +475,7 @@ async function runSupervisedWorker(params: {
           return;
         }
         if (
-          event.type === "spatial-guardian-scope-observation-v1" &&
-          event.generation === generation &&
-          event.sequence === 2 &&
+          protocol.kind === "scope-observation" &&
           event.worker &&
           typeof event.worker === "object" &&
           !Array.isArray(event.worker) &&
@@ -469,10 +483,38 @@ async function runSupervisedWorker(params: {
         ) {
           const worker = event.worker as Record<string, unknown>;
           const reason = event.reason;
+          const state =
+            event.state ??
+            (reason === "posix_scope_unproven" || reason === "windows_job_unavailable"
+              ? "unknown"
+              : undefined);
+          const proof = event.proof;
+          const validPosixProof =
+            proof &&
+            typeof proof === "object" &&
+            !Array.isArray(proof) &&
+            (proof as Record<string, unknown>).protocol === "posix_group_observation_v1" &&
+            Number.isSafeInteger((proof as Record<string, unknown>).processGroupId) &&
+            ((proof as Record<string, unknown>).processGroupId as number) > 0 &&
+            ((proof as Record<string, unknown>).rootState === "dead" ||
+              (proof as Record<string, unknown>).rootState === "reused");
+          const validWindowsProof =
+            proof &&
+            typeof proof === "object" &&
+            !Array.isArray(proof) &&
+            (proof as Record<string, unknown>).protocol === "windows_job_v1" &&
+            (proof as Record<string, unknown>).activeProcessCount === 0 &&
+            typeof (proof as Record<string, unknown>).jobIncarnationId === "string" &&
+            Number.isSafeInteger((proof as Record<string, unknown>).workerPid) &&
+            Number.isSafeInteger((proof as Record<string, unknown>).workerStartTime);
           if (
             Number.isSafeInteger(worker.pid) &&
             Number.isSafeInteger(worker.startTime) &&
-            (reason === "posix_scope_unproven" || reason === "windows_job_unavailable")
+            (state === "extinct" || state === "unknown") &&
+            (state === "unknown" || validPosixProof || validWindowsProof) &&
+            (state === "unknown"
+              ? reason === "posix_scope_unproven" || reason === "windows_job_unavailable"
+              : true)
           ) {
             scopeObservation = {
               guardian,
@@ -482,7 +524,13 @@ async function runSupervisedWorker(params: {
                 runId,
                 scopeKey,
               },
-              reason,
+              state,
+              ...(reason === "posix_scope_unproven" ||
+              reason === "windows_job_unavailable" ||
+              reason === "guardian_unavailable"
+                ? { reason }
+                : {}),
+              ...(validPosixProof || validWindowsProof ? { proof } : {}),
             };
             observationDelivery = observationDelivery.then(
               async () => await params.lifecycle?.onScopeObservation?.(scopeObservation!),
@@ -491,8 +539,7 @@ async function runSupervisedWorker(params: {
           return;
         }
         if (
-          event.type === "spatial-v2-toolchain-proof-v1" &&
-          event.generation === generation &&
+          protocol.kind === "toolchain-proof" &&
           event.toolchain &&
           typeof event.toolchain === "object" &&
           !Array.isArray(event.toolchain)
@@ -528,22 +575,20 @@ async function runSupervisedWorker(params: {
           } else {
             workerFailureCode = "spatial_v2_toolchain_proof_invalid";
             invalidToolchainProof = new Error(workerFailureCode);
-            rejectSpawnIntent?.(new Error(workerFailureCode));
-            rejectWorkerPrepared?.(new Error(workerFailureCode));
-            rejectStartAuthorized?.(new Error(workerFailureCode));
+            rejectGuardianCheckpoints(workerFailureCode);
           }
           return;
         }
-        if (
-          (event.type === "spatial-v2-failed" || event.type === "spatial-guardian-failed-v1") &&
-          typeof event.code === "string"
-        ) {
-          workerFailureCode = /^spatial_v2_[a-z0-9_]{1,120}$/.test(event.code)
-            ? event.code
-            : "spatial_v2_guardian_failed";
-          rejectSpawnIntent?.(new Error(workerFailureCode));
-          rejectWorkerPrepared?.(new Error(workerFailureCode));
-          rejectStartAuthorized?.(new Error(workerFailureCode));
+        if (protocol.kind === "worker-prepared") {
+          rejectGuardianCheckpoints("spatial_guardian_worker_identity_invalid");
+          return;
+        }
+        if (protocol.kind === "start-authorized") {
+          rejectGuardianCheckpoints("spatial_guardian_start_authorization_invalid");
+          return;
+        }
+        if (protocol.kind === "scope-observation") {
+          rejectGuardianCheckpoints("spatial_guardian_scope_observation_invalid");
         }
       },
     });
@@ -628,6 +673,7 @@ async function runSupervisedWorker(params: {
         generation,
         sequence: 1,
       });
+      guardianProtocol.markParentAuthorizedStart();
     }
     const exit = await guardianExit;
     if (exit.reason !== "exit" || exit.exitCode !== 0)

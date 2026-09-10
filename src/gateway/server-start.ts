@@ -90,6 +90,9 @@ export async function startGatewayServerCore(
       mediaGenRuntimeExecutor:
         opts.mediaGenRuntimeExecutor ??
         (envMediaGenRuntime.enabled ? envMediaGenRuntime.executor : undefined),
+      mediaGenRuntimeImageExecutor:
+        opts.mediaGenRuntimeImageExecutor ??
+        (envMediaGenRuntime.enabled ? envMediaGenRuntime.imageExecutor : undefined),
       spatialReferenceRuntimeExecutor:
         opts.spatialReferenceRuntimeExecutor ??
         (envSpatialReferenceRuntime.enabled ? envSpatialReferenceRuntime.executor : undefined),

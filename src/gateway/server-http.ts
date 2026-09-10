@@ -181,6 +181,7 @@ export function createGatewayHttpServer(opts: {
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
   mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  mediaGenRuntimeImageExecutor?: import("./media-gen-runtime/image-http.js").ImageRouteExecutor;
   spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
   spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
   spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
@@ -530,14 +531,12 @@ export function createGatewayHttpServer(opts: {
       );
       addAdmittedStage(Boolean(opts.spatialReferenceRuntimeExecutor), async () =>
         opts.spatialReferenceRuntimeExecutor
-          ? (await getMediaStudioSpatialReferenceHttpModule()).handleMediaStudioSpatialReferenceRenderHttpRequest(
-              req,
-              res,
-              {
-                ...routeAuth,
-                executor: opts.spatialReferenceRuntimeExecutor,
-              },
-            )
+          ? (
+              await getMediaStudioSpatialReferenceHttpModule()
+            ).handleMediaStudioSpatialReferenceRenderHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialReferenceRuntimeExecutor,
+            })
           : false,
       );
       addAdmittedStage(Boolean(opts.spatialEnvironmentPanoramaRuntimeExecutor), async () =>
@@ -565,6 +564,16 @@ export function createGatewayHttpServer(opts: {
           ...routeAuth,
           executor: opts.mediaGenRuntimeExecutor,
         }),
+      );
+      addAdmittedStage(Boolean(opts.mediaGenRuntimeImageExecutor), async () =>
+        (await import("./media-gen-runtime/image-http.js")).handleMediaGenRuntimeImageHttpRequest(
+          req,
+          res,
+          {
+            ...routeAuth,
+            executor: opts.mediaGenRuntimeImageExecutor,
+          },
+        ),
       );
       const approvalDocument = isControlUiApprovalDocumentPath({
         basePath: controlUiBasePath,
