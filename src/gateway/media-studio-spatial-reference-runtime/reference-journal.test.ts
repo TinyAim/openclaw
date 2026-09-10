@@ -647,6 +647,68 @@ describe("Spatial reference SQLite execution journal", () => {
     ).rejects.toThrow("JOURNAL_SCOPE_GUARDIAN_INVALID");
   });
 
+  it("accepts an exact POSIX process-group extinction proof for safe release", async () => {
+    const env = await state();
+    const value = await acceptTyped(env);
+    const worker = {
+      pid: 50,
+      startTime: 51,
+      scopeId: "scope-test",
+      runId: "run-test",
+      workerTokenDigest: digest,
+    };
+    await value.claim({
+      identity,
+      owner,
+      expectedOutputs: expected,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "scope-test",
+      runId: "run-test",
+    });
+    await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
+    await value.recordWorkerPrepared({ identity, owner, nowMs: 2, guardian, worker });
+    await value.authorizeWorkerStart({ identity, owner, nowMs: 3, guardian, worker });
+    await value.checkpoint({
+      identity,
+      owner,
+      nowMs: 4,
+      phase: "worker_started",
+      worker,
+    });
+    const exitedWorker = {
+      ...worker,
+      exited: { atMs: 5, reason: "completed" as const },
+    };
+    await value.checkpoint({
+      identity,
+      owner,
+      nowMs: 5,
+      phase: "worker_exited",
+      worker: exitedWorker,
+    });
+    await value.recordScopeObservation({
+      identity,
+      owner,
+      nowMs: 6,
+      guardian,
+      observation: {
+        state: "extinct",
+        observedAtMs: 6,
+        worker,
+        proof: {
+          protocol: "posix_group_observation_v1",
+          processGroupId: worker.pid,
+          rootState: "dead",
+        },
+      },
+    });
+    await expect(
+      value.release({ identity, owner, nowMs: 7, scopeEvidence: "extinct", worker: exitedWorker }),
+    ).resolves.toMatchObject({ worker: exitedWorker });
+    await expect(value.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+  });
+
   it("refuses never-spawned exclusive release after a probe/worker spawn and keeps the pair quarantined", async () => {
     const env = await state();
     const value = journal(env);
