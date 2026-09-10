@@ -163,7 +163,7 @@ export type SpatialReferenceV2RenderLifecycle = {
     guardian: SpatialReferenceV2GuardianIdentity,
     worker: SpatialReferenceV2WorkerIdentity,
   ) => void | Promise<void>;
-  /** A guardian-produced local scope fact; POSIX is deliberately never an extinct receipt. */
+  /** A guardian-produced local scope fact; only exact platform proof may be extinct. */
   onScopeObservation?: (observation: SpatialReferenceV2ScopeObservation) => void | Promise<void>;
   /** A qualification-only fact produced after the guardian has durably opened the child gate. */
   onToolchainProof?: (proof: SpatialReferenceV2ToolchainProof) => void | Promise<void>;

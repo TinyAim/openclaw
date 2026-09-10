@@ -56,6 +56,12 @@ export type MediaGenRuntimeImageRoute = {
   profileDigest: string;
 };
 
+export type MediaGenRuntimeImageCompliance = {
+  enforcesModeration: boolean;
+  appliesLabeling: boolean;
+  registrationDisclosureStatus: "undeclared" | "operator_self_declared";
+};
+
 type ImageReceipt = {
   schemaVersion: 1;
   runtimeId: string;
@@ -70,8 +76,124 @@ type ImageReceipt = {
   mimeType?: string;
   sha256?: string;
   artifact?: MediaGenRuntimeArtifactRef;
+  snapshot?: {
+    executionOwner: "user_runtime";
+    moderationStatus: "not_enforced" | "runtime_enforced";
+    labelingStatus: "absent" | "runtime_applied";
+    registrationDisclosureStatus: "undeclared" | "operator_self_declared";
+    capturedAt: string;
+  };
   failureMessage?: string;
 };
+
+function parseImageReceipt(raw: unknown): ImageReceipt | undefined {
+  if (!isRecord(raw)) return undefined;
+  const keys = new Set([
+    "schemaVersion",
+    "runtimeId",
+    "taskId",
+    "workspaceId",
+    "presetId",
+    "executionAttempt",
+    "frozenPlanDigest",
+    "runtimeJobId",
+    "state",
+    "bytesBase64",
+    "mimeType",
+    "sha256",
+    "artifact",
+    "snapshot",
+    "failureMessage",
+  ]);
+  if (Object.keys(raw).some((key) => !keys.has(key))) return undefined;
+  if (
+    raw.schemaVersion !== 1 ||
+    token(raw.runtimeId) === undefined ||
+    token(raw.taskId) === undefined ||
+    token(raw.workspaceId) === undefined ||
+    token(raw.presetId) === undefined ||
+    !Number.isSafeInteger(raw.executionAttempt) ||
+    raw.executionAttempt < 1 ||
+    !SHA256.test(String(raw.frozenPlanDigest)) ||
+    token(raw.runtimeJobId) === undefined ||
+    !["started", "succeeded", "failed", "canceled"].includes(String(raw.state))
+  )
+    return undefined;
+  if (
+    raw.bytesBase64 !== undefined &&
+    (typeof raw.bytesBase64 !== "string" ||
+      raw.bytesBase64.length === 0 ||
+      !/^[A-Za-z0-9+/]+={0,2}$/u.test(raw.bytesBase64))
+  )
+    return undefined;
+  if (
+    raw.mimeType !== undefined &&
+    (typeof raw.mimeType !== "string" || !/^image\/(?:png|jpeg|webp)$/u.test(raw.mimeType))
+  )
+    return undefined;
+  if (
+    raw.sha256 !== undefined &&
+    (typeof raw.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(raw.sha256))
+  )
+    return undefined;
+  if (raw.artifact !== undefined) {
+    if (!isRecord(raw.artifact)) return undefined;
+    const artifactKeys = new Set(["artifactId", "sha256", "durationSec", "resolution", "mimeType"]);
+    if (
+      Object.keys(raw.artifact).some((key) => !artifactKeys.has(key)) ||
+      token(raw.artifact.artifactId) === undefined ||
+      typeof raw.artifact.mimeType !== "string" ||
+      !/^image\/(?:png|jpeg|webp)$/u.test(raw.artifact.mimeType) ||
+      typeof raw.artifact.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(raw.artifact.sha256) ||
+      raw.artifact.sha256 !== raw.sha256
+    )
+      return undefined;
+  }
+  if (raw.snapshot !== undefined) {
+    if (
+      !isRecord(raw.snapshot) ||
+      Object.keys(raw.snapshot).some(
+        (key) =>
+          !new Set([
+            "executionOwner",
+            "moderationStatus",
+            "labelingStatus",
+            "registrationDisclosureStatus",
+            "capturedAt",
+          ]).has(key),
+      ) ||
+      raw.snapshot.executionOwner !== "user_runtime" ||
+      (raw.snapshot.moderationStatus !== "not_enforced" &&
+        raw.snapshot.moderationStatus !== "runtime_enforced") ||
+      (raw.snapshot.labelingStatus !== "absent" &&
+        raw.snapshot.labelingStatus !== "runtime_applied") ||
+      (raw.snapshot.registrationDisclosureStatus !== "undeclared" &&
+        raw.snapshot.registrationDisclosureStatus !== "operator_self_declared") ||
+      typeof raw.snapshot.capturedAt !== "string" ||
+      Number.isNaN(Date.parse(raw.snapshot.capturedAt))
+    )
+      return undefined;
+  }
+  if (
+    raw.state === "succeeded" &&
+    (typeof raw.bytesBase64 !== "string" ||
+      typeof raw.mimeType !== "string" ||
+      typeof raw.sha256 !== "string" ||
+      !raw.snapshot ||
+      createHash("sha256").update(Buffer.from(raw.bytesBase64, "base64")).digest("hex") !==
+        raw.sha256)
+  )
+    return undefined;
+  if (
+    raw.failureMessage !== undefined &&
+    (typeof raw.failureMessage !== "string" ||
+      raw.failureMessage.length === 0 ||
+      raw.failureMessage.length > 2000)
+  )
+    return undefined;
+  return raw as unknown as ImageReceipt;
+}
 
 export type ImageRouteExecutor = {
   dispatch(input: ImageDispatch): Promise<Record<string, unknown>>;
@@ -345,6 +467,179 @@ function result(input: ImageDispatch, status: string, extra: Record<string, unkn
   };
 }
 
+const RESULT_STATUSES = new Set([
+  "processing",
+  "succeeded",
+  "failed",
+  "canceled",
+  "submission_unknown",
+]);
+const FAILURE_REASONS = new Set([
+  "auth",
+  "quota",
+  "vendor_rejected",
+  "vendor_failed",
+  "content_blocked",
+  "download_failed",
+  "internal",
+]);
+
+const STOP_OUTCOMES = new Set([
+  "not_requested:no_runtime_dispatch",
+  "requested:runtime_stop_requested",
+  "confirmed:runtime_confirmed",
+  "not_supported:adapter_not_supported",
+  "failed:adapter_rejected",
+  "unknown:transport_uncertain",
+]);
+
+function normalizeImageResult(
+  input: ImageDispatch,
+  raw: unknown,
+): Record<string, unknown> | undefined {
+  if (!isRecord(raw)) return undefined;
+  const allowed = new Set([
+    "taskId",
+    "workspaceId",
+    "correlationId",
+    "status",
+    "runtimeJobId",
+    "providerRequestDigest",
+    "artifact",
+    "failureReason",
+    "failureMessage",
+    "runtimeStopOutcome",
+    "snapshot",
+  ]);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) return undefined;
+  if (
+    raw.taskId !== input.taskId ||
+    raw.workspaceId !== input.workspaceId ||
+    raw.correlationId !== input.correlationId ||
+    typeof raw.status !== "string" ||
+    !RESULT_STATUSES.has(raw.status)
+  )
+    return undefined;
+  const runtimeJobId = raw.runtimeJobId === undefined ? undefined : token(raw.runtimeJobId);
+  if (raw.runtimeJobId !== undefined && !runtimeJobId) return undefined;
+  const providerRequestDigest =
+    raw.providerRequestDigest === undefined
+      ? undefined
+      : typeof raw.providerRequestDigest === "string" && SHA256.test(raw.providerRequestDigest)
+        ? raw.providerRequestDigest
+        : undefined;
+  if (raw.providerRequestDigest !== undefined && !providerRequestDigest) return undefined;
+  const failureReason = raw.failureReason === undefined ? undefined : raw.failureReason;
+  if (
+    failureReason !== undefined &&
+    (typeof failureReason !== "string" || !FAILURE_REASONS.has(failureReason))
+  )
+    return undefined;
+  const failureMessage = raw.failureMessage === undefined ? undefined : raw.failureMessage;
+  if (failureMessage !== undefined || raw.failureMessage !== undefined) {
+    if (
+      typeof failureMessage !== "string" ||
+      failureMessage.length === 0 ||
+      failureMessage.length > 2000
+    )
+      return undefined;
+  }
+  let artifact: Record<string, unknown> | undefined;
+  if (raw.artifact !== undefined) {
+    if (!isRecord(raw.artifact)) return undefined;
+    const artifactKeys = new Set(["artifactId", "sha256", "durationSec", "resolution", "mimeType"]);
+    if (Object.keys(raw.artifact).some((key) => !artifactKeys.has(key))) return undefined;
+    if (
+      token(raw.artifact.artifactId) === undefined ||
+      typeof raw.artifact.mimeType !== "string" ||
+      !/^(?:image|video|audio)\/[A-Za-z0-9.+-]+$/u.test(raw.artifact.mimeType) ||
+      typeof raw.artifact.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/u.test(raw.artifact.sha256)
+    )
+      return undefined;
+    artifact = {
+      artifactId: raw.artifact.artifactId,
+      mimeType: raw.artifact.mimeType,
+      sha256: raw.artifact.sha256,
+      ...(typeof raw.artifact.durationSec === "number"
+        ? { durationSec: raw.artifact.durationSec }
+        : {}),
+      ...(typeof raw.artifact.resolution === "string"
+        ? { resolution: raw.artifact.resolution }
+        : {}),
+    };
+  }
+  let snapshot: Record<string, unknown> | undefined;
+  if (raw.snapshot !== undefined) {
+    if (!isRecord(raw.snapshot)) return undefined;
+    const snapshotKeys = new Set([
+      "executionOwner",
+      "moderationStatus",
+      "labelingStatus",
+      "registrationDisclosureStatus",
+      "capturedAt",
+      "consentRef",
+      "consentRefs",
+      "auditRef",
+    ]);
+    if (Object.keys(raw.snapshot).some((key) => !snapshotKeys.has(key))) return undefined;
+    if (
+      raw.snapshot.executionOwner !== "user_runtime" ||
+      (raw.snapshot.moderationStatus !== "not_enforced" &&
+        raw.snapshot.moderationStatus !== "runtime_enforced") ||
+      (raw.snapshot.labelingStatus !== "absent" &&
+        raw.snapshot.labelingStatus !== "runtime_applied") ||
+      (raw.snapshot.registrationDisclosureStatus !== "undeclared" &&
+        raw.snapshot.registrationDisclosureStatus !== "operator_self_declared") ||
+      typeof raw.snapshot.capturedAt !== "string" ||
+      Number.isNaN(Date.parse(raw.snapshot.capturedAt))
+    )
+      return undefined;
+    if (raw.snapshot.consentRef !== undefined && token(raw.snapshot.consentRef) === undefined)
+      return undefined;
+    if (raw.snapshot.auditRef !== undefined && token(raw.snapshot.auditRef) === undefined)
+      return undefined;
+    if (
+      raw.snapshot.consentRefs !== undefined &&
+      (!Array.isArray(raw.snapshot.consentRefs) ||
+        raw.snapshot.consentRefs.some((ref) => token(ref) === undefined))
+    )
+      return undefined;
+    snapshot = { ...raw.snapshot };
+  }
+  if (raw.runtimeStopOutcome !== undefined) {
+    if (!isRecord(raw.runtimeStopOutcome) || Object.keys(raw.runtimeStopOutcome).length !== 2)
+      return undefined;
+    const state = raw.runtimeStopOutcome.state;
+    const reasonCode = raw.runtimeStopOutcome.reasonCode;
+    if (
+      typeof state !== "string" ||
+      typeof reasonCode !== "string" ||
+      !STOP_OUTCOMES.has(`${state}:${reasonCode}`) ||
+      raw.status !== "canceled"
+    )
+      return undefined;
+  }
+  if (raw.status === "processing" && !runtimeJobId) return undefined;
+  if (raw.status === "submission_unknown" && !providerRequestDigest) return undefined;
+  if (raw.status === "failed" && !failureReason) return undefined;
+  if (raw.status === "succeeded" && (!runtimeJobId || !artifact || !snapshot)) return undefined;
+  if (raw.status !== "succeeded" && artifact) return undefined;
+  return {
+    taskId: input.taskId,
+    workspaceId: input.workspaceId,
+    correlationId: input.correlationId,
+    status: raw.status,
+    ...(runtimeJobId ? { runtimeJobId } : {}),
+    ...(providerRequestDigest ? { providerRequestDigest } : {}),
+    ...(artifact ? { artifact } : {}),
+    ...(failureReason ? { failureReason } : {}),
+    ...(failureMessage ? { failureMessage } : {}),
+    ...(raw.runtimeStopOutcome !== undefined ? { runtimeStopOutcome: raw.runtimeStopOutcome } : {}),
+    ...(snapshot ? { snapshot } : {}),
+  };
+}
+
 function outputSpec(plan: Record<string, unknown>):
   | {
       aspectRatio?: string;
@@ -384,7 +679,11 @@ function outputSpec(plan: Record<string, unknown>):
       : undefined;
   return {
     aspectRatio: typeof output.aspectRatio === "string" ? output.aspectRatio : undefined,
-    ...(resolution ? { resolution } : {}),
+    ...(resolution
+      ? { resolution }
+      : typeof output.resolution === "string" && /^\d+x\d+$/u.test(output.resolution)
+        ? { size: output.resolution }
+        : {}),
     quality,
     outputFormat: format,
     background,
@@ -427,8 +726,9 @@ function createReceiptStore(options: { env: NodeJS.ProcessEnv; runtimeId: string
     input: Pick<ImageDispatch, "workspaceId" | "taskId" | "executionAttempt" | "frozenPlanDigest">,
   ): Promise<ImageReceipt | undefined> {
     try {
-      const parsed = JSON.parse(await fs.readFile(fileFor(input), "utf8")) as ImageReceipt;
-      return parsed.runtimeId === options.runtimeId &&
+      const parsed = parseImageReceipt(JSON.parse(await fs.readFile(fileFor(input), "utf8")));
+      return parsed &&
+        parsed.runtimeId === options.runtimeId &&
         parsed.workspaceId === input.workspaceId &&
         parsed.taskId === input.taskId &&
         parsed.executionAttempt === input.executionAttempt &&
@@ -447,16 +747,37 @@ function createReceiptStore(options: { env: NodeJS.ProcessEnv; runtimeId: string
     if (exclusive) {
       try {
         const handle = await fs.open(target, "wx", 0o600);
-        await handle.writeFile(JSON.stringify(record));
-        await handle.close();
+        try {
+          await handle.writeFile(JSON.stringify(record));
+          await handle.sync();
+        } finally {
+          await handle.close();
+        }
         return true;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
         throw error;
       }
     }
-    await fs.writeFile(temp, JSON.stringify(record), { mode: 0o600 });
-    await fs.rename(temp, target);
+    try {
+      const handle = await fs.open(temp, "w", 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(record));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await fs.rename(temp, target);
+      const dirHandle = await fs.open(dir, "r");
+      try {
+        await dirHandle.sync();
+      } finally {
+        await dirHandle.close();
+      }
+    } catch (error) {
+      await fs.rm(temp, { force: true }).catch(() => undefined);
+      throw error;
+    }
     return true;
   }
   return { read, write };
@@ -468,10 +789,24 @@ export function createMediaGenRuntimeImageExecutor(options: {
   route: MediaGenRuntimeImageRoute;
   bridge: MediaGenRuntimeBridge;
   getConfig: () => OpenClawConfig;
+  compliance: MediaGenRuntimeImageCompliance;
+  /** Test seam; production always uses the OpenClaw image provider runtime. */
+  generateImageFn?: typeof generateImage;
 }): ImageRouteExecutor {
   const store = createReceiptStore({
     env: options.env ?? process.env,
     runtimeId: options.runtimeId,
+  });
+  const complianceSnapshot = () => ({
+    executionOwner: "user_runtime" as const,
+    moderationStatus: options.compliance.enforcesModeration
+      ? ("runtime_enforced" as const)
+      : ("not_enforced" as const),
+    labelingStatus: options.compliance.appliesLabeling
+      ? ("runtime_applied" as const)
+      : ("absent" as const),
+    registrationDisclosureStatus: options.compliance.registrationDisclosureStatus,
+    capturedAt: new Date().toISOString(),
   });
   const handoff = async (
     input: ImageDispatch,
@@ -484,6 +819,8 @@ export function createMediaGenRuntimeImageExecutor(options: {
       taskId: input.taskId,
       workspaceId: input.workspaceId,
       presetId: input.presetId,
+      executionAttempt: input.executionAttempt,
+      frozenPlanDigest: input.frozenPlanDigest,
     };
     const output: MediaGenRuntimeVendorOutput = {
       mediaRef: `runtime-local://${record.runtimeJobId}`,
@@ -496,6 +833,13 @@ export function createMediaGenRuntimeImageExecutor(options: {
       bytes: Buffer.from(record.bytesBase64, "base64"),
       sha256: record.sha256,
     });
+    if (
+      artifact.sha256 !== record.sha256 ||
+      artifact.mimeType !== record.mimeType ||
+      !token(artifact.artifactId)
+    ) {
+      throw new Error("image artifact handoff returned an invalid identity");
+    }
     await store.write({ ...record, artifact });
     return artifact;
   };
@@ -545,7 +889,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
         try {
           const spec = outputSpec(input.frozenImagePlan);
           if (!spec) throw new Error("image output mapping is unavailable");
-          const generated = await generateImage({
+          const generated = await (options.generateImageFn ?? generateImage)({
             cfg: options.getConfig(),
             prompt: (input.frozenImagePlan.generationIntent as Record<string, unknown>)
               .compiledPrompt as string,
@@ -560,6 +904,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
             bytesBase64: image.buffer.toString("base64"),
             mimeType: image.mimeType,
             sha256: createHash("sha256").update(image.buffer).digest("hex"),
+            snapshot: complianceSnapshot(),
           };
           await store.write(completed);
           return result(input, "processing", { runtimeJobId: started.runtimeJobId });
@@ -577,7 +922,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
           });
         }
       }
-      if (!existing || existing.runtimeJobId !== input.runtimeJobId)
+      if (!existing || (input.op !== "reconcile" && existing.runtimeJobId !== input.runtimeJobId))
         return result(input, "failed", {
           failureReason: "vendor_rejected",
           failureMessage: "exact image runtime receipt not found",
@@ -588,7 +933,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
           return result(input, "succeeded", {
             runtimeJobId: existing.runtimeJobId,
             artifact,
-            snapshot: { executionOwner: "user_runtime", runtimeId: options.runtimeId },
+            snapshot: existing.snapshot,
           });
         }
         const canceled = { ...existing, state: "canceled" as const };
@@ -603,7 +948,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
         return result(input, "succeeded", {
           runtimeJobId: existing.runtimeJobId,
           artifact,
-          snapshot: { executionOwner: "user_runtime", runtimeId: options.runtimeId },
+          snapshot: existing.snapshot,
         });
       }
       if (existing.state === "failed")
@@ -661,6 +1006,19 @@ export async function handleMediaGenRuntimeImageHttpRequest(
     );
     return true;
   }
-  sendJson(res, 200, await options.executor.dispatch(dispatch));
+  const rawReceipt = await options.executor.dispatch(dispatch);
+  const receipt = normalizeImageResult(dispatch, rawReceipt);
+  if (!receipt) {
+    sendJson(
+      res,
+      502,
+      result(dispatch, "failed", {
+        failureReason: "internal",
+        failureMessage: "image runtime returned an invalid public receipt",
+      }),
+    );
+    return true;
+  }
+  sendJson(res, 200, receipt);
   return true;
 }

@@ -91,7 +91,7 @@ function parseImageRoute(env: MediaGenRuntimeEnv): MediaGenRuntimeImageRoute | n
   if (!raw) return null;
   try {
     const value = JSON.parse(raw) as Record<string, unknown>;
-    const required = [
+    const allowed = new Set([
       "providerId",
       "modelId",
       "routeId",
@@ -102,8 +102,12 @@ function parseImageRoute(env: MediaGenRuntimeEnv): MediaGenRuntimeImageRoute | n
       "profileId",
       "profileRevision",
       "profileDigest",
-    ];
-    if (required.some((key) => typeof value[key] !== "string" || !(value[key] as string).trim()))
+    ]);
+    const required = [...allowed].filter((key) => key !== "profileRevision");
+    if (
+      Object.keys(value).some((key) => !allowed.has(key)) ||
+      required.some((key) => typeof value[key] !== "string" || !(value[key] as string).trim())
+    )
       return null;
     if (
       !Number.isSafeInteger(value.profileRevision) ||
@@ -478,6 +482,11 @@ export function createOpenClawMediaGenRuntimeFromEnv(
         route: imageRoute,
         bridge,
         getConfig: getRuntimeConfig,
+        compliance: {
+          enforcesModeration: Boolean(moderation),
+          appliesLabeling: Boolean(labeler),
+          registrationDisclosureStatus: "operator_self_declared",
+        },
       })
     : undefined;
   const supportedPresetIds = [...new Set(vendors.map((vendor) => vendor.presetId))];

@@ -89,6 +89,12 @@ function buildHandoffUrl(
     mimeType: output.mimeType,
     sha256,
   });
+  if (dispatch.executionAttempt !== undefined) {
+    params.set("executionAttempt", String(dispatch.executionAttempt));
+  }
+  if (dispatch.frozenPlanDigest) {
+    params.set("frozenPlanDigest", dispatch.frozenPlanDigest);
+  }
   if (output.durationSec !== undefined) params.set("durationSec", String(output.durationSec));
   if (output.resolution) params.set("resolution", output.resolution);
   return `${joinUrl(baseUrl, ARTIFACT_HANDOFF_PATH)}?${params.toString()}`;

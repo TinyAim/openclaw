@@ -2,6 +2,11 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { createSpatialReferenceJournal } from "./reference-journal.js";
 import type { SpatialReferenceJournalOwner } from "./reference-journal.js";
+import type {
+  SpatialReferenceV2GuardianIdentity,
+  SpatialReferenceV2ScopeObservation,
+  SpatialReferenceV2WorkerIdentity,
+} from "./v2-renderer.js";
 import { resolveSpatialReferenceV2RuntimeToolchain } from "./v2-runtime-admission.js";
 
 const bundleDir = path.resolve(process.cwd(), "../../../apps/control_surface/spatial_babylon/dist");
@@ -199,5 +204,54 @@ describe("Spatial v2 runtime qualification admission", () => {
     });
     expect("reason" in result).toBe(false);
     await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+  });
+
+  it("releases a real qualification from an exact guardian extinction observation", async () => {
+    const journal = createSpatialReferenceJournal();
+    let scopeEvidence: string | undefined;
+    journal.releaseExclusiveAdmission = async (input) => {
+      scopeEvidence = input.scopeEvidence;
+      return { released: true };
+    };
+    const guardian: SpatialReferenceV2GuardianIdentity = {
+      pid: 101,
+      startTime: 202,
+      runId: "guardian-run",
+      scopeKey: "guardian-scope",
+      generation: "guardian-generation",
+    };
+    const worker: SpatialReferenceV2WorkerIdentity = {
+      pid: 303,
+      startTime: 404,
+      runId: "worker-run",
+      scopeKey: "worker-scope",
+    };
+    const result = await resolveSpatialReferenceV2RuntimeToolchain({
+      bundleDir,
+      chromiumExecutablePath: process.execPath,
+      journal,
+      runtimeId: "runtime-admission",
+      executionMode: "packaged",
+      readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
+      testRenderQualification: async (_dispatch, _signal, lifecycle) => {
+        await lifecycle?.onGuardianLaunched?.(guardian);
+        await lifecycle?.onLaunched?.(worker);
+        const observation: SpatialReferenceV2ScopeObservation = {
+          guardian,
+          worker,
+          state: "extinct",
+          proof: {
+            protocol: "posix_group_observation_v1",
+            processGroupId: worker.pid,
+            rootState: "dead",
+          },
+        };
+        await lifecycle?.onScopeObservation?.(observation);
+        await lifecycle?.onToolchainProof?.(fakeToolchain);
+        return fakeRender;
+      },
+    });
+    expect("reason" in result).toBe(false);
+    expect(scopeEvidence).toBe("extinct");
   });
 });
