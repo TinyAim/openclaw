@@ -98,6 +98,32 @@ function token(value: unknown): string | undefined {
 function parsePlan(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const plan = value;
+  const planKeys = new Set([
+    "schemaVersion",
+    "previewId",
+    "presetId",
+    "mediaClass",
+    "generationIntent",
+    "generationIntentDigest",
+    "generationScenario",
+    "providerRouteRef",
+    "capabilityProfileRef",
+    "adapterRevision",
+    "executionTopology",
+    "servingProtocol",
+    "licensePolicyRef",
+    "dataEgress",
+    "checkpointDigest",
+    "runtimeRef",
+    "constraintPlan",
+    "inputFingerprint",
+    "intentFingerprint",
+    "resolvedPreservePlanDigest",
+    "resolvedReferenceBindingDigest",
+    "resolvedOutputSpecDigest",
+    "adapterCompilationDigest",
+  ]);
+  if (Object.keys(plan).some((key) => !planKeys.has(key))) return undefined;
   if (plan.mediaClass !== "image" || (plan.schemaVersion !== 3 && plan.schemaVersion !== 4))
     return undefined;
   if (
@@ -111,6 +137,58 @@ function parsePlan(value: unknown): Record<string, unknown> | undefined {
   const intent = isRecord(plan.generationIntent) ? plan.generationIntent : undefined;
   const runtime = isRecord(plan.runtimeRef) ? plan.runtimeRef : undefined;
   if (!route || route.schemaVersion !== 1 || !profile || !intent || !runtime) return undefined;
+  if (
+    typeof plan.generationIntentDigest !== "string" ||
+    plan.generationIntentDigest.length === 0 ||
+    plan.generationScenario !== IMAGE_SCENARIO ||
+    typeof plan.inputFingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(plan.inputFingerprint) ||
+    typeof plan.intentFingerprint !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(plan.intentFingerprint) ||
+    typeof plan.resolvedPreservePlanDigest !== "string" ||
+    !SHA256.test(plan.resolvedPreservePlanDigest) ||
+    typeof plan.resolvedReferenceBindingDigest !== "string" ||
+    !SHA256.test(plan.resolvedReferenceBindingDigest) ||
+    typeof plan.resolvedOutputSpecDigest !== "string" ||
+    !SHA256.test(plan.resolvedOutputSpecDigest) ||
+    typeof plan.adapterCompilationDigest !== "string" ||
+    !SHA256.test(plan.adapterCompilationDigest) ||
+    !Array.isArray(plan.constraintPlan) ||
+    plan.constraintPlan.length === 0
+  )
+    return undefined;
+  const intentKeys =
+    plan.schemaVersion === 4
+      ? new Set([
+          "schemaVersion",
+          "identity",
+          "generationScenario",
+          "compiledPrompt",
+          "sourceImage",
+          "mask",
+          "references",
+          "operations",
+          "preserveConstraints",
+          "compiledSourceDigests",
+          "requestedOutput",
+          "resolvedOutput",
+          "policy",
+        ])
+      : new Set([
+          "schemaVersion",
+          "identity",
+          "generationScenario",
+          "compiledPrompt",
+          "sourceImage",
+          "mask",
+          "references",
+          "operations",
+          "preserveConstraints",
+          "compiledSourceDigests",
+          "output",
+          "policy",
+        ]);
+  if (Object.keys(intent).some((key) => !intentKeys.has(key))) return undefined;
   if (
     !["routeId", "providerId", "modelId", "endpointId", "region", "accountTier"].every(
       (key) => token(route[key]) !== undefined,
@@ -144,6 +222,44 @@ function parsePlan(value: unknown): Record<string, unknown> | undefined {
     intent.operations.length !== 0 ||
     !Array.isArray(intent.preserveConstraints) ||
     intent.preserveConstraints.length !== 0
+  )
+    return undefined;
+  const requiredMappingPaths =
+    plan.schemaVersion === 4
+      ? [
+          "mediaClass",
+          "generationScenario",
+          "compiledPrompt",
+          "resolvedOutput.width",
+          "resolvedOutput.height",
+          "resolvedOutput.reducedAspectRatio",
+          "resolvedOutput.format",
+          "resolvedOutput.alphaPolicy",
+          "resolvedOutput.transparentPixelRequirement",
+          "resolvedOutput.backgroundSemanticRequirement",
+          "resolvedOutput.qualityIntent",
+        ]
+      : [
+          "mediaClass",
+          "generationScenario",
+          "compiledPrompt",
+          "output.aspectRatio",
+          "output.resolution",
+          "output.format",
+          "output.alphaPolicy",
+          "output.qualityIntent",
+        ];
+  if (
+    !plan.constraintPlan.every((raw) => isRecord(raw) && typeof raw.intentPath === "string") ||
+    !requiredMappingPaths.every((path) =>
+      plan.constraintPlan.some(
+        (raw) =>
+          isRecord(raw) &&
+          raw.intentPath === path &&
+          raw.required === true &&
+          raw.support !== "unsupported",
+      ),
+    )
   )
     return undefined;
   const output = plan.schemaVersion === 4 ? intent.resolvedOutput : intent.output;
@@ -229,9 +345,7 @@ function result(input: ImageDispatch, status: string, extra: Record<string, unkn
   };
 }
 
-function outputSpec(
-  plan: Record<string, unknown>,
-):
+function outputSpec(plan: Record<string, unknown>):
   | {
       aspectRatio?: string;
       resolution?: "1K" | "2K" | "4K";
