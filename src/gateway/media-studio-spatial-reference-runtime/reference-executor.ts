@@ -256,15 +256,18 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
     let worker: SpatialReferenceJournalWorker | undefined;
     let spawnIntentRecorded = false;
     let guardian: SpatialReferenceJournalScopeGuardian | undefined;
+    const fixtureRenderer = Boolean(options.v2Renderer && !options.guardianJournal);
     // The guardian, not this parent, persists either `never_spawned` or
     // `unknown`. The parent only consumes that exact durable result on finish.
     const observeNeverSpawned = async () => undefined;
     const terminalScopeEvidence = (): "extinct" | "never_spawned" | undefined =>
-      worker?.exited
-        ? "extinct"
-        : !spawnIntentRecorded || input?.contractVersion !== "spatial_reference_render/v2"
-          ? "never_spawned"
-          : undefined;
+      fixtureRenderer
+        ? "never_spawned"
+        : worker?.exited
+          ? "extinct"
+          : !spawnIntentRecorded || input?.contractVersion !== "spatial_reference_render/v2"
+            ? "never_spawned"
+            : undefined;
     let heartbeatBusy = false;
     const heartbeat = setInterval(() => {
       if (heartbeatBusy) return;
@@ -330,7 +333,13 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
           runId: receipt.runId,
           workerTokenDigest: createHash("sha256").update(receipt.runId).digest("hex"),
         };
-        if (!guardian) throw new Error("spatial_guardian_identity_missing");
+        // The injected renderer is a fixture-only seam. Production factory
+        // construction always supplies guardianJournal and therefore must
+        // have observed onGuardianLaunched before accepting a worker.
+        if (!guardian && (options.guardianJournal || !options.v2Renderer))
+          throw new Error("spatial_guardian_identity_missing");
+        if (!fixtureRenderer)
+          await journal.checkpoint({ ...context(), phase: "worker_started", worker });
       },
       onStartAuthorized: async (_guardian, receipt) => {
         if (
@@ -371,7 +380,8 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
             reason: controller.signal.aborted ? "cancelled" : "completed",
           },
         };
-        await journal.checkpoint({ ...context(), phase: "worker_exited", worker });
+        if (!fixtureRenderer)
+          await journal.checkpoint({ ...context(), phase: "worker_exited", worker });
       },
     };
     try {

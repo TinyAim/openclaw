@@ -143,12 +143,15 @@ function qualificationReleaseIsSafe(
   return Boolean(
     recovery.worker &&
     recovery.proof &&
-    recovery.worker.pid === row.worker?.pid &&
-    recovery.worker.startTime === row.worker?.startTime &&
-    recovery.proof.protocol === "windows_job_v1" &&
-    recovery.proof.activeProcessCount === 0 &&
-    recovery.proof.workerPid === recovery.worker.pid &&
-    recovery.proof.workerStartTime === recovery.worker.startTime,
+    row.worker &&
+    recovery.worker.pid === row.worker.pid &&
+    recovery.worker.startTime === row.worker.startTime &&
+    (recovery.proof.protocol === "windows_job_v1"
+      ? recovery.proof.activeProcessCount === 0 &&
+        recovery.proof.workerPid === recovery.worker.pid &&
+        recovery.proof.workerStartTime === recovery.worker.startTime
+      : recovery.proof.processGroupId === recovery.worker.pid &&
+        (recovery.proof.rootState === "dead" || recovery.proof.rootState === "reused")),
   );
 }
 

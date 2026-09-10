@@ -101,7 +101,21 @@ export type SpatialReferenceV2GuardianIdentity = SpatialReferenceV2WorkerIdentit
 export type SpatialReferenceV2ScopeObservation = {
   guardian: SpatialReferenceV2GuardianIdentity;
   worker: SpatialReferenceV2WorkerIdentity;
-  reason: "posix_scope_unproven" | "windows_job_unavailable" | "guardian_unavailable";
+  state: "extinct" | "unknown";
+  reason?: "posix_scope_unproven" | "windows_job_unavailable" | "guardian_unavailable";
+  proof?:
+    | {
+        protocol: "posix_group_observation_v1";
+        processGroupId: number;
+        rootState: "dead" | "reused";
+      }
+    | {
+        protocol: "windows_job_v1";
+        jobIncarnationId: string;
+        activeProcessCount: 0;
+        workerPid: number;
+        workerStartTime: number;
+      };
 };
 
 /**

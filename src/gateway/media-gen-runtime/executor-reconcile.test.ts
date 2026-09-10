@@ -56,6 +56,183 @@ function vendor(input: { reconcile?: MediaGenRuntimeVendor["reconcile"] }) {
 }
 
 describe("OpenClaw executor reconcile honesty", () => {
+  it("retains the exact Spatial acceptance across same-process reconcile", async () => {
+    const acceptance = {
+      schemaVersion: 1 as const,
+      envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+      references: [
+        {
+          artifactId: "artifact-spatial",
+          checksum: `sha256:${"b".repeat(64)}`,
+          role: "composition_frame",
+          ordinal: 0,
+        },
+      ],
+      executionAttempt: 1,
+      frozenPlanDigest: `sha256:${"c".repeat(64)}`,
+      runtimeJobId: "seedance-job-1",
+      providerRequestDigest: `sha256:${"d".repeat(64)}`,
+    };
+    const reconcile = vi.fn(async () => ({
+      state: "processing" as const,
+      vendorJobId: "seedance-job-1",
+    }));
+    const submit = vi.fn(async () => ({
+      state: "processing" as const,
+      vendorJobId: "seedance-job-1",
+      spatialInputAcceptance: acceptance,
+    }));
+    const v: MediaGenRuntimeVendor = {
+      presetId: "seedance",
+      isConfigured: () => true,
+      submit,
+      poll: vi.fn(async () => ({
+        state: "processing" as const,
+        vendorJobId: "seedance-job-1",
+      })),
+      reconcile,
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge: bridge(),
+      vendors: [v],
+    });
+
+    await executor.dispatch(dispatch("submit"));
+    await expect(executor.dispatch(dispatch("reconcile"))).resolves.toMatchObject({
+      status: "processing",
+      spatialInputAcceptance: acceptance,
+    });
+  });
+
+  it("durably records Spatial acceptance before returning the provider receipt", async () => {
+    const acceptance = {
+      schemaVersion: 1 as const,
+      envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+      references: [
+        {
+          artifactId: "artifact-spatial",
+          checksum: `sha256:${"b".repeat(64)}`,
+          role: "composition_frame" as const,
+          ordinal: 0,
+        },
+      ],
+      executionAttempt: 1,
+      frozenPlanDigest: `sha256:${"c".repeat(64)}`,
+      runtimeJobId: "seedance-job-1",
+      providerRequestDigest: `sha256:${"d".repeat(64)}`,
+    };
+    const submit = vi.fn(async () => ({
+      state: "processing" as const,
+      vendorJobId: "seedance-job-1",
+      spatialInputAcceptance: acceptance,
+    }));
+    const v: MediaGenRuntimeVendor = {
+      presetId: "seedance",
+      isConfigured: () => true,
+      submit,
+      poll: vi.fn(async () => ({
+        state: "processing" as const,
+        vendorJobId: "seedance-job-1",
+      })),
+    };
+    const persisted: unknown[] = [];
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge: bridge(),
+      vendors: [v],
+      persistSpatialInputAcceptance: vi.fn((input, value) => {
+        persisted.push({ input, value });
+      }),
+    });
+
+    await expect(
+      executor.dispatch(
+        dispatch("submit", {
+          executionAttempt: 1,
+          frozenPlanDigest: acceptance.frozenPlanDigest,
+          spatialInputEnvelope: {
+            schemaVersion: 1,
+            envelopeDigest: acceptance.envelopeDigest,
+            references: acceptance.references,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "processing",
+      runtimeJobId: acceptance.runtimeJobId,
+    });
+    expect(persisted).toEqual([
+      expect.objectContaining({
+        value: acceptance,
+      }),
+    ]);
+    expect(submit).toHaveBeenCalledOnce();
+  });
+
+  it("returns submission_unknown and does not bind a receipt when durable acceptance fails", async () => {
+    const acceptance = {
+      schemaVersion: 1 as const,
+      envelopeDigest: `spa_env:sha256:${"a".repeat(64)}`,
+      references: [],
+      executionAttempt: 1,
+      frozenPlanDigest: `sha256:${"c".repeat(64)}`,
+      runtimeJobId: "seedance-job-unknown",
+      providerRequestDigest: `sha256:${"d".repeat(64)}`,
+    };
+    const submit = vi.fn(async () => ({
+      state: "processing" as const,
+      vendorJobId: acceptance.runtimeJobId,
+      spatialInputAcceptance: acceptance,
+    }));
+    const reconcile = vi.fn();
+    const v: MediaGenRuntimeVendor = {
+      presetId: "seedance",
+      isConfigured: () => true,
+      submit,
+      poll: vi.fn(),
+      reconcile,
+    };
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge: bridge(),
+      vendors: [v],
+      persistSpatialInputAcceptance: () => {
+        throw new Error("durable store unavailable");
+      },
+    });
+
+    await expect(
+      executor.dispatch(
+        dispatch("submit", {
+          executionAttempt: 1,
+          frozenPlanDigest: acceptance.frozenPlanDigest,
+          spatialInputEnvelope: {
+            schemaVersion: 1,
+            envelopeDigest: acceptance.envelopeDigest,
+            references: acceptance.references,
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "submission_unknown",
+      failureReason: "internal",
+      providerRequestDigest: acceptance.providerRequestDigest,
+    });
+    expect(submit).toHaveBeenCalledOnce();
+    expect(
+      await executor.dispatch(
+        dispatch("reconcile", {
+          executionAttempt: 1,
+          frozenPlanDigest: acceptance.frozenPlanDigest,
+          spatialInputEnvelope: {
+            schemaVersion: 1,
+            envelopeDigest: acceptance.envelopeDigest,
+            references: acceptance.references,
+          },
+        }),
+      ),
+    ).toMatchObject({ status: "submission_unknown" });
+    expect(reconcile).not.toHaveBeenCalled();
+  });
+
   it("keeps reconcile closed at the public parser without weakening poll/cancel", () => {
     expect(parseDispatch(dispatch("reconcile"))).toMatchObject({ op: "reconcile" });
     expect(parseDispatch(dispatch("reconcile", { runtimeJobId: "seedance-job-1" }))).toMatchObject({

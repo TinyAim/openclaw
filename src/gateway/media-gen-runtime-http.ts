@@ -435,7 +435,7 @@ function resolveConnectAuth(req: IncomingMessage): { token?: string; password?: 
   return null;
 }
 
-async function authorizeMediaGenRuntimeRequest(
+export async function authorizeMediaGenRuntimeRequest(
   req: IncomingMessage,
   res: ServerResponse,
   options: MediaGenRuntimeHttpOptions,

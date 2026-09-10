@@ -203,6 +203,16 @@ export type MediaGenRuntimeArtifactRef = {
   mimeType: string;
 };
 
+/**
+ * Shared identity for the Artifact callback.  Image dispatches deliberately do
+ * not fabricate a legacy video `mode` just to settle their bytes.
+ */
+export type MediaGenRuntimeArtifactHandoffIdentity = {
+  taskId: string;
+  workspaceId: string;
+  presetId: string;
+};
+
 export type MediaGenRuntimeBridge = {
   runtimeId: string;
   register(input: {
@@ -221,7 +231,7 @@ export type MediaGenRuntimeBridge = {
     ordinal?: number;
   }): Promise<MediaGenRuntimeSource>;
   handoffArtifact(input: {
-    dispatch: MediaGenRuntimeDispatch;
+    dispatch: MediaGenRuntimeArtifactHandoffIdentity;
     runtimeJobId: string;
     output: MediaGenRuntimeVendorOutput;
     bytes: Buffer;
