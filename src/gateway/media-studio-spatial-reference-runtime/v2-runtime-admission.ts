@@ -281,12 +281,13 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
       >
     | undefined;
   let spawned = false;
+  let scopeEvidence: "extinct" | "never_spawned" | undefined;
   const releaseAdmission = async () => {
     if (!admitted) return;
     return await params.journal.releaseExclusiveAdmission({
       owner,
       nowMs: nowMs(),
-      scopeEvidence: "never_spawned",
+      scopeEvidence: scopeEvidence ?? "never_spawned",
       spawned,
     });
   };
@@ -436,6 +437,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
           ) {
             throw new Error("spatial_guardian_scope_observation_invalid");
           }
+          if (observation.state === "extinct") scopeEvidence = "extinct";
         },
         onToolchainProof: async (proof) => {
           if (toolchain) throw new Error("spatial_v2_toolchain_proof_duplicate");

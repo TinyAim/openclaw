@@ -211,6 +211,9 @@ export type MediaGenRuntimeArtifactHandoffIdentity = {
   taskId: string;
   workspaceId: string;
   presetId: string;
+  /** Exact image attempt coordinates; omitted by legacy video/render callers. */
+  executionAttempt?: number;
+  frozenPlanDigest?: string;
 };
 
 export type MediaGenRuntimeBridge = {
