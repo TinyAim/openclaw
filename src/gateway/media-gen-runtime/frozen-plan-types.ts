@@ -17,7 +17,7 @@ export type MediaOutputAudioPolicy =
   | "reference_conditioned"
   | "preserve_source";
 export type MediaExecutionTopology = "provider_api" | "self_hosted" | "hybrid";
-export type MediaServingProtocol = "sglang_video_v1" | "custom";
+export type MediaServingProtocol = "sglang_video_v1" | "ltx_pipeline_v1" | "custom";
 export type MediaModelLicensePolicyRef = {
   policyId: string;
   revision: number;

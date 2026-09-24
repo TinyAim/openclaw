@@ -207,7 +207,6 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
         ),
       );
       await expect(run.wait()).resolves.toMatchObject({ reason: "exit", exitCode: 0 });
-      await supervisor.waitForScope(scopeKey);
       expect(JSON.parse(await readFile(manifestPath, "utf8"))).toEqual({
         outputs: [{ slot: "end_frame", ordinal: 0, file: "guardian-end_frame-0.png" }],
       });

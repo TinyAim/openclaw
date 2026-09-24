@@ -431,7 +431,7 @@ export function parseMediaGenRuntimeFrozenPlan(raw: unknown): MediaGenRuntimeFro
     (value.executionTopology !== undefined &&
       !["provider_api", "self_hosted", "hybrid"].includes(String(value.executionTopology))) ||
     (value.servingProtocol !== undefined &&
-      !["sglang_video_v1", "custom"].includes(String(value.servingProtocol))) ||
+      !["sglang_video_v1", "ltx_pipeline_v1", "custom"].includes(String(value.servingProtocol))) ||
     (value.licensePolicyRef !== undefined &&
       (!license ||
         !exact(license, ["policyId", "revision", "digest"]) ||

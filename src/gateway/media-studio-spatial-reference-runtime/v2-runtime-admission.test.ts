@@ -1,5 +1,6 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { SPATIAL_REFERENCE_QUALIFICATION_KEY } from "./reference-journal-admission.js";
 import { createSpatialReferenceJournal } from "./reference-journal.js";
 import type { SpatialReferenceJournalOwner } from "./reference-journal.js";
 import type {
@@ -234,18 +235,81 @@ describe("Spatial v2 runtime qualification admission", () => {
       executionMode: "packaged",
       readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
       testRenderQualification: async (_dispatch, _signal, lifecycle) => {
-        await lifecycle?.onGuardianLaunched?.(guardian);
-        await lifecycle?.onLaunched?.(worker);
+        const claimedRow = await journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY);
+        if (!claimedRow?.claim) {
+          throw new Error("qualification_fixture_claim_missing");
+        }
+        const guardianForRender = {
+          ...guardian,
+          runId: claimedRow.claim.runId,
+          scopeKey: claimedRow.claim.scopeKey,
+        };
+        const workerForRender = {
+          ...worker,
+          runId: claimedRow.claim.runId,
+          scopeKey: claimedRow.claim.scopeKey,
+        };
+        await lifecycle?.onGuardianLaunched?.(guardianForRender);
+        await lifecycle?.onLaunched?.(workerForRender);
+        const row = await journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY);
+        if (!row?.identity || !row.claim || !row.scopeRecovery?.guardian) {
+          throw new Error("qualification_fixture_journal_not_armed");
+        }
+        const journalWorker = {
+          pid: workerForRender.pid,
+          startTime: workerForRender.startTime,
+          scopeId: workerForRender.scopeKey,
+          runId: workerForRender.runId,
+          workerTokenDigest: "c".repeat(64),
+        };
+        await journal.recordSpawnIntent({
+          identity: row.identity,
+          owner: row.claim,
+          guardian: row.scopeRecovery.guardian,
+          nowMs: Date.now(),
+        });
+        await journal.recordWorkerPrepared({
+          identity: row.identity,
+          owner: row.claim,
+          guardian: row.scopeRecovery.guardian,
+          worker: journalWorker,
+          nowMs: Date.now(),
+        });
+        await journal.authorizeWorkerStart({
+          identity: row.identity,
+          owner: row.claim,
+          guardian: row.scopeRecovery.guardian,
+          worker: journalWorker,
+          nowMs: Date.now(),
+        });
         const observation: SpatialReferenceV2ScopeObservation = {
-          guardian,
-          worker,
+          guardian: guardianForRender,
+          worker: workerForRender,
           state: "extinct",
           proof: {
             protocol: "posix_group_observation_v1",
-            processGroupId: worker.pid,
+            processGroupId: workerForRender.pid,
             rootState: "dead",
           },
         };
+        const observedAtMs = Date.now();
+        await journal.recordScopeObservation({
+          identity: row.identity,
+          owner: row.claim,
+          guardian: row.scopeRecovery.guardian,
+          nowMs: observedAtMs,
+          observation: {
+            state: observation.state,
+            observedAtMs,
+            worker: {
+              pid: observation.worker.pid,
+              startTime: observation.worker.startTime,
+              scopeId: observation.worker.scopeKey,
+              runId: observation.worker.runId,
+            },
+            proof: observation.proof,
+          },
+        });
         await lifecycle?.onScopeObservation?.(observation);
         await lifecycle?.onToolchainProof?.(fakeToolchain);
         return fakeRender;

@@ -113,7 +113,21 @@ async function run() {
     generation,
     sequence: 2,
     worker,
-    reason: process.platform === "win32" ? "windows_job_unavailable" : "posix_scope_unproven",
+    state: "extinct",
+    proof:
+      process.platform === "win32"
+        ? {
+            protocol: "windows_job_v1",
+            jobIncarnationId: `fixture-job-${generation}`,
+            activeProcessCount: 0,
+            workerPid: worker.pid,
+            workerStartTime: worker.startTime,
+          }
+        : {
+            protocol: "posix_group_observation_v1",
+            processGroupId: worker.pid,
+            rootState: "dead",
+          },
   });
   process.disconnect?.();
 }

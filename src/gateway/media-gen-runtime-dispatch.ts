@@ -243,6 +243,12 @@ export function parseDispatch(value: unknown): MediaGenRuntimeDispatch | null {
   if (!isRecord(value)) {
     return null;
   }
+  if (
+    Object.prototype.hasOwnProperty.call(value, "frozenVideoPlan") ||
+    value.kind === "media_video_dispatch"
+  ) {
+    return null;
+  }
   const op = asNonEmptyString(value.op);
   const mode = asNonEmptyString(value.mode);
   const reference = parseReference(value.reference);

@@ -20,6 +20,10 @@ import {
 } from "./v2-build-manifest.js";
 import { createSpatialReferenceV2GuardianProtocol } from "./v2-guardian-protocol.js";
 import {
+  acceptSpatialReferenceV2ScopeObservation,
+  assertSpatialReferenceV2ExtinctObservation,
+} from "./v2-renderer-scope-evidence.js";
+import {
   assertSpatialReferenceV2InputLimits,
   assertSpatialReferenceV2MissingOutputs,
   createSpatialReferenceV2RenderInput,
@@ -164,17 +168,11 @@ async function resolveExecutionResourceProfile(params: {
   return resourceProfile;
 }
 
-async function waitForScopeExtinction(
-  supervisor: ProcessSupervisor,
-  scopeKey: string,
-): Promise<void> {
-  if (!supervisor.waitForScope) {
-    throw new Error("spatial_v2_supervision_unsupported");
-  }
+async function closeScopeCleanupWithTimeout(closeScopeCleanup: () => Promise<void>): Promise<void> {
   let timeout: NodeJS.Timeout | undefined;
   try {
     await Promise.race([
-      supervisor.waitForScope(scopeKey),
+      closeScopeCleanup(),
       new Promise<never>((_, reject) => {
         timeout = setTimeout(
           () => reject(new Error("spatial_v2_stop_unconfirmed")),
@@ -347,29 +345,40 @@ async function runSupervisedWorker(params: {
   let guardian: SpatialReferenceV2GuardianIdentity | undefined;
   let identity: SpatialReferenceV2WorkerIdentity | undefined;
   let scopeObservation: SpatialReferenceV2ScopeObservation | undefined;
+  // A received observation is only a transport fact.  Cleanup and exit
+  // settlement require the lifecycle owner to durably accept that exact
+  // observation first; an unknown/conflicting/rejected callback must retain
+  // the recovery files for reconciliation.
+  let durableScopeObservationConfirmed = false;
+  let invalidScopeObservation: Error | undefined;
   let resolveSpawnIntent: (() => void) | undefined;
   let rejectSpawnIntent: ((error: Error) => void) | undefined;
   const spawnIntent = new Promise<void>((resolve, reject) => {
     resolveSpawnIntent = resolve;
     rejectSpawnIntent = reject;
   });
+  void spawnIntent.catch(() => undefined);
   let resolveWorkerPrepared: ((value: SpatialReferenceV2WorkerIdentity) => void) | undefined;
   let rejectWorkerPrepared: ((error: Error) => void) | undefined;
   const workerPrepared = new Promise<SpatialReferenceV2WorkerIdentity>((resolve, reject) => {
     resolveWorkerPrepared = resolve;
     rejectWorkerPrepared = reject;
   });
+  void workerPrepared.catch(() => undefined);
   let resolveStartAuthorized: (() => void) | undefined;
   let rejectStartAuthorized: ((error: Error) => void) | undefined;
   const startAuthorized = new Promise<void>((resolve, reject) => {
     resolveStartAuthorized = resolve;
     rejectStartAuthorized = reject;
   });
+  void startAuthorized.catch(() => undefined);
   let observationDelivery = Promise.resolve();
   let toolchainProofDelivery = Promise.resolve();
   let receivedToolchainProof = false;
   let invalidToolchainProof: Error | undefined;
   let outcome: "completed" | "cancelled" | "failed" | "stop-unconfirmed" = "failed";
+  let closeScopeCleanup: (() => Promise<void>) | undefined;
+  let scopeCleanupClosed = false;
   let workerFailureCode: string | undefined;
   const guardianProtocol = createSpatialReferenceV2GuardianProtocol(generation);
   const rejectGuardianCheckpoints = (code: string): void => {
@@ -380,6 +389,21 @@ async function runSupervisedWorker(params: {
     rejectStartAuthorized?.(error);
   };
   const stop = () => supervisor.cancelScope(scopeKey, "manual-cancel");
+  // ProcessSupervisor snapshots cleanup owners when spawn() reserves the run.
+  // Register before spawn so every admission path, including a rejected spawn,
+  // carries the required-all process-tree contract.
+  // The guardian is the process-tree observer for this owned-worker protocol.
+  // The current direct child adapter exposes no waitForExtinction hook, so a
+  // required-all ProcessSupervisor owner would reject every otherwise valid
+  // guardian run before the journal can record its POSIX/Windows proof. The
+  // transport owner still fences every run; the guardian observation remains a
+  // separate fail-closed execution-tree gate.
+  closeScopeCleanup = supervisor.acquireScopeCleanup(scopeKey, { processTree: "transport-only" });
+  const closeOwnedScope = async (): Promise<void> => {
+    if (scopeCleanupClosed || !closeScopeCleanup) return;
+    await closeScopeCleanupWithTimeout(closeScopeCleanup);
+    scopeCleanupClosed = true;
+  };
   params.signal.addEventListener("abort", stop, { once: true });
   try {
     if (params.signal.aborted) throw new Error("spatial_v2_cancelled_before_launch");
@@ -489,52 +513,52 @@ async function runSupervisedWorker(params: {
               ? "unknown"
               : undefined);
           const proof = event.proof;
-          const validPosixProof =
-            proof &&
-            typeof proof === "object" &&
-            !Array.isArray(proof) &&
-            (proof as Record<string, unknown>).protocol === "posix_group_observation_v1" &&
-            Number.isSafeInteger((proof as Record<string, unknown>).processGroupId) &&
-            ((proof as Record<string, unknown>).processGroupId as number) > 0 &&
-            ((proof as Record<string, unknown>).rootState === "dead" ||
-              (proof as Record<string, unknown>).rootState === "reused");
-          const validWindowsProof =
-            proof &&
-            typeof proof === "object" &&
-            !Array.isArray(proof) &&
-            (proof as Record<string, unknown>).protocol === "windows_job_v1" &&
-            (proof as Record<string, unknown>).activeProcessCount === 0 &&
-            typeof (proof as Record<string, unknown>).jobIncarnationId === "string" &&
-            Number.isSafeInteger((proof as Record<string, unknown>).workerPid) &&
-            Number.isSafeInteger((proof as Record<string, unknown>).workerStartTime);
           if (
             Number.isSafeInteger(worker.pid) &&
             Number.isSafeInteger(worker.startTime) &&
             (state === "extinct" || state === "unknown") &&
-            (state === "unknown" || validPosixProof || validWindowsProof) &&
             (state === "unknown"
               ? reason === "posix_scope_unproven" || reason === "windows_job_unavailable"
               : true)
           ) {
-            scopeObservation = {
-              guardian,
-              worker: {
-                pid: worker.pid as number,
-                startTime: worker.startTime as number,
-                runId,
-                scopeKey,
-              },
-              state,
-              ...(reason === "posix_scope_unproven" ||
-              reason === "windows_job_unavailable" ||
-              reason === "guardian_unavailable"
-                ? { reason }
-                : {}),
-              ...(validPosixProof || validWindowsProof ? { proof } : {}),
-            };
-            observationDelivery = observationDelivery.then(
-              async () => await params.lifecycle?.onScopeObservation?.(scopeObservation!),
-            );
+            try {
+              const nextObservation: SpatialReferenceV2ScopeObservation = {
+                guardian,
+                worker: {
+                  pid: worker.pid as number,
+                  startTime: worker.startTime as number,
+                  runId,
+                  scopeKey,
+                },
+                state,
+                ...(reason === "posix_scope_unproven" ||
+                reason === "windows_job_unavailable" ||
+                reason === "guardian_unavailable"
+                  ? { reason }
+                  : {}),
+                ...(proof && typeof proof === "object" && !Array.isArray(proof)
+                  ? { proof: proof as SpatialReferenceV2ScopeObservation["proof"] }
+                  : {}),
+              };
+              scopeObservation = acceptSpatialReferenceV2ScopeObservation(
+                scopeObservation,
+                nextObservation,
+                { guardian, worker: nextObservation.worker },
+              );
+              observationDelivery = observationDelivery
+                .then(async () => await params.lifecycle?.onScopeObservation?.(nextObservation))
+                .catch((error) => {
+                  invalidScopeObservation =
+                    error instanceof Error
+                      ? error
+                      : new Error("spatial_v2_scope_observation_invalid");
+                  rejectGuardianCheckpoints(invalidScopeObservation.message);
+                });
+            } catch (error) {
+              invalidScopeObservation =
+                error instanceof Error ? error : new Error("spatial_v2_scope_observation_invalid");
+              rejectGuardianCheckpoints(invalidScopeObservation.message);
+            }
           }
           return;
         }
@@ -682,25 +706,53 @@ async function runSupervisedWorker(params: {
     if (params.config.collectToolchainProof && !receivedToolchainProof) {
       throw new Error("spatial_v2_toolchain_proof_missing");
     }
-    await waitForScopeExtinction(supervisor, scopeKey);
-    guardianScopeExited = true;
     await observationDelivery;
     await toolchainProofDelivery;
+    if (invalidScopeObservation) throw invalidScopeObservation;
+    assertSpatialReferenceV2ExtinctObservation(scopeObservation, {
+      guardian,
+      worker: identity,
+    });
+    durableScopeObservationConfirmed = true;
     outcome = "completed";
-    return await readWorkerManifest({
+    // Read the worker-owned result while its private work directory is still
+    // live. Transport cleanup is allowed to settle the guardian only after all
+    // output bytes and the manifest have crossed this process boundary.
+    const partialResult = await readWorkerManifest({
       manifestPath,
       workDir,
       expected: params.outputs,
       input: renderInput,
     });
+    await closeOwnedScope();
+    guardianScopeExited = true;
+    return partialResult;
   } catch (error) {
     stop();
-    if (!guardianSpawned) throw error;
+    if (!guardianSpawned) {
+      try {
+        await closeOwnedScope();
+      } catch {
+        outcome = "stop-unconfirmed";
+        throw new Error("spatial_v2_stop_unconfirmed");
+      }
+      throw error;
+    }
     try {
-      await waitForScopeExtinction(supervisor, scopeKey);
+      if (closeScopeCleanup) {
+        await closeScopeCleanupWithTimeout(closeScopeCleanup);
+        scopeCleanupClosed = true;
+      }
       guardianScopeExited = true;
       await observationDelivery;
-      outcome = params.signal.aborted ? "cancelled" : "failed";
+      durableScopeObservationConfirmed =
+        !invalidScopeObservation && scopeObservation?.state === "extinct";
+      outcome =
+        invalidScopeObservation || scopeObservation?.state !== "extinct"
+          ? "stop-unconfirmed"
+          : params.signal.aborted
+            ? "cancelled"
+            : "failed";
     } catch {
       outcome = "stop-unconfirmed";
       throw new Error("spatial_v2_stop_unconfirmed");
@@ -711,7 +763,10 @@ async function runSupervisedWorker(params: {
     if (guardianSpawned && !guardianScopeExited) {
       stop();
       try {
-        await waitForScopeExtinction(supervisor, scopeKey);
+        if (closeScopeCleanup) {
+          await closeScopeCleanupWithTimeout(closeScopeCleanup);
+          scopeCleanupClosed = true;
+        }
         guardianScopeExited = true;
       } catch {
         outcome = "stop-unconfirmed";
@@ -727,9 +782,11 @@ async function runSupervisedWorker(params: {
       }
       // Guardian root completion is not whole-descendant extinction. Its emitted
       // platform observation is separately persisted and remains fail-closed.
-      if (identity && guardianScopeExited) await params.lifecycle?.onExited?.(identity, outcome);
+      if (identity && guardianScopeExited && durableScopeObservationConfirmed) {
+        await params.lifecycle?.onExited?.(identity, outcome);
+      }
     } finally {
-      if (guardianScopeExited || !guardianSpawned)
+      if (!guardianSpawned || durableScopeObservationConfirmed)
         await rm(workDir, { recursive: true, force: true });
     }
   }

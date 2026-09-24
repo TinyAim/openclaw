@@ -135,7 +135,7 @@ export type MediaGenRuntimeModelServingClaim = {
   variant: string;
   servingEngine: string;
   servingEngineVersion: string;
-  servingProtocol: "sglang_video_v1" | "custom";
+  servingProtocol: "sglang_video_v1" | "ltx_pipeline_v1" | "custom";
   checkpointRevision: string;
   checkpointDigest: string;
   precision?: string;

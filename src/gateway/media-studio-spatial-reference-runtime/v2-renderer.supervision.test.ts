@@ -4,11 +4,17 @@ import { createChildAdapter } from "../../process/supervisor/adapters/child.js";
 import { createProcessSupervisor } from "../../process/supervisor/supervisor.js";
 import type { ProcessSupervisor, SpawnInput } from "../../process/supervisor/types.js";
 import { isPidDefinitelyDead } from "../../shared/pid-alive.js";
+import type { SpatialReferenceJournalRow } from "./reference-journal-record.js";
 import { v2Dispatch } from "./reference.test-harness.js";
 import {
   buildSpatialReferenceV2Manifest,
   spatialReferenceV2BuildDigest,
 } from "./v2-build-manifest.js";
+import {
+  acceptSpatialReferenceV2ScopeObservation,
+  assertSpatialReferenceV2DurableExtinction,
+  assertSpatialReferenceV2ExtinctObservation,
+} from "./v2-renderer-scope-evidence.js";
 import { createSpatialReferenceV2Renderer } from "./v2-renderer.js";
 import { SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL } from "./v2-renderer.js";
 import { supportsSpatialReferenceV2ResourceLimits } from "./v2-resource-watch.js";
@@ -37,6 +43,7 @@ function fixtureSupervisor(params: { audits: unknown[] }): {
 } {
   const owned = createProcessSupervisor();
   const supervisor: ProcessSupervisor = {
+    acquireScopeCleanup: (scopeKey, options) => owned.acquireScopeCleanup(scopeKey, options),
     spawn: async (input: SpawnInput) =>
       await owned.spawn({
         ...input,
@@ -60,11 +67,201 @@ function fixtureSupervisor(params: { audits: unknown[] }): {
       }),
     cancel: (runId, reason) => owned.cancel(runId, reason),
     cancelScope: (scopeKey, reason) => owned.cancelScope(scopeKey, reason),
-    waitForScope: async (scopeKey) => await owned.waitForScope(scopeKey),
     getRecord: (runId) => owned.getRecord(runId),
   };
   return { supervisor, shutdown: owned.shutdown };
 }
+
+describe("spatial v2 scope evidence", () => {
+  const guardian = {
+    pid: 101,
+    startTime: 102,
+    runId: "run-1",
+    scopeKey: "scope-1",
+    generation: "generation-1",
+  } as const;
+  const worker = {
+    pid: 201,
+    startTime: 202,
+    runId: "run-1",
+    scopeKey: "scope-1",
+  } as const;
+  const expected = { guardian, worker };
+  const extinct = {
+    guardian,
+    worker,
+    state: "extinct" as const,
+    proof: {
+      protocol: "posix_group_observation_v1" as const,
+      processGroupId: worker.pid,
+      rootState: "dead" as const,
+    },
+  };
+
+  it("accepts only a reasoned unknown observation before a proven extinction", () => {
+    const unknown = acceptSpatialReferenceV2ScopeObservation(
+      undefined,
+      {
+        guardian,
+        worker,
+        state: "unknown",
+        reason: "posix_scope_unproven",
+      },
+      expected,
+    );
+    expect(unknown.state).toBe("unknown");
+    expect(() => assertSpatialReferenceV2ExtinctObservation(unknown, expected)).toThrow(
+      "spatial_v2_scope_observation_unconfirmed",
+    );
+    expect(() =>
+      acceptSpatialReferenceV2ScopeObservation(
+        undefined,
+        {
+          ...unknown,
+          proof: extinct.proof,
+        },
+        expected,
+      ),
+    ).toThrow("spatial_v2_scope_observation_unknown_invalid");
+  });
+
+  it("rejects stale owner/claim identities and contradictory observations", () => {
+    expect(() =>
+      acceptSpatialReferenceV2ScopeObservation(
+        undefined,
+        {
+          ...extinct,
+          guardian: { ...guardian, runId: "old-run" },
+        },
+        expected,
+      ),
+    ).toThrow("spatial_v2_scope_observation_identity_mismatch");
+    expect(() =>
+      acceptSpatialReferenceV2ScopeObservation(
+        undefined,
+        {
+          ...extinct,
+          worker: { ...worker, scopeKey: "old-scope" },
+        },
+        expected,
+      ),
+    ).toThrow("spatial_v2_scope_observation_identity_mismatch");
+    const accepted = acceptSpatialReferenceV2ScopeObservation(undefined, extinct, expected);
+    expect(() =>
+      acceptSpatialReferenceV2ScopeObservation(
+        accepted,
+        {
+          ...extinct,
+          proof: { ...extinct.proof, rootState: "reused" },
+        },
+        expected,
+      ),
+    ).toThrow("spatial_v2_scope_observation_conflict");
+    expect(() => assertSpatialReferenceV2ExtinctObservation(extinct, expected)).not.toThrow();
+  });
+
+  it("accepts durable proof when semantic fields are reordered and rejects current-worker or claim drift", () => {
+    const durableWorker = {
+      pid: 201,
+      startTime: 202,
+      scopeId: "scope-1",
+      runId: "run-1",
+      workerTokenDigest: "worker-digest",
+    };
+    const claim = {
+      epoch: "epoch-1",
+      pid: 301,
+      pidStartTimeMs: 302,
+      ownerInstanceId: "owner-1",
+      leaseExpiresAtMs: 999,
+      claimVersion: 7,
+      scopeKey: "scope-1",
+      runId: "run-1",
+    };
+    const proof = {
+      protocol: "posix_group_observation_v1" as const,
+      processGroupId: 201,
+      rootState: "dead" as const,
+    };
+    const row = {
+      recordType: "execution",
+      schemaVersion: 4,
+      key: "key-1",
+      dispatchAttemptId: "attempt-1",
+      cancelled: false,
+      phase: "terminal",
+      claim,
+      worker: durableWorker,
+      scopeRecovery: {
+        guardian: {
+          protocol: "spatial_guardian/v1",
+          guardianId: "guardian-1",
+          generation: "generation-1",
+          pid: 101,
+          pidStartTimeMs: 102,
+          guardianBuildDigest: "sha256:guardian",
+          armedAtMs: 1,
+        },
+        claimVersion: 7,
+        owner: {
+          epoch: "epoch-1",
+          pid: 301,
+          pidStartTimeMs: 302,
+          ownerInstanceId: "owner-1",
+        },
+        state: "extinct",
+        observedAtMs: 10,
+        probes: 1,
+        firstObservedAtMs: 9,
+        worker: {
+          pid: 201,
+          startTime: 202,
+          scopeId: "scope-1",
+          runId: "run-1",
+        },
+        proof,
+      },
+    } as unknown as SpatialReferenceJournalRow;
+    const reorderedProof = {
+      rootState: "dead" as const,
+      processGroupId: 201,
+      protocol: "posix_group_observation_v1" as const,
+    };
+    expect(() =>
+      assertSpatialReferenceV2DurableExtinction(
+        {
+          guardian: { ...guardian },
+          worker: { ...worker },
+          state: "extinct",
+          proof: reorderedProof,
+        },
+        row,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertSpatialReferenceV2DurableExtinction(
+        {
+          guardian: { ...guardian },
+          worker: { ...worker, pid: 999 },
+          state: "extinct",
+          proof: reorderedProof,
+        },
+        row,
+      ),
+    ).toThrow("spatial_v2_scope_observation_durable_identity_mismatch");
+    expect(() =>
+      assertSpatialReferenceV2DurableExtinction(
+        {
+          guardian: { ...guardian },
+          worker: { ...worker },
+          state: "extinct",
+          proof: reorderedProof,
+        },
+        { ...row, claim: { ...claim, claimVersion: 8 } },
+      ),
+    ).toThrow("spatial_v2_scope_observation_durable_identity_mismatch");
+  });
+});
 
 describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
   "spatial v2 supervised worker",
@@ -96,6 +293,9 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
     it("cancels an unopened owned worker scope and confirms extinction", async () => {
       const supervisor = createProcessSupervisor();
       const scopeKey = `spatial-v2-supervision-cancel-${Date.now()}`;
+      const closeScopeCleanup = supervisor.acquireScopeCleanup(scopeKey, {
+        processTree: "transport-only",
+      });
       const run = await supervisor.spawn({
         mode: "child",
         runId: `${scopeKey}-run`,
@@ -111,10 +311,46 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
       expect(run.openStartGate).toBeTypeOf("function");
       expect(run.pid).toBeTypeOf("number");
       supervisor.cancelScope(scopeKey, "manual-cancel");
-      await supervisor.waitForScope(scopeKey);
+      await closeScopeCleanup();
       await expect(run.wait()).resolves.toMatchObject({ reason: "manual-cancel" });
       await waitForDead(run.pid!);
       await supervisor.shutdown();
+    });
+
+    it("registers required-all cleanup before spawn and closes it when spawn rejects", async () => {
+      const events: string[] = [];
+      let cleanupClosed = false;
+      const supervisor: ProcessSupervisor = {
+        acquireScopeCleanup: (_scopeKey, _options) => {
+          events.push("acquire");
+          return async () => {
+            events.push("cleanup");
+            cleanupClosed = true;
+          };
+        },
+        spawn: async () => {
+          events.push("spawn");
+          throw new Error("fixture_spawn_rejected");
+        },
+        cancel: () => undefined,
+        cancelScope: () => events.push("cancel-scope"),
+        getRecord: () => undefined,
+      };
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor,
+        guardianWorkerUrl: fixtureUrl,
+      });
+
+      await expect(
+        renderer.renderMissing?.(v2Dispatch(), new AbortController().signal, [
+          { slot: "end_frame", ordinal: 0 },
+        ]),
+      ).rejects.toThrow("fixture_spawn_rejected");
+      expect(events.slice(0, 2)).toEqual(["acquire", "spawn"]);
+      expect(cleanupClosed).toBe(true);
+      expect(events).toContain("cleanup");
     });
 
     it("renders only a sparse plan through a real owned worker without relaying credentials", async () => {
@@ -126,7 +362,7 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
         onSpawnIntent: vi.fn(async () => lifecycleOrder.push("spawn_intent")),
         onLaunched: vi.fn(async () => lifecycleOrder.push("worker_prepared")),
         onStartAuthorized: vi.fn(async () => lifecycleOrder.push("start_authorized")),
-        onScopeObservation: vi.fn(async () => lifecycleOrder.push("unknown")),
+        onScopeObservation: vi.fn(async () => lifecycleOrder.push("extinct")),
         onExited: vi.fn(async () => lifecycleOrder.push("worker_exited")),
       };
       const input = v2Dispatch();
@@ -154,7 +390,7 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
         "spawn_intent",
         "worker_prepared",
         "start_authorized",
-        "unknown",
+        "extinct",
         "worker_exited",
       ]);
       expect(lifecycle.onExited).toHaveBeenCalledWith(
@@ -190,6 +426,32 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
       await fixture.shutdown();
     });
 
+    it("does not settle exit or remove recovery state when durable scope readback rejects", async () => {
+      const fixture = fixtureSupervisor({ audits: [] });
+      const onExited = vi.fn(async () => undefined);
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor: fixture.supervisor,
+        guardianWorkerUrl: fixtureUrl,
+      });
+      await expect(
+        renderer.renderMissing?.(
+          v2Dispatch(),
+          new AbortController().signal,
+          [{ slot: "end_frame", ordinal: 0 }],
+          {
+            onScopeObservation: vi.fn(async () => {
+              throw new Error("fixture_durable_readback_rejected");
+            }),
+            onExited,
+          },
+        ),
+      ).rejects.toThrow("fixture_durable_readback_rejected");
+      expect(onExited).not.toHaveBeenCalled();
+      await fixture.shutdown();
+    });
+
     it("delivers a toolchain proof only after the guardian authorizes its child", async () => {
       const fixture = fixtureSupervisor({ audits: [] });
       const lifecycleOrder: string[] = [];
@@ -199,7 +461,7 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
         onLaunched: vi.fn(async () => lifecycleOrder.push("worker_prepared")),
         onStartAuthorized: vi.fn(async () => lifecycleOrder.push("start_authorized")),
         onToolchainProof: vi.fn(async () => lifecycleOrder.push("toolchain_proof")),
-        onScopeObservation: vi.fn(async () => lifecycleOrder.push("unknown")),
+        onScopeObservation: vi.fn(async () => lifecycleOrder.push("extinct")),
         onExited: vi.fn(async () => lifecycleOrder.push("worker_exited")),
       };
       const renderer = createSpatialReferenceV2Renderer({
@@ -227,7 +489,7 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
         "worker_prepared",
         "start_authorized",
         "toolchain_proof",
-        "unknown",
+        "extinct",
         "worker_exited",
       ]);
       await fixture.shutdown();

@@ -39,6 +39,7 @@ import {
   readTerminalCallbackResponse,
   createTerminalCallbackReplayBackoff,
 } from "./terminal-callback-delivery.js";
+import { assertSpatialReferenceV2DurableExtinction } from "./v2-renderer-scope-evidence.js";
 import type { SpatialReferenceV2Renderer } from "./v2-renderer.js";
 
 const UPLOAD_PATH = "/v1/control/media-gen/runtime/spatial-reference/upload";
@@ -363,8 +364,11 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
         ) {
           throw new Error("spatial_guardian_scope_observation_invalid");
         }
+        if (observation.state === "extinct") {
+          assertSpatialReferenceV2DurableExtinction(observation, await journal.get(identity.key));
+        }
       },
-      onExited: async (receipt) => {
+      onExited: async (receipt, outcome) => {
         if (
           !worker ||
           receipt.pid !== worker.pid ||
@@ -377,7 +381,12 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
           ...worker,
           exited: {
             atMs: Date.now(),
-            reason: controller.signal.aborted ? "cancelled" : "completed",
+            reason:
+              outcome === "cancelled"
+                ? "cancelled"
+                : outcome === "completed"
+                  ? "completed"
+                  : "dead",
           },
         };
         if (!fixtureRenderer)

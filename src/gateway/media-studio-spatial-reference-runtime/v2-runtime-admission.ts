@@ -18,6 +18,7 @@ import {
   SPATIAL_V2_RESOURCE_PROFILE_MIN_HOST_AVAILABLE_BYTES,
   type SpatialReferenceV2BuildManifestInput,
 } from "./v2-build-manifest.js";
+import { assertSpatialReferenceV2DurableExtinction } from "./v2-renderer-scope-evidence.js";
 import type {
   SpatialReferenceV2RenderLifecycle,
   SpatialReferenceV2RenderResult,
@@ -437,7 +438,13 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
           ) {
             throw new Error("spatial_guardian_scope_observation_invalid");
           }
-          if (observation.state === "extinct") scopeEvidence = "extinct";
+          if (observation.state === "extinct") {
+            assertSpatialReferenceV2DurableExtinction(
+              observation,
+              await params.journal.get(claimed.identity.key),
+            );
+            scopeEvidence = "extinct";
+          }
         },
         onToolchainProof: async (proof) => {
           if (toolchain) throw new Error("spatial_v2_toolchain_proof_duplicate");
