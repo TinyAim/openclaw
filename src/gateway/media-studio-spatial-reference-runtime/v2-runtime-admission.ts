@@ -240,6 +240,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
   chromiumExecutablePath: string;
   journal: Pick<
     SpatialReferenceJournal,
+    | "get"
     | "claimExclusiveAdmission"
     | "releaseExclusiveAdmission"
     | "armScopeGuardian"

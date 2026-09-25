@@ -6,8 +6,9 @@ import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
-import { createGatewayKernel } from "./server-kernel.js";
+import { createGatewayKernel, gatewayKernelLogs } from "./server-kernel.js";
 import type { GatewayServer } from "./server-public.js";
+import { spatialReferenceRuntimeReasonCode } from "./server-start.js";
 
 const startupTraceEventLoopDelay = vi.hoisted(() => ({
   instances: [] as Array<{
@@ -17,6 +18,28 @@ const startupTraceEventLoopDelay = vi.hoisted(() => ({
     reset: ReturnType<typeof vi.fn>;
   }>,
 }));
+
+const spatialRuntimeEnvKeys = [
+  "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED",
+  "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED",
+  "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_BUNDLE_DIR",
+  "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_CHROMIUM_PATH",
+  "OPENCLAW_MEDIA_GEN_CONTROL_API_URL",
+  "OPENCLAW_MEDIA_GEN_RUNTIME_ID",
+  "OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN",
+  "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS",
+  "OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS",
+];
+
+function preserveSpatialRuntimeEnv(): () => void {
+  const prior = new Map(spatialRuntimeEnvKeys.map((key) => [key, process.env[key]]));
+  return () => {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+}
 
 vi.mock("node:perf_hooks", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:perf_hooks")>();
@@ -55,6 +78,107 @@ function createStartupTestState(label: string) {
 }
 
 describe("Gateway startup lifetime", () => {
+  it("starts the configured Spatial Runtime heartbeat and stops it with the Gateway", async () => {
+    const restoreSpatialRuntimeEnv = preserveSpatialRuntimeEnv();
+    const port = await getFreePort();
+    const state = await createStartupTestState("gateway-spatial-runtime-lifetime");
+    state.envVars.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED = "1";
+    state.envVars.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED = "0";
+    state.envVars.OPENCLAW_MEDIA_GEN_CONTROL_API_URL = "http://control-api.invalid";
+    state.envVars.OPENCLAW_MEDIA_GEN_RUNTIME_ID = "runtime-lifecycle-test";
+    state.envVars.OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN = "runtime-lifecycle-test-token";
+    state.envVars.OPENCLAW_MEDIA_GEN_WORKSPACE_IDS = "workspace-lifecycle-test";
+    state.envVars.OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS = "60000";
+    state.applyEnv();
+    const registrationRequests: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        registrationRequests.push(String(input));
+        return { ok: true, status: 200 } as Response;
+      }),
+    );
+    let server: GatewayServer | undefined;
+    try {
+      const token = "gateway-spatial-runtime-lifetime-token";
+      await state.writeConfig({
+        gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
+      });
+      state.applyEnv();
+      const { startGatewayServerCore } = await import("./server-start.js");
+      server = await startGatewayServerCore(port, {
+        auth: { mode: "token", token },
+        bind: "loopback",
+        controlUiEnabled: false,
+        sidecarStartup: "defer",
+      });
+      expect(registrationRequests).toEqual([
+        "http://control-api.invalid/v1/control/media-gen/runtime/register",
+      ]);
+      await server.close();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(registrationRequests).toHaveLength(1);
+    } finally {
+      await server?.close();
+      await state.cleanup();
+      restoreSpatialRuntimeEnv();
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("maps unknown qualification text to fixed reason codes without echoing it", () => {
+    const suspicious = "untrusted spatial_v2_host_memory_unavailable secret-marker";
+    expect(spatialReferenceRuntimeReasonCode(suspicious)).toBe("qualification_failed");
+    expect(spatialReferenceRuntimeReasonCode("constructor")).toBe("qualification_failed");
+    expect(
+      spatialReferenceRuntimeReasonCode(
+        "v2 toolchain probe failed: spatial_v2_host_memory_unavailable secret-marker",
+      ),
+    ).toBe("v2_toolchain_probe_failed");
+    expect(spatialReferenceRuntimeReasonCode("spatial_v2_host_memory_unavailable")).toBe(
+      "spatial_v2_host_memory_unavailable",
+    );
+  });
+
+  it("logs only a sanitized reason when requested Spatial qualification is unavailable", async () => {
+    const restoreSpatialRuntimeEnv = preserveSpatialRuntimeEnv();
+    const port = await getFreePort();
+    const state = await createStartupTestState("gateway-spatial-runtime-unavailable");
+    state.envVars.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED = "1";
+    state.envVars.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_V2_ENABLED = "1";
+    state.envVars.OPENCLAW_MEDIA_GEN_CONTROL_API_URL = "http://control-api.invalid";
+    state.envVars.OPENCLAW_MEDIA_GEN_RUNTIME_ID = "runtime-unavailable-test";
+    state.envVars.OPENCLAW_MEDIA_GEN_RUNTIME_TOKEN = "runtime-unavailable-test-token";
+    state.envVars.OPENCLAW_MEDIA_GEN_WORKSPACE_IDS = "workspace-unavailable-test";
+    state.applyEnv();
+    const warn = vi.spyOn(gatewayKernelLogs.log, "warn").mockImplementation(() => {});
+    let server: GatewayServer | undefined;
+    try {
+      const token = "gateway-spatial-runtime-unavailable-token";
+      await state.writeConfig({
+        gateway: { auth: { mode: "token", token }, controlUi: { enabled: false }, port },
+      });
+      state.applyEnv();
+      const { startGatewayServerCore } = await import("./server-start.js");
+      server = await startGatewayServerCore(port, {
+        auth: { mode: "token", token },
+        bind: "loopback",
+        controlUiEnabled: false,
+        sidecarStartup: "defer",
+      });
+      expect(warn).toHaveBeenCalledWith(
+        "spatial reference runtime startup skipped reason=v2_bundle_or_chromium_missing",
+      );
+      await server.close();
+    } finally {
+      await server?.close();
+      await state.cleanup();
+      restoreSpatialRuntimeEnv();
+      warn.mockRestore();
+    }
+  });
+
   it("closes startup tracing when invalid config prevents bootstrap from returning", async () => {
     startupTraceEventLoopDelay.instances.length = 0;
     const state = await createStartupTestState("gateway-invalid-config-startup-trace");

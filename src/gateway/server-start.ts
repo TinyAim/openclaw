@@ -18,6 +18,32 @@ const loadGatewayStartupPostAttachModule = createLazyRuntimeModule(
 const { log, logTailscale, logChannels, logHealth, logCron, logReload, logHooks, logWsControl } =
   gatewayKernelLogs;
 const POST_READY_WORK_START_DELAY_MS = 500;
+const spatialReferenceReasonCodes = new Set([
+  "spatial_v2_host_memory_unavailable",
+  "spatial_v2_qualification_scope_unconfirmed",
+  "spatial_v2_qualification_admission_release_failed",
+]);
+const spatialReferenceStartupReasons = new Map([
+  ["v2 bundle directory or Chromium executable is missing", "v2_bundle_or_chromium_missing"],
+  ["configured Chromium path is not a file", "chromium_path_invalid"],
+  ["reference renderer bundle manifest does not match v2 artifact", "v2_bundle_manifest_mismatch"],
+  ["v2 packaged renderer worker is unavailable", "v2_packaged_renderer_unavailable"],
+  ["control-api URL, runtime id, or token is missing", "runtime_binding_missing"],
+  [
+    "v2 resource qualification is blocked by durable Runtime admission",
+    "runtime_admission_blocked",
+  ],
+  [
+    "v2 resource qualification is blocked by durable Runtime admission: active_owner",
+    "runtime_admission_active_owner",
+  ],
+]);
+
+export function spatialReferenceRuntimeReasonCode(reason: string): string {
+  if (spatialReferenceReasonCodes.has(reason)) return reason;
+  if (reason.startsWith("v2 toolchain probe failed:")) return "v2_toolchain_probe_failed";
+  return spatialReferenceStartupReasons.get(reason) ?? "qualification_failed";
+}
 
 export { resetPreparedModelCatalogForTestCore };
 
@@ -75,6 +101,14 @@ export async function startGatewayServerCore(
             },
           })
         : { enabled: false as const, reason: "spatial runtime executor option provided" };
+    const spatialReferenceRequested = /^(1|true|yes|on)$/i.test(
+      process.env.OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_ENABLED?.trim() ?? "",
+    );
+    if (spatialReferenceRequested && !envSpatialReferenceRuntime.enabled) {
+      log.warn(
+        `spatial reference runtime startup skipped reason=${spatialReferenceRuntimeReasonCode(envSpatialReferenceRuntime.reason)}`,
+      );
+    }
     const transport = await createGatewayHttpTransport({
       ...gatewayKernel.createHttpTransportOptions(),
       mediaGenRuntimeExecutor:
@@ -131,6 +165,11 @@ export async function startGatewayServerCore(
       loadGatewayStartupPostAttachModule,
       waitForPostReadyWork: () => postReadyWorkBarrier,
     });
+    if (envSpatialReferenceRuntime.enabled) {
+      gatewayKernel.registerGatewayLifetimeSidecars([
+        { stop: envSpatialReferenceRuntime.startHeartbeat() },
+      ]);
+    }
     startupSettled = startup.startupSettled;
   } catch (err) {
     // Failed startup must release work whose normal timer was never armed.

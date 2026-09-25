@@ -398,7 +398,9 @@ export async function createMediaStudioSpatialReferenceRuntimeFromEnv(
               ...(media.supportsMultiReference === true ? { supportsMultiReference: true } : {}),
               spatialReferenceRender: capability,
               spatialEnvironmentPanorama: panoramaCapability,
-              spatialEnvironmentDepthMesh: depthMeshCapability,
+              // The Control API contract still binds this capability to the v2
+              // digest while the OpenClaw implementation reports v3. Keep it
+              // unadvertised until those independently owned contracts align.
             }),
           })
             .then(async (response) => {

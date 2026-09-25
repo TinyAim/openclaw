@@ -41,6 +41,7 @@ import {
   type SpatialReferenceJournalClaimOwner,
   type SpatialReferenceJournalRow,
   type SpatialReferenceJournalStoredValue,
+  type SpatialReferenceJournalWorker,
   type SpatialReferenceRuntimeLock,
   type SpatialReferenceJournalScopeGuardian,
   type SpatialReferenceJournalScopeRecovery,

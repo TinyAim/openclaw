@@ -2,6 +2,42 @@ import { describe, expect, it, vi } from "vitest";
 import { createMediaStudioSpatialReferenceRuntimeExecutor } from "./executor.js";
 import { dispatch, v2Dispatch } from "./reference.test-harness.js";
 
+function mockV2Renderer() {
+  return vi.fn(async (_input, _signal, lifecycle) => {
+    const executionScope = lifecycle?.executionScope;
+    if (!executionScope) throw new Error("missing persisted execution scope");
+    const worker = { pid: 1, startTime: 2, ...executionScope };
+    await lifecycle?.onLaunched?.(worker);
+    await lifecycle?.onExited?.(worker, "completed");
+    return {
+      compositionPng: Buffer.from([137, 80, 78, 71, 0, 0, 0, 0]),
+      compositionPixelDigest: "sha256:pixel",
+      width: 320,
+      height: 180,
+      motionMp4: Buffer.from("motion-mp4"),
+      fps: 12 as const,
+      frameCount: 1,
+      durationMs: 83,
+      evaluatorVersion: "frame-evaluator/v1",
+      referencePngs: [
+        {
+          slot: "start_frame" as const,
+          ordinal: 0,
+          sourceTimeMs: 0,
+          png: Buffer.from([137, 80, 78, 71]),
+        },
+        {
+          slot: "end_frame" as const,
+          ordinal: 0,
+          sourceTimeMs: 83,
+          png: Buffer.from([137, 80, 78, 71]),
+        },
+        { slot: "topdown_frame" as const, ordinal: 0, png: Buffer.from([137, 80, 78, 71]) },
+      ],
+    };
+  });
+}
+
 describe("Media Studio Spatial reference Runtime executor", () => {
   it("renders, uploads bytes, and posts receipt-only callback", async () => {
     const callbacks: Array<Record<string, unknown>> = [];
@@ -132,7 +168,8 @@ describe("Media Studio Spatial reference Runtime executor", () => {
           "upload-grant-end-1": "artifact-end-1",
           "upload-grant-topdown-1": "artifact-topdown-1",
         };
-        const artifactId = artifactIdByGrant[headers["x-wisclaw-spatial-upload-grant"]];
+        const grantToken = headers["x-wisclaw-spatial-upload-grant"];
+        const artifactId = grantToken ? artifactIdByGrant[grantToken] : undefined;
         if (!artifactId) throw new Error("unexpected upload grant");
         const { createHash } = await import("node:crypto");
         return new Response(
@@ -151,39 +188,7 @@ describe("Media Studio Spatial reference Runtime executor", () => {
       callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response(JSON.stringify({ data: { accepted: true } }), { status: 200 });
     });
-    const render = vi.fn(async (_input, _signal, lifecycle) => {
-      const executionScope = lifecycle?.executionScope;
-      if (!executionScope) throw new Error("missing persisted execution scope");
-      const worker = { pid: 1, startTime: 2, ...executionScope };
-      await lifecycle?.onLaunched?.(worker);
-      await lifecycle?.onExited?.(worker, "completed");
-      return {
-        compositionPng: Buffer.from([137, 80, 78, 71, 0, 0, 0, 0]),
-        compositionPixelDigest: "sha256:pixel",
-        width: 320,
-        height: 180,
-        motionMp4: Buffer.from("motion-mp4"),
-        fps: 12 as const,
-        frameCount: 1,
-        durationMs: 83,
-        evaluatorVersion: "frame-evaluator/v1",
-        referencePngs: [
-          {
-            slot: "start_frame" as const,
-            ordinal: 0,
-            sourceTimeMs: 0,
-            png: Buffer.from([137, 80, 78, 71]),
-          },
-          {
-            slot: "end_frame" as const,
-            ordinal: 0,
-            sourceTimeMs: 83,
-            png: Buffer.from([137, 80, 78, 71]),
-          },
-          { slot: "topdown_frame" as const, ordinal: 0, png: Buffer.from([137, 80, 78, 71]) },
-        ],
-      };
-    });
+    const render = mockV2Renderer();
     const executor = createMediaStudioSpatialReferenceRuntimeExecutor({
       controlApiUrl: "https://control.example",
       runtimeId: "runtime-1",
@@ -222,6 +227,109 @@ describe("Media Studio Spatial reference Runtime executor", () => {
         { artifactId: "artifact-topdown-1", slot: "topdown_frame", ordinal: 0 },
       ],
     });
+  });
+
+  it("rejects a v2 upload grant bound to a different Artifact before making requests", async () => {
+    const fetchMock = vi.fn();
+    const executor = createMediaStudioSpatialReferenceRuntimeExecutor({
+      controlApiUrl: "https://control.example",
+      runtimeId: "runtime-1",
+      token: "runtime-token",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    });
+    const input = v2Dispatch();
+    const [firstGrant, ...remainingGrants] = input.outputUploadGrants ?? [];
+    if (!firstGrant) throw new Error("v2_dispatch_upload_grants_missing");
+    input.outputUploadGrants = [
+      {
+        ...firstGrant,
+        artifactId: "artifact-from-another-output",
+      },
+      ...remainingGrants,
+    ];
+
+    try {
+      await expect(executor.dispatch(input)).rejects.toThrow(
+        "spatial_reference_output_identity_conflict",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      executor.stop();
+    }
+  });
+
+  it("reports a mismatched upload receipt as failed without a success callback", async () => {
+    const callbacks: Array<Record<string, unknown>> = [];
+    let uploadPostCount = 0;
+    const input = v2Dispatch();
+    const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/spatial-reference/upload") && init?.method === "GET") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              expectedOutputs: input.expectedOutputs.map((output) => ({
+                slot: output.slot,
+                ordinal: output.ordinal,
+                artifactId: output.artifactId,
+                expectedMimeType: output.mimeType,
+                ...(output.sourceTimeMs === undefined ? {} : { sourceTimeMs: output.sourceTimeMs }),
+              })),
+              runtimeId: input.runtimeId,
+              taskId: input.taskId,
+              materializationId: input.materializationId,
+              dispatchAttemptId: input.dispatchAttemptId,
+              executionFingerprint: input.executionFingerprint,
+              cancelled: false,
+              receipts: [],
+              pendingSlots: input.expectedOutputs.map((output) => output.slot),
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (String(url).includes("/spatial-reference/upload")) {
+        uploadPostCount += 1;
+        const bytes = init?.body as unknown as Buffer;
+        const { createHash } = await import("node:crypto");
+        return new Response(
+          JSON.stringify({
+            data: {
+              artifactId: "artifact-from-another-output",
+              storageKey: "artifacts/spatial/wrong-artifact",
+              size: bytes.length,
+              sha256Hex: createHash("sha256").update(bytes).digest("hex"),
+              mimeType: "image/png",
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: { accepted: true } }), { status: 200 });
+    });
+    const render = mockV2Renderer();
+    const executor = createMediaStudioSpatialReferenceRuntimeExecutor({
+      controlApiUrl: "https://control.example",
+      runtimeId: "runtime-1",
+      token: "runtime-token",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      v2Renderer: { render },
+    });
+
+    try {
+      await executor.dispatch(input);
+      await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+
+      expect(uploadPostCount).toBe(1);
+      expect(callbacks[0]).toMatchObject({
+        status: "failed",
+        errorCode: "upload_receipt_integrity_mismatch",
+      });
+      expect(callbacks[0]).not.toHaveProperty("receipt");
+      expect(callbacks[0]).not.toHaveProperty("motionReferenceReceipt");
+    } finally {
+      executor.stop();
+    }
   });
 
   it("terminal-handoffs a fully finalized v2 package without rendering or minting an upload", async () => {

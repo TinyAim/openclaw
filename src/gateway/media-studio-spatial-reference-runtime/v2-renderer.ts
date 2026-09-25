@@ -410,8 +410,6 @@ async function runSupervisedWorker(params: {
     const run = await supervisor.spawn({
       mode: "child",
       runId,
-      sessionId: params.input.dispatchAttemptId,
-      backendId: "spatial-reference-v2-guardian",
       scopeKey,
       replaceExistingScope: true,
       argv: [
@@ -777,6 +775,7 @@ async function runSupervisedWorker(params: {
         await params.lifecycle?.onScopeObservation?.({
           guardian,
           worker: identity,
+          state: "unknown",
           reason: "guardian_unavailable",
         });
       }
