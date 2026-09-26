@@ -114,6 +114,13 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
       scopeKey,
       runId,
     });
+    const reservation = await journal.reserveScopeGuardianLaunch({
+      identity,
+      owner,
+      generation,
+      guardianBuildDigest: identity.rendererBuildDigest,
+      nowMs,
+    });
     try {
       const run = await supervisor.spawn({
         mode: "child",
@@ -132,6 +139,14 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           manifestPath,
           "--generation",
           generation,
+          "--journal-launch-v1",
+          JSON.stringify({
+            stateDir: directory,
+            namespace: "guardian-integration-journal",
+            identity,
+            owner,
+            reservation,
+          }),
         ],
         stdinMode: "pipe-closed",
         ownedWorker: true,
@@ -142,11 +157,18 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
       });
       expect(run.openStartGate).toBeTypeOf("function");
       expect(run.sendWorkerMessage).toBeTypeOf("function");
+      await vi.waitFor(
+        async () =>
+          await expect(journal.get(identity.key)).resolves.toMatchObject({
+            launchState: "armed",
+            scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
+          }),
+      );
       const guardianStartTime = getFileLockProcessStartTime(run.pid!);
       if (guardianStartTime === null) throw new Error("guardian_test_identity_unavailable");
       const guardian = {
         protocol: "spatial_guardian/v1" as const,
-        guardianId: `guardian-integration:${run.pid}`,
+        guardianId: `spatial-guardian:${owner.epoch}:${run.pid}`,
         generation,
         pid: run.pid!,
         pidStartTimeMs: guardianStartTime,
@@ -235,6 +257,171 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           },
         },
       });
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("records never-spawned after the exact Guardian exits before its start gate", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "spatial-guardian-prearm-"));
+    const requestPath = path.join(directory, "request.json");
+    const manifestPath = path.join(directory, "manifest.json");
+    await writeFile(
+      requestPath,
+      JSON.stringify({ workDir: directory, outputs: [{ slot: "end_frame", ordinal: 0 }] }),
+    );
+    const supervisor = createProcessSupervisor();
+    supervisors.push(supervisor);
+    const identity: SpatialReferenceJournalIdentity = {
+      key: "guardian-prearm-idempotency",
+      runtimeId: "guardian-prearm-runtime",
+      runtimeIdempotencyKey: "guardian-prearm-idempotency",
+      executionId: "guardian-prearm-execution",
+      workspaceId: "guardian-prearm-workspace",
+      taskId: "guardian-prearm-task",
+      materializationId: "guardian-prearm-materialization",
+      dispatchAttemptId: "guardian-prearm-dispatch",
+      sequence: 1,
+      attempt: 1,
+      intentFingerprint: "guardian-prearm-intent",
+      executionFingerprint: "guardian-prearm-execution-fingerprint",
+      blueprintDigest: "guardian-prearm-blueprint",
+      contractVersion: "spatial_reference_render/v2",
+      rendererBuildDigest: "guardian-prearm-build",
+      frozenDispatchDigest: "b".repeat(64),
+    };
+    const expected: SpatialReferenceExpectedOutput[] = [
+      {
+        slot: "end_frame",
+        ordinal: 0,
+        artifactId: "guardian-prearm-output",
+        expectedMimeType: "image/png",
+      },
+    ];
+    const parentStartTime = getFileLockProcessStartTime(process.pid);
+    if (parentStartTime === null) throw new Error("guardian_test_parent_identity_unavailable");
+    const owner: SpatialReferenceJournalOwner = {
+      epoch: "guardian-prearm-owner",
+      pid: process.pid,
+      pidStartTimeMs: parentStartTime,
+      ownerInstanceId: "guardian-prearm-instance",
+    };
+    const nowMs = Date.now();
+    const namespace = "guardian-prearm-journal";
+    const journal = createSpatialReferenceJournal({
+      env: { OPENCLAW_STATE_DIR: directory },
+      namespace,
+    });
+    await journal.accept({
+      identity,
+      ack: {
+        ok: true,
+        accepted: true,
+        deferredSettlement: true,
+        runtimeId: identity.runtimeId,
+        executionId: identity.executionId,
+        taskId: identity.taskId,
+        materializationId: identity.materializationId,
+        attempt: identity.attempt,
+        dispatchAttemptId: identity.dispatchAttemptId,
+        sequence: identity.sequence,
+        leaseExpiresAt: "2099-01-01T00:00:00.000Z",
+        intentFingerprint: identity.intentFingerprint,
+        executionFingerprint: identity.executionFingerprint,
+        blueprintDigest: identity.blueprintDigest,
+      },
+      requestDigest: "guardian-prearm-request",
+      expectedOutputs: expected,
+    });
+    const scopeKey = "spatial-guardian-prearm-scope";
+    const runId = "spatial-guardian-prearm-run";
+    await journal.claim({
+      identity,
+      owner,
+      expectedOutputs: expected,
+      nowMs,
+      leaseExpiresAtMs: nowMs + 100_000,
+      scopeKey,
+      runId,
+    });
+    const generation = "guardian-prearm-generation";
+    const reservation = await journal.reserveScopeGuardianLaunch({
+      identity,
+      owner,
+      generation,
+      guardianBuildDigest: identity.rendererBuildDigest,
+      nowMs,
+    });
+    try {
+      const run = await supervisor.spawn({
+        mode: "child",
+        runId,
+        sessionId: "spatial-guardian-prearm-session",
+        backendId: "spatial-reference-v2-guardian",
+        scopeKey,
+        argv: [
+          process.execPath,
+          ...resolveRuntimeWorkerArgv(guardianUrl),
+          "--renderer-worker-url",
+          rendererFixtureUrl.href,
+          "--request",
+          requestPath,
+          "--manifest",
+          manifestPath,
+          "--generation",
+          generation,
+          "--journal-launch-v1",
+          JSON.stringify({ stateDir: directory, namespace, identity, owner, reservation }),
+        ],
+        stdinMode: "pipe-closed",
+        ownedWorker: true,
+        deferWorkerStart: true,
+        workerStartHandshake: true,
+        captureOutput: false,
+      });
+      const guardianStartTime = getFileLockProcessStartTime(run.pid!);
+      if (guardianStartTime === null) throw new Error("guardian_test_identity_unavailable");
+      const guardian = {
+        protocol: "spatial_guardian/v1" as const,
+        guardianId: `spatial-guardian:${owner.epoch}:${run.pid}`,
+        generation,
+        pid: run.pid!,
+        pidStartTimeMs: guardianStartTime,
+        guardianBuildDigest: identity.rendererBuildDigest,
+        armedAtMs: nowMs,
+      };
+      await vi.waitFor(
+        async () =>
+          await expect(journal.get(identity.key)).resolves.toMatchObject({
+            launchState: "armed",
+            scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
+          }),
+      );
+      run.cancel();
+      await run.wait();
+      await journal.recordPrearmGuardianExit({
+        identity,
+        owner,
+        guardian,
+        nowMs: Date.now(),
+      });
+      await expect(journal.get(identity.key)).resolves.toMatchObject({
+        launchState: "armed",
+        scopeRecovery: { state: "never_spawned", guardian: { pid: run.pid } },
+      });
+      await expect(
+        journal.release({
+          identity,
+          owner,
+          nowMs: Date.now(),
+          scopeEvidence: "never_spawned",
+          spawned: true,
+        }),
+      ).resolves.toMatchObject({
+        phase: "claimed",
+        scopeRecovery: { state: "never_spawned", guardian: { pid: run.pid } },
+      });
+      await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

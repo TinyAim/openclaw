@@ -7,6 +7,7 @@ import { requireNodeWorkerProcessIdentity } from "../../node-host/node-worker-pr
 import type { SpatialReferenceRelayDispatch } from "../media-studio-spatial-reference-render-http.js";
 import type {
   SpatialReferenceJournalScopeGuardian,
+  SpatialReferenceJournalScopeGuardianProcessIdentity,
   SpatialReferenceJournalWorker,
 } from "./reference-journal-record.js";
 import type { SpatialReferenceJournal, SpatialReferenceJournalOwner } from "./reference-journal.js";
@@ -244,6 +245,8 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
     | "claimExclusiveAdmission"
     | "releaseExclusiveAdmission"
     | "armScopeGuardian"
+    | "reserveScopeGuardianLaunch"
+    | "recordPrearmGuardianExit"
     | "recordSpawnIntent"
     | "recordWorkerPrepared"
     | "authorizeWorkerStart"
@@ -378,6 +381,18 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
                 ...params.guardianJournal,
                 identity: claimed.identity,
                 owner,
+                guardianBuildDigest: qualificationBuildDigest,
+                reserveGuardianLaunch: async ({ generation, nowMs: reservedAtMs }) => {
+                  const reservation = await params.journal.reserveScopeGuardianLaunch({
+                    identity: claimed.identity,
+                    owner,
+                    nowMs: reservedAtMs,
+                    generation,
+                    guardianBuildDigest: qualificationBuildDigest,
+                  });
+                  spawned = true;
+                  return reservation;
+                },
                 guardianFor: (receipt) =>
                   guardian &&
                   guardian.pid === receipt.pid &&
@@ -391,7 +406,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
         onGuardianLaunched: async (receipt) => {
           guardian = {
             protocol: "spatial_guardian/v1",
-            guardianId: `spatial-qualification-guardian:${owner.epoch}:${receipt.pid}`,
+            guardianId: `spatial-guardian:${owner.epoch}:${receipt.pid}`,
             generation: receipt.generation,
             pid: receipt.pid,
             pidStartTimeMs: receipt.startTime,
@@ -404,6 +419,35 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
             nowMs: nowMs(),
             guardian,
           });
+          spawned = true;
+        },
+        onGuardianExitedBeforeSpawnIntent: async (receipt) => {
+          if (
+            receipt.scopeKey !== claimed.owner.scopeKey ||
+            receipt.runId !== claimed.owner.runId ||
+            (guardian &&
+              (receipt.pid !== guardian.pid ||
+                receipt.startTime !== guardian.pidStartTimeMs ||
+                receipt.generation !== guardian.generation))
+          ) {
+            throw new Error("spatial_guardian_exit_identity_invalid");
+          }
+          const exitedGuardian: SpatialReferenceJournalScopeGuardianProcessIdentity = {
+            protocol: "spatial_guardian/v1",
+            guardianId: `spatial-guardian:${owner.epoch}:${receipt.pid}`,
+            generation: receipt.generation,
+            pid: receipt.pid,
+            pidStartTimeMs: receipt.startTime,
+            guardianBuildDigest: qualificationBuildDigest,
+          };
+          await params.journal.recordPrearmGuardianExit({
+            identity: claimed.identity,
+            owner,
+            guardian: guardian ?? exitedGuardian,
+            nowMs: nowMs(),
+          });
+          scopeEvidence = "never_spawned";
+          spawned = true;
         },
         onSpawnIntent: async () => {
           if (!guardian) throw new Error("spatial_guardian_identity_missing");
@@ -486,7 +530,6 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
           }).render(dispatch, signal, renderLifecycle));
       // A synthetic test renderer never creates a process. All real
       // qualification effects begin only in the guardian-owned child above.
-      spawned = !params.testRenderQualification;
       await render(
         qualificationDispatch(qualificationBuildDigest),
         AbortSignal.timeout(120_000),

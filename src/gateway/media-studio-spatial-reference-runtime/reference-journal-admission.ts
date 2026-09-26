@@ -13,6 +13,7 @@ import {
   SPATIAL_REFERENCE_JOURNAL_SCHEMA_VERSION,
   type SpatialReferenceJournalClaimOwner,
   type SpatialReferenceJournalIdentity,
+  type SpatialReferenceJournalOwner,
   type SpatialReferenceJournalRow,
   type SpatialReferenceJournalStoredValue,
   type SpatialReferenceRuntimeLock,
@@ -122,11 +123,14 @@ function qualificationReleaseIsSafe(
   spawned: boolean,
 ): boolean {
   if (evidence === "never_spawned") {
-    return (
-      !spawned &&
+    return Boolean(
+      claim &&
       !row.worker &&
-      ((!row.scopeRecovery && row.launchState === undefined) ||
-        (row.launchState === "armed" && row.scopeRecovery?.state === "never_spawned"))
+      ((!spawned &&
+        !row.scopeRecovery &&
+        !row.guardianReservation &&
+        row.launchState === undefined) ||
+        qualificationNeverSpawnedWitnessMatches(row, claim)),
     );
   }
   const recovery = row.scopeRecovery;
@@ -155,13 +159,140 @@ function qualificationReleaseIsSafe(
   );
 }
 
+function qualificationNeverSpawnedWitnessMatches(
+  row: SpatialReferenceJournalRow,
+  claim: SpatialReferenceJournalClaimOwner,
+): boolean {
+  const reservation = row.guardianReservation;
+  if (
+    !reservation ||
+    reservation.protocol !== "spatial_guardian_reservation/v1" ||
+    reservation.claimVersion !== claim.claimVersion ||
+    !sameOwner(reservation.owner, claim) ||
+    reservation.scopeKey !== claim.scopeKey ||
+    reservation.runId !== claim.runId
+  ) {
+    return false;
+  }
+  const recovery = row.scopeRecovery;
+  if (
+    recovery?.state === "never_spawned" &&
+    row.launchState === "armed" &&
+    recovery.claimVersion === claim.claimVersion &&
+    sameOwner(recovery.owner, claim) &&
+    (recovery.guardian.pid !== claim.pid ||
+      recovery.guardian.pidStartTimeMs !== claim.pidStartTimeMs) &&
+    recovery.guardian.generation === reservation.generation &&
+    recovery.guardian.guardianBuildDigest === reservation.guardianBuildDigest
+  ) {
+    return true;
+  }
+  const witness = row.prearmGuardianExitWitness;
+  return Boolean(
+    row.launchState === "guardian_reserved" &&
+    !recovery &&
+    witness?.protocol === "spatial_guardian_prearm_exit/v1" &&
+    (witness.guardian.pid !== claim.pid ||
+      witness.guardian.pidStartTimeMs !== claim.pidStartTimeMs) &&
+    witness.reservation.generation === reservation.generation &&
+    witness.reservation.claimVersion === reservation.claimVersion &&
+    sameOwner(witness.reservation.owner, reservation.owner) &&
+    witness.reservation.scopeKey === reservation.scopeKey &&
+    witness.reservation.runId === reservation.runId &&
+    witness.reservation.guardianBuildDigest === reservation.guardianBuildDigest &&
+    witness.guardian.generation === reservation.generation &&
+    witness.guardian.guardianBuildDigest === reservation.guardianBuildDigest &&
+    witness.observedAtMs >= reservation.reservedAtMs,
+  );
+}
+
+function exactQuarantinedNeverSpawnedRecovery(
+  row: SpatialReferenceJournalRow | undefined,
+  lock: SpatialReferenceRuntimeLock | undefined,
+  runtimeId: string,
+): SpatialReferenceJournalClaimOwner | undefined {
+  const quarantine = lock?.quarantine;
+  const previous = quarantine?.legacyRowOwner;
+  if (
+    lock?.state !== "quarantined" ||
+    lock.runtimeId !== runtimeId ||
+    quarantine?.reason !== "scope_stop_unconfirmed" ||
+    quarantine.sourceExecutionKey !== SPATIAL_REFERENCE_QUALIFICATION_KEY ||
+    quarantine.scope.state !== "exact" ||
+    !previous ||
+    !("claimVersion" in previous) ||
+    !row ||
+    row.claim ||
+    row.identity?.runtimeId !== runtimeId ||
+    row.key !== SPATIAL_REFERENCE_QUALIFICATION_KEY ||
+    row.identity.contractVersion !== "spatial_reference_render/v2" ||
+    row.worker ||
+    quarantine.scope.scopeKey !== (previous as SpatialReferenceJournalClaimOwner).scopeKey ||
+    quarantine.scope.runId !== (previous as SpatialReferenceJournalClaimOwner).runId ||
+    !qualificationNeverSpawnedWitnessMatches(row, previous as SpatialReferenceJournalClaimOwner)
+  ) {
+    return undefined;
+  }
+  return previous as SpatialReferenceJournalClaimOwner;
+}
+
+function exactOwnedNeverSpawnedRecovery(
+  row: SpatialReferenceJournalRow | undefined,
+  lock: SpatialReferenceRuntimeLock | undefined,
+  runtimeId: string,
+  nowMs: number,
+  nextOwner: SpatialReferenceJournalOwner,
+): SpatialReferenceJournalClaimOwner | undefined {
+  const previous = lock?.owner;
+  if (
+    lock?.state !== "owned" ||
+    lock.executionKey !== SPATIAL_REFERENCE_QUALIFICATION_KEY ||
+    lock.runtimeId !== runtimeId ||
+    !previous ||
+    !("claimVersion" in previous) ||
+    sameOwner(previous, nextOwner) ||
+    previous.leaseExpiresAtMs > nowMs ||
+    !row ||
+    !row.claim ||
+    !sameClaimOwner(row.claim, previous) ||
+    row.identity?.runtimeId !== runtimeId ||
+    row.key !== SPATIAL_REFERENCE_QUALIFICATION_KEY ||
+    row.identity?.contractVersion !== "spatial_reference_render/v2" ||
+    row.worker ||
+    !qualificationNeverSpawnedWitnessMatches(row, previous)
+  ) {
+    return undefined;
+  }
+  return previous;
+}
+
 export function applyExclusiveAdmissionClaim(params: {
   transaction: SpatialReferenceJournalPairTransaction;
   input: SpatialReferenceExclusiveAdmissionClaimInput;
 }): SpatialReferenceExclusiveAdmissionClaimResult {
-  const lock = params.transaction.lookup(SPATIAL_REFERENCE_RUNTIME_LOCK_KEY) as
+  const storedLock = params.transaction.lookup(SPATIAL_REFERENCE_RUNTIME_LOCK_KEY) as
     | SpatialReferenceRuntimeLock
     | undefined;
+  const existingRow = asExecution(params.transaction.lookup(SPATIAL_REFERENCE_QUALIFICATION_KEY));
+  const recoverableQuarantine = exactQuarantinedNeverSpawnedRecovery(
+    existingRow,
+    storedLock,
+    params.input.runtimeId,
+  );
+  const recoverableOwner = exactOwnedNeverSpawnedRecovery(
+    existingRow,
+    storedLock,
+    params.input.runtimeId,
+    params.input.nowMs,
+    params.input.owner,
+  );
+  const lock =
+    recoverableQuarantine || recoverableOwner
+      ? releasedLock(
+          params.input.runtimeId,
+          (recoverableQuarantine ?? recoverableOwner)!.claimVersion,
+        )
+      : storedLock;
   const admission = lockAdmission(lock);
   if (admission.state === "quarantined") {
     return { claimed: false, reason: "runtime_quarantined" };
@@ -169,7 +300,6 @@ export function applyExclusiveAdmissionClaim(params: {
   if (admission.state === "requires_reconciliation") {
     return { claimed: false, reason: "requires_reconciliation" };
   }
-  const existingRow = asExecution(params.transaction.lookup(SPATIAL_REFERENCE_QUALIFICATION_KEY));
   if (
     existingRow?.identity?.runtimeId &&
     existingRow.identity.runtimeId !== params.input.runtimeId
@@ -192,7 +322,12 @@ export function applyExclusiveAdmissionClaim(params: {
   ) {
     return { claimed: false, reason: "requires_reconciliation" };
   }
-  if (admission.state === "released" && existingRow?.claim) {
+  if (
+    admission.state === "released" &&
+    existingRow?.claim &&
+    !recoverableOwner &&
+    !recoverableQuarantine
+  ) {
     return { claimed: false, reason: "requires_reconciliation" };
   }
   const current = heartbeat ? existingRow?.claim : undefined;
@@ -219,6 +354,12 @@ export function applyExclusiveAdmissionClaim(params: {
       ? { scopeRecovery: clone(existingRow.scopeRecovery) }
       : {}),
     ...(existingRow?.launchState && heartbeat ? { launchState: existingRow.launchState } : {}),
+    ...(existingRow?.guardianReservation && heartbeat
+      ? { guardianReservation: clone(existingRow.guardianReservation) }
+      : {}),
+    ...(existingRow?.prearmGuardianExitWitness && heartbeat
+      ? { prearmGuardianExitWitness: clone(existingRow.prearmGuardianExitWitness) }
+      : {}),
   };
   params.transaction.set(SPATIAL_REFERENCE_QUALIFICATION_KEY, clone(row));
   params.transaction.set(SPATIAL_REFERENCE_RUNTIME_LOCK_KEY, {

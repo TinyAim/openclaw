@@ -1,10 +1,20 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { closePluginStateDatabase } from "../../plugin-state/plugin-state-store.js";
 import { createChildAdapter } from "../../process/supervisor/adapters/child.js";
 import { createProcessSupervisor } from "../../process/supervisor/supervisor.js";
 import type { ProcessSupervisor, SpawnInput } from "../../process/supervisor/types.js";
 import { isPidDefinitelyDead } from "../../shared/pid-alive.js";
 import type { SpatialReferenceJournalRow } from "./reference-journal-record.js";
+import type {
+  SpatialReferenceJournalIdentity,
+  SpatialReferenceJournalOwner,
+  SpatialReferenceJournalScopeGuardian,
+  SpatialReferenceJournalScopeGuardianProcessIdentity,
+} from "./reference-journal-record.js";
+import { createSpatialReferenceJournal } from "./reference-journal.js";
 import { v2Dispatch } from "./reference.test-harness.js";
 import {
   buildSpatialReferenceV2Manifest,
@@ -20,6 +30,7 @@ import { SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL } from "./v2-renderer.js";
 import { supportsSpatialReferenceV2ResourceLimits } from "./v2-resource-watch.js";
 
 const fixtureUrl = new URL("./v2-renderer.supervision.fixture.mjs", import.meta.url);
+const preReadyExitFixtureUrl = new URL("./v2-renderer.pre-ready-exit.fixture.mjs", import.meta.url);
 const noWindows = process.platform === "win32";
 const buildReferenceHtml = path.resolve(
   process.cwd(),
@@ -35,6 +46,32 @@ const buildToolchain = {
 
 async function waitForDead(pid: number): Promise<void> {
   await vi.waitFor(() => expect(isPidDefinitelyDead(pid)).toBe(true), { timeout: 2_000 });
+}
+
+async function createQualificationJournalFixture() {
+  const stateDir = await mkdtemp(path.join(tmpdir(), "spatial-prearm-renderer-test-"));
+  const journal = createSpatialReferenceJournal({
+    env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+    namespace: "spatial-prearm-renderer-test",
+  });
+  const owner: SpatialReferenceJournalOwner = {
+    epoch: `prearm-owner-${Date.now()}`,
+    pid: process.pid,
+    pidStartTimeMs: Date.now(),
+    ownerInstanceId: `prearm-owner-instance-${Date.now()}`,
+  };
+  const scopeKey = `prearm-scope-${Date.now()}`;
+  const runId = `${scopeKey}-run`;
+  const claimed = await journal.claimExclusiveAdmission({
+    owner,
+    nowMs: Date.now(),
+    leaseExpiresAtMs: Date.now() + 60_000,
+    scopeKey,
+    runId,
+    runtimeId: "prearm-runtime",
+  });
+  if (!claimed.claimed) throw new Error("prearm_journal_claim_failed");
+  return { stateDir, journal, owner, identity: claimed.identity, scopeKey, runId };
 }
 
 function fixtureSupervisor(params: { audits: unknown[] }): {
@@ -351,6 +388,268 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
       expect(events.slice(0, 2)).toEqual(["acquire", "spawn"]);
       expect(cleanupClosed).toBe(true);
       expect(events).toContain("cleanup");
+    });
+
+    it("writes a pre-spawn exit receipt only after the exact Guardian scope settles", async () => {
+      const fixture = fixtureSupervisor({ audits: [] });
+      const parentStartTime = Date.now();
+      const owner: SpatialReferenceJournalOwner = {
+        epoch: "prearm-owner",
+        pid: process.pid,
+        pidStartTimeMs: parentStartTime,
+        ownerInstanceId: "prearm-owner-instance",
+      };
+      const identity: SpatialReferenceJournalIdentity = {
+        key: "prearm-execution",
+        runtimeIdempotencyKey: "prearm-execution",
+        runtimeId: "prearm-runtime",
+        executionId: "prearm-execution-id",
+        workspaceId: "prearm-workspace",
+        taskId: "prearm-task",
+        materializationId: "prearm-materialization",
+        dispatchAttemptId: "prearm-attempt",
+        sequence: 1,
+        attempt: 1,
+        intentFingerprint: "prearm-intent",
+        executionFingerprint: "prearm-fingerprint",
+        blueprintDigest: "prearm-blueprint",
+        contractVersion: "spatial_reference_render/v2",
+        rendererBuildDigest: "prearm-renderer-build",
+        frozenDispatchDigest: "d".repeat(64),
+      };
+      let journalGuardian: SpatialReferenceJournalScopeGuardian | undefined;
+      const reserved = vi.fn(
+        async ({ generation, nowMs }: { generation: string; nowMs: number }) => ({
+          protocol: "spatial_guardian_reservation/v1" as const,
+          generation,
+          claimVersion: 1,
+          owner: { ...owner, claimVersion: 1, scopeKey: "prearm-scope", runId: "prearm-run" },
+          scopeKey: "prearm-scope",
+          runId: "prearm-run",
+          guardianBuildDigest: identity.rendererBuildDigest,
+          reservedAtMs: nowMs,
+        }),
+      );
+      const onExitedBeforeSpawnIntent = vi.fn(async (receipt: { pid: number }) => {
+        await waitForDead(receipt.pid);
+      });
+      const controller = new AbortController();
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor: fixture.supervisor,
+        guardianWorkerUrl: fixtureUrl,
+      });
+      try {
+        await expect(
+          renderer.renderMissing?.(
+            v2Dispatch(),
+            controller.signal,
+            [{ slot: "end_frame", ordinal: 0 }],
+            {
+              executionScope: { scopeKey: "prearm-scope", runId: "prearm-run" },
+              guardianJournal: {
+                stateDir: "/fixture/state",
+                namespace: "prearm-namespace",
+                identity,
+                owner,
+                guardianBuildDigest: identity.rendererBuildDigest,
+                reserveGuardianLaunch: reserved,
+                guardianFor: () => journalGuardian,
+              },
+              onGuardianLaunched: async (receipt) => {
+                journalGuardian = {
+                  protocol: "spatial_guardian/v1",
+                  guardianId: `spatial-guardian:${owner.epoch}:${receipt.pid}`,
+                  generation: receipt.generation,
+                  pid: receipt.pid,
+                  pidStartTimeMs: receipt.startTime,
+                  guardianBuildDigest: identity.rendererBuildDigest,
+                  armedAtMs: Date.now(),
+                };
+                controller.abort();
+              },
+              onGuardianExitedBeforeSpawnIntent: onExitedBeforeSpawnIntent,
+            },
+          ),
+        ).rejects.toThrow("spatial_v2_cancelled_before_start");
+        expect(reserved).toHaveBeenCalledOnce();
+        expect(onExitedBeforeSpawnIntent).toHaveBeenCalledOnce();
+      } finally {
+        await fixture.shutdown();
+      }
+    });
+
+    it("records the reserved Guardian identity when a real process exits before READY", async () => {
+      const supervisor = createProcessSupervisor();
+      const fixture = await createQualificationJournalFixture();
+      let journalGuardian: SpatialReferenceJournalScopeGuardian | undefined;
+      const launched = vi.fn(
+        async (receipt: { pid: number; startTime: number; generation: string }) => {
+          journalGuardian = {
+            protocol: "spatial_guardian/v1",
+            guardianId: `spatial-guardian:${fixture.owner.epoch}:${receipt.pid}`,
+            generation: receipt.generation,
+            pid: receipt.pid,
+            pidStartTimeMs: receipt.startTime,
+            guardianBuildDigest: fixture.identity.rendererBuildDigest,
+            armedAtMs: Date.now(),
+          };
+          await fixture.journal.armScopeGuardian({
+            identity: fixture.identity,
+            owner: fixture.owner,
+            guardian: journalGuardian,
+            nowMs: Date.now(),
+          });
+        },
+      );
+      const exited = vi.fn(
+        async (receipt: { pid: number; startTime: number; generation: string }) => {
+          await waitForDead(receipt.pid);
+          const guardian: SpatialReferenceJournalScopeGuardianProcessIdentity = {
+            protocol: "spatial_guardian/v1",
+            guardianId: `spatial-guardian:${fixture.owner.epoch}:${receipt.pid}`,
+            generation: receipt.generation,
+            pid: receipt.pid,
+            pidStartTimeMs: receipt.startTime,
+            guardianBuildDigest: fixture.identity.rendererBuildDigest,
+          };
+          await fixture.journal.recordPrearmGuardianExit({
+            identity: fixture.identity,
+            owner: fixture.owner,
+            guardian,
+            nowMs: Date.now(),
+          });
+        },
+      );
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor,
+        guardianWorkerUrl: preReadyExitFixtureUrl,
+      });
+      try {
+        await expect(
+          renderer.renderMissing?.(
+            v2Dispatch(),
+            new AbortController().signal,
+            [{ slot: "end_frame", ordinal: 0 }],
+            {
+              executionScope: { scopeKey: fixture.scopeKey, runId: fixture.runId },
+              guardianJournal: {
+                stateDir: fixture.stateDir,
+                namespace: "spatial-prearm-renderer-test",
+                identity: fixture.identity,
+                owner: fixture.owner,
+                guardianBuildDigest: fixture.identity.rendererBuildDigest,
+                reserveGuardianLaunch: ({ generation, nowMs }) =>
+                  fixture.journal.reserveScopeGuardianLaunch({
+                    identity: fixture.identity,
+                    owner: fixture.owner,
+                    generation,
+                    guardianBuildDigest: fixture.identity.rendererBuildDigest,
+                    nowMs,
+                  }),
+                guardianFor: (receipt) =>
+                  journalGuardian?.pid === receipt.pid &&
+                  journalGuardian.pidStartTimeMs === receipt.startTime &&
+                  journalGuardian.generation === receipt.generation
+                    ? journalGuardian
+                    : undefined,
+              },
+              onGuardianLaunched: launched,
+              onGuardianExitedBeforeSpawnIntent: exited,
+              onSpawnIntent: vi.fn(),
+            },
+          ),
+        ).rejects.toThrow("spatial_guardian_exited_before_ready");
+        expect(launched).not.toHaveBeenCalled();
+        expect(exited).toHaveBeenCalledOnce();
+        const receipt = exited.mock.calls[0]?.[0];
+        expect(receipt).toMatchObject({
+          pid: expect.any(Number),
+          startTime: expect.any(Number),
+          generation: expect.any(String),
+          scopeKey: fixture.scopeKey,
+          runId: fixture.runId,
+        });
+        const row = await fixture.journal.get("@qualification");
+        expect(row).toMatchObject({
+          launchState: "guardian_reserved",
+          prearmGuardianExitWitness: {
+            protocol: "spatial_guardian_prearm_exit/v1",
+            guardian: {
+              pid: receipt!.pid,
+              pidStartTimeMs: receipt!.startTime,
+              generation: receipt!.generation,
+            },
+          },
+        });
+        expect(row).not.toHaveProperty("scopeRecovery");
+        expect(row).not.toHaveProperty("worker");
+      } finally {
+        await supervisor.shutdown();
+        closePluginStateDatabase();
+        await rm(fixture.stateDir, { recursive: true, force: true });
+      }
+    });
+
+    it("leaves only the reservation when a real Guardian PID receipt is unavailable", async () => {
+      const owned = createProcessSupervisor();
+      const fixture = await createQualificationJournalFixture();
+      const supervisor: ProcessSupervisor = {
+        acquireScopeCleanup: (scopeKey, options) => owned.acquireScopeCleanup(scopeKey, options),
+        spawn: async (input: SpawnInput) => {
+          const run = await owned.spawn(input);
+          return { ...run, pid: undefined };
+        },
+        cancel: (runId, reason) => owned.cancel(runId, reason),
+        cancelScope: (scopeKey, reason) => owned.cancelScope(scopeKey, reason),
+      };
+      const exited = vi.fn();
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor,
+        guardianWorkerUrl: preReadyExitFixtureUrl,
+      });
+      try {
+        await expect(
+          renderer.renderMissing?.(
+            v2Dispatch(),
+            new AbortController().signal,
+            [{ slot: "end_frame", ordinal: 0 }],
+            {
+              executionScope: { scopeKey: fixture.scopeKey, runId: fixture.runId },
+              guardianJournal: {
+                stateDir: fixture.stateDir,
+                namespace: "spatial-prearm-renderer-test",
+                identity: fixture.identity,
+                owner: fixture.owner,
+                guardianBuildDigest: fixture.identity.rendererBuildDigest,
+                reserveGuardianLaunch: ({ generation, nowMs }) =>
+                  fixture.journal.reserveScopeGuardianLaunch({
+                    identity: fixture.identity,
+                    owner: fixture.owner,
+                    generation,
+                    guardianBuildDigest: fixture.identity.rendererBuildDigest,
+                    nowMs,
+                  }),
+                guardianFor: () => undefined,
+              },
+              onGuardianExitedBeforeSpawnIntent: exited,
+            },
+          ),
+        ).rejects.toThrow("spatial_guardian_identity_unavailable");
+        expect(exited).not.toHaveBeenCalled();
+        const row = await fixture.journal.get("@qualification");
+        expect(row).toMatchObject({ launchState: "guardian_reserved" });
+        expect(row).not.toHaveProperty("prearmGuardianExitWitness");
+      } finally {
+        await owned.shutdown();
+        closePluginStateDatabase();
+        await rm(fixture.stateDir, { recursive: true, force: true });
+      }
     });
 
     it("renders only a sparse plan through a real owned worker without relaying credentials", async () => {

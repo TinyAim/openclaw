@@ -74,12 +74,8 @@ export type SpatialReferenceJournalWorker = {
   };
 };
 
-/**
- * A private, start-gated companion that survives a gateway-process crash long
- * enough to observe the exact owned worker process group.  It is deliberately
- * an execution-row fact (not a second journal or a user-visible lifecycle).
- */
-export type SpatialReferenceJournalScopeGuardian = {
+/** Exact process identity captured by the parent before the Guardian ready gate. */
+export type SpatialReferenceJournalScopeGuardianProcessIdentity = {
   protocol: "spatial_guardian/v1";
   guardianId: string;
   generation: string;
@@ -87,7 +83,36 @@ export type SpatialReferenceJournalScopeGuardian = {
   pidStartTimeMs: number;
   /** The frozen v2 manifest digest also covers this resolved guardian entry. */
   guardianBuildDigest: string;
-  armedAtMs: number;
+};
+
+/**
+ * A private, start-gated companion that survives a gateway-process crash long
+ * enough to observe the exact owned worker process group. It is deliberately
+ * an execution-row fact (not a second journal or a user-visible lifecycle).
+ */
+export type SpatialReferenceJournalScopeGuardian =
+  SpatialReferenceJournalScopeGuardianProcessIdentity & {
+    armedAtMs: number;
+  };
+
+/** Durable launch reservation written before the Guardian child is spawned. */
+export type SpatialReferenceJournalScopeGuardianReservation = {
+  protocol: "spatial_guardian_reservation/v1";
+  generation: string;
+  claimVersion: number;
+  owner: SpatialReferenceJournalOwner;
+  scopeKey: string;
+  runId: string;
+  guardianBuildDigest: string;
+  reservedAtMs: number;
+};
+
+/** Parent-owned proof that a reserved Guardian run settled before its start gate opened. */
+export type SpatialReferenceJournalPrearmGuardianExitWitness = {
+  protocol: "spatial_guardian_prearm_exit/v1";
+  reservation: SpatialReferenceJournalScopeGuardianReservation;
+  guardian: SpatialReferenceJournalScopeGuardianProcessIdentity;
+  observedAtMs: number;
 };
 
 /**
@@ -168,13 +193,20 @@ export type SpatialReferenceJournalRow = {
   /** Survives owner release so post-crash recovery cannot reset its budget. */
   recoveryCount?: number;
   worker?: SpatialReferenceJournalWorker;
+  guardianReservation?: SpatialReferenceJournalScopeGuardianReservation;
+  prearmGuardianExitWitness?: SpatialReferenceJournalPrearmGuardianExitWitness;
   /** Private durable recovery authority for v3 owned process groups. */
   scopeRecovery?: SpatialReferenceJournalScopeRecovery;
   /**
    * Private schema-v4 launch checkpoint. This is deliberately orthogonal to
    * public execution phase and scope-recovery observation.
    */
-  launchState?: "armed" | "spawn_intent" | "worker_prepared" | "start_authorized";
+  launchState?:
+    | "guardian_reserved"
+    | "armed"
+    | "spawn_intent"
+    | "worker_prepared"
+    | "start_authorized";
   cancelFence?: {
     dispatchAttemptId: string;
     fenceEpoch: string;

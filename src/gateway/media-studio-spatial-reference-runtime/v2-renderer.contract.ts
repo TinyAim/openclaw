@@ -3,6 +3,7 @@ import type {
   SpatialReferenceJournalIdentity,
   SpatialReferenceJournalOwner,
   SpatialReferenceJournalScopeGuardian,
+  SpatialReferenceJournalScopeGuardianReservation,
 } from "./reference-journal-record.js";
 
 export const SPATIAL_V2_FPS = 12 as const;
@@ -141,10 +142,23 @@ export type SpatialReferenceV2GuardianJournalContext = {
   namespace: string;
   identity: SpatialReferenceJournalIdentity;
   owner: SpatialReferenceJournalOwner;
-  /** Returns the exact guardian receipt after the trusted owner has armed it. */
+  guardianBuildDigest: string;
+  reserveGuardianLaunch: (input: {
+    generation: string;
+    nowMs: number;
+  }) => Promise<SpatialReferenceJournalScopeGuardianReservation>;
+  /** Returns the exact receipt after the Guardian persisted its pre-ready arm. */
   guardianFor: (
     identity: SpatialReferenceV2GuardianIdentity,
   ) => SpatialReferenceJournalScopeGuardian | undefined;
+};
+
+/** Private immutable context available to the Guardian before its IPC start gate opens. */
+export type SpatialReferenceV2GuardianLaunchContext = Pick<
+  SpatialReferenceV2GuardianJournalContext,
+  "stateDir" | "namespace" | "identity" | "owner"
+> & {
+  reservation: SpatialReferenceJournalScopeGuardianReservation;
 };
 
 export type SpatialReferenceV2RenderLifecycle = {
@@ -152,8 +166,12 @@ export type SpatialReferenceV2RenderLifecycle = {
   executionScope?: { scopeKey: string; runId: string };
   /** Supplied only by the trusted runtime owner; the guardian uses it for narrow SQLite writes. */
   guardianJournal?: SpatialReferenceV2GuardianJournalContext;
-  /** The independently started guardian is known before its one-shot start gate opens. */
+  /** The independently started Guardian is revalidated before its one-shot start gate opens. */
   onGuardianLaunched?: (identity: SpatialReferenceV2GuardianIdentity) => void | Promise<void>;
+  /** Called only after ProcessSupervisor settled the exact reserved Guardian scope. */
+  onGuardianExitedBeforeSpawnIntent?: (
+    guardian: SpatialReferenceV2GuardianIdentity,
+  ) => void | Promise<void>;
   /** Guardian recorded a durable spawn intent immediately before it creates a worker. */
   onSpawnIntent?: (guardian: SpatialReferenceV2GuardianIdentity) => void | Promise<void>;
   /** Called after exact PID/start-time/scope ownership is available, before render work starts. */

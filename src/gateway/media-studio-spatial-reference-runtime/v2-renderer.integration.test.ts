@@ -294,6 +294,15 @@ async function renderWithDurableGuardian(
       namespace,
       identity,
       owner,
+      guardianBuildDigest: identity.rendererBuildDigest,
+      reserveGuardianLaunch: ({ generation, nowMs }) =>
+        journal.reserveScopeGuardianLaunch({
+          identity,
+          owner,
+          generation,
+          guardianBuildDigest: identity.rendererBuildDigest,
+          nowMs,
+        }),
       guardianFor: (receipt: SpatialReferenceV2GuardianIdentity) =>
         guardian &&
         guardian.pid === receipt.pid &&
@@ -305,7 +314,7 @@ async function renderWithDurableGuardian(
     onGuardianLaunched: async (receipt: SpatialReferenceV2GuardianIdentity) => {
       guardian = {
         protocol: "spatial_guardian/v1",
-        guardianId: `spatial-render-integration-guardian:${receipt.pid}`,
+        guardianId: `spatial-guardian:${owner.epoch}:${receipt.pid}`,
         generation: receipt.generation,
         pid: receipt.pid,
         pidStartTimeMs: receipt.startTime,

@@ -353,6 +353,10 @@ async function runSupervisedWorker(params: {
   let invalidScopeObservation: Error | undefined;
   let resolveSpawnIntent: (() => void) | undefined;
   let rejectSpawnIntent: ((error: Error) => void) | undefined;
+  let resolveGuardianReady: (() => void) | undefined;
+  const guardianReady = new Promise<void>((resolve) => {
+    resolveGuardianReady = resolve;
+  });
   const spawnIntent = new Promise<void>((resolve, reject) => {
     resolveSpawnIntent = resolve;
     rejectSpawnIntent = reject;
@@ -404,9 +408,23 @@ async function runSupervisedWorker(params: {
     await closeScopeCleanupWithTimeout(closeScopeCleanup);
     scopeCleanupClosed = true;
   };
+  const guardianJournal = params.lifecycle?.guardianJournal;
   params.signal.addEventListener("abort", stop, { once: true });
   try {
     if (params.signal.aborted) throw new Error("spatial_v2_cancelled_before_launch");
+    const reservation = guardianJournal
+      ? await guardianJournal.reserveGuardianLaunch({ generation, nowMs: Date.now() })
+      : undefined;
+    const launchContext =
+      guardianJournal && reservation
+        ? JSON.stringify({
+            stateDir: guardianJournal.stateDir,
+            namespace: guardianJournal.namespace,
+            identity: guardianJournal.identity,
+            owner: guardianJournal.owner,
+            reservation,
+          })
+        : undefined;
     const run = await supervisor.spawn({
       mode: "child",
       runId,
@@ -423,6 +441,7 @@ async function runSupervisedWorker(params: {
         manifestPath,
         "--generation",
         generation,
+        ...(launchContext ? ["--journal-launch-v1", launchContext] : []),
       ],
       stdinMode: "pipe-closed",
       timeoutMs: 120_000,
@@ -433,6 +452,10 @@ async function runSupervisedWorker(params: {
       onWorkerMessage: (message: unknown) => {
         if (!message || typeof message !== "object" || Array.isArray(message)) return;
         const event = message as Record<string, unknown>;
+        if (event.type === "openclaw-worker-ready-v1") {
+          resolveGuardianReady?.();
+          return;
+        }
         const protocol = guardianProtocol.consume(event);
         if (protocol?.kind === "protocol-error") {
           rejectGuardianCheckpoints(protocol.code);
@@ -631,8 +654,8 @@ async function runSupervisedWorker(params: {
     const startTime = getFileLockProcessStartTime(run.pid);
     if (startTime === null) throw new Error("spatial_guardian_identity_unavailable");
     guardian = { pid: run.pid, startTime, runId, scopeKey, generation };
+    await awaitGuardianCheckpoint(guardianReady, "spatial_guardian_exited_before_ready");
     await params.lifecycle?.onGuardianLaunched?.(guardian);
-    const guardianJournal = params.lifecycle?.guardianJournal;
     const journalGuardian = guardianJournal?.guardianFor(guardian);
     if (
       guardianJournal &&
@@ -740,6 +763,9 @@ async function runSupervisedWorker(params: {
       if (closeScopeCleanup) {
         await closeScopeCleanupWithTimeout(closeScopeCleanup);
         scopeCleanupClosed = true;
+      }
+      if (guardianJournal && guardian && guardianProtocol.phase() === "awaiting-spawn-intent") {
+        await params.lifecycle?.onGuardianExitedBeforeSpawnIntent?.(guardian);
       }
       guardianScopeExited = true;
       await observationDelivery;

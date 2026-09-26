@@ -11,6 +11,8 @@ import type {
   SpatialReferenceJournalStoredValue,
   SpatialReferenceJournalWorker,
   SpatialReferenceJournalScopeGuardian,
+  SpatialReferenceJournalScopeGuardianProcessIdentity,
+  SpatialReferenceJournalScopeGuardianReservation,
   SpatialReferenceJournalScopeRecovery,
   SpatialReferencePreparedOutput,
 } from "./reference-journal-record.js";
@@ -86,6 +88,18 @@ export type SpatialReferenceJournalReleaseInput = SpatialReferenceJournalClaimCo
 export type SpatialReferenceJournalArmScopeGuardianInput = SpatialReferenceJournalClaimContext & {
   guardian: SpatialReferenceJournalScopeGuardian;
 };
+
+export type SpatialReferenceJournalReserveGuardianInput = SpatialReferenceJournalClaimContext & {
+  generation: string;
+  guardianBuildDigest: string;
+};
+
+export type SpatialReferenceJournalPrearmGuardianExitInput = SpatialReferenceJournalClaimContext & {
+  guardian: SpatialReferenceJournalScopeGuardianProcessIdentity;
+};
+
+export type SpatialReferenceJournalReserveGuardianResult =
+  SpatialReferenceJournalScopeGuardianReservation;
 
 /**
  * Only the independently running guardian may append this observation.  It is
@@ -242,6 +256,13 @@ export type SpatialReferenceJournal = {
   release(input: SpatialReferenceJournalReleaseInput): Promise<SpatialReferenceJournalRow>;
   armScopeGuardian(
     input: SpatialReferenceJournalArmScopeGuardianInput,
+  ): Promise<SpatialReferenceJournalRow>;
+  reserveScopeGuardianLaunch(
+    input: SpatialReferenceJournalReserveGuardianInput,
+  ): Promise<SpatialReferenceJournalReserveGuardianResult>;
+  /** Runtime Owner writes this only after ProcessSupervisor settles the exact reserved Guardian. */
+  recordPrearmGuardianExit(
+    input: SpatialReferenceJournalPrearmGuardianExitInput,
   ): Promise<SpatialReferenceJournalRow>;
   recordSpawnIntent(
     input: SpatialReferenceJournalRecordSpawnIntentInput,

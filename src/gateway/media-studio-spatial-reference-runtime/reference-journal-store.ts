@@ -27,6 +27,9 @@ import type {
   SpatialReferenceJournalClaimResult,
   SpatialReferenceJournalReleaseInput,
   SpatialReferenceJournalArmScopeGuardianInput,
+  SpatialReferenceJournalReserveGuardianInput,
+  SpatialReferenceJournalReserveGuardianResult,
+  SpatialReferenceJournalPrearmGuardianExitInput,
   SpatialReferenceJournalScopeObservationInput,
   SpatialReferenceJournalReconcileScopeInput,
   SpatialReferenceJournalReconcileScopeResult,
@@ -44,7 +47,10 @@ import {
   type SpatialReferenceJournalWorker,
   type SpatialReferenceRuntimeLock,
   type SpatialReferenceJournalScopeGuardian,
+  type SpatialReferenceJournalScopeGuardianProcessIdentity,
+  type SpatialReferenceJournalScopeGuardianReservation,
   type SpatialReferenceJournalScopeRecovery,
+  type SpatialReferenceJournalOwner,
 } from "./reference-journal-record.js";
 import {
   appendFinalized,
@@ -84,6 +90,9 @@ export type {
   SpatialReferenceJournalClaimResult,
   SpatialReferenceJournalReleaseInput,
   SpatialReferenceJournalArmScopeGuardianInput,
+  SpatialReferenceJournalReserveGuardianInput,
+  SpatialReferenceJournalReserveGuardianResult,
+  SpatialReferenceJournalPrearmGuardianExitInput,
   SpatialReferenceJournalScopeObservationInput,
   SpatialReferenceJournalReconcileScopeInput,
   SpatialReferenceJournalReconcileScopeResult,
@@ -155,8 +164,8 @@ function claimOwner(
 }
 
 function sameGuardian(
-  left: SpatialReferenceJournalScopeGuardian,
-  right: SpatialReferenceJournalScopeGuardian,
+  left: SpatialReferenceJournalScopeGuardianProcessIdentity,
+  right: SpatialReferenceJournalScopeGuardianProcessIdentity,
 ): boolean {
   return (
     left.protocol === right.protocol &&
@@ -168,7 +177,104 @@ function sameGuardian(
   );
 }
 
-function assertGuardian(guardian: SpatialReferenceJournalScopeGuardian): void {
+function reservationMatchesClaim(
+  reservation: SpatialReferenceJournalScopeGuardianReservation | undefined,
+  claim: SpatialReferenceJournalClaimOwner | undefined,
+): boolean {
+  return Boolean(
+    reservation &&
+    claim &&
+    reservation.protocol === "spatial_guardian_reservation/v1" &&
+    reservation.claimVersion === claim.claimVersion &&
+    sameOwner(reservation.owner, claim) &&
+    reservation.scopeKey === claim.scopeKey &&
+    reservation.runId === claim.runId,
+  );
+}
+
+function guardianMatchesReservation(
+  guardian: SpatialReferenceJournalScopeGuardianProcessIdentity | undefined,
+  reservation: SpatialReferenceJournalScopeGuardianReservation | undefined,
+): boolean {
+  return Boolean(
+    guardian &&
+    reservation &&
+    guardian.protocol === "spatial_guardian/v1" &&
+    guardian.generation === reservation.generation &&
+    guardian.guardianBuildDigest === reservation.guardianBuildDigest,
+  );
+}
+
+function guardianIsSeparateFromOwner(
+  guardian: SpatialReferenceJournalScopeGuardianProcessIdentity | undefined,
+  owner: SpatialReferenceJournalOwner | undefined,
+): boolean {
+  return Boolean(
+    guardian &&
+    owner &&
+    (guardian.pid !== owner.pid || guardian.pidStartTimeMs !== owner.pidStartTimeMs),
+  );
+}
+
+function sameReservationIdentity(
+  left: SpatialReferenceJournalScopeGuardianReservation | undefined,
+  right: SpatialReferenceJournalScopeGuardianReservation | undefined,
+): boolean {
+  return Boolean(
+    left &&
+    right &&
+    left.protocol === right.protocol &&
+    left.generation === right.generation &&
+    left.claimVersion === right.claimVersion &&
+    sameOwner(left.owner, right.owner) &&
+    left.scopeKey === right.scopeKey &&
+    left.runId === right.runId &&
+    left.guardianBuildDigest === right.guardianBuildDigest,
+  );
+}
+
+function exactPrearmGuardianExitWitness(
+  row: SpatialReferenceJournalRow,
+  claim: SpatialReferenceJournalClaimOwner | undefined,
+): boolean {
+  const reservation = row.guardianReservation;
+  const witness = row.prearmGuardianExitWitness;
+  return Boolean(
+    claim &&
+    reservationMatchesClaim(reservation, claim) &&
+    witness?.protocol === "spatial_guardian_prearm_exit/v1" &&
+    sameReservationIdentity(witness.reservation, reservation) &&
+    guardianMatchesReservation(witness.guardian, reservation) &&
+    guardianIsSeparateFromOwner(witness.guardian, claim) &&
+    Number.isSafeInteger(witness.observedAtMs) &&
+    witness.observedAtMs >= reservation!.reservedAtMs &&
+    row.launchState === "guardian_reserved" &&
+    !row.scopeRecovery &&
+    !row.worker,
+  );
+}
+
+function exactGuardianNeverSpawned(
+  row: SpatialReferenceJournalRow,
+  claim: SpatialReferenceJournalClaimOwner | undefined,
+): boolean {
+  const recovery = row.scopeRecovery;
+  return Boolean(
+    claim &&
+    row.launchState === "armed" &&
+    !row.worker &&
+    !row.prearmGuardianExitWitness &&
+    reservationMatchesClaim(row.guardianReservation, claim) &&
+    guardianMatchesReservation(recovery?.guardian, row.guardianReservation) &&
+    guardianIsSeparateFromOwner(recovery?.guardian, claim) &&
+    recovery?.state === "never_spawned" &&
+    recoveryMatchesClaim(recovery, claim),
+  );
+}
+
+function assertGuardianProcessIdentity(
+  guardian: SpatialReferenceJournalScopeGuardianProcessIdentity,
+): void {
   if (
     guardian.protocol !== "spatial_guardian/v1" ||
     !guardian.guardianId ||
@@ -177,10 +283,15 @@ function assertGuardian(guardian: SpatialReferenceJournalScopeGuardian): void {
     !Number.isSafeInteger(guardian.pid) ||
     guardian.pid < 1 ||
     !Number.isSafeInteger(guardian.pidStartTimeMs) ||
-    guardian.pidStartTimeMs < 0 ||
-    !Number.isSafeInteger(guardian.armedAtMs) ||
-    guardian.armedAtMs < 0
+    guardian.pidStartTimeMs < 0
   ) {
+    fail("JOURNAL_SCOPE_GUARDIAN_INVALID");
+  }
+}
+
+function assertGuardian(guardian: SpatialReferenceJournalScopeGuardian): void {
+  assertGuardianProcessIdentity(guardian);
+  if (!Number.isSafeInteger(guardian.armedAtMs) || guardian.armedAtMs < 0) {
     fail("JOURNAL_SCOPE_GUARDIAN_INVALID");
   }
 }
@@ -204,15 +315,15 @@ function isExactScopeExtinct(
   claim: SpatialReferenceJournalClaimOwner | undefined,
   expected: "extinct" | "never_spawned" | undefined,
 ): boolean {
+  if (!expected || !claim) return false;
+  if (expected === "never_spawned" && exactPrearmGuardianExitWitness(row, claim)) return true;
   const recovery = row.scopeRecovery;
-  if (!expected || !recovery || !claim || !recoveryMatchesClaim(recovery, claim)) {
-    return false;
-  }
+  if (!recovery || !recoveryMatchesClaim(recovery, claim)) return false;
   if (recovery.state !== expected) {
     return false;
   }
   if (expected === "never_spawned") {
-    return !row.worker && row.launchState === "armed";
+    return exactGuardianNeverSpawned(row, claim) || exactPrearmGuardianExitWitness(row, claim);
   }
   if (
     recovery.guardian.pid === claim.pid &&
@@ -265,7 +376,9 @@ function scopeExitIsSafe(
     evidence === "never_spawned" &&
     !row.worker &&
     (row.identity?.contractVersion !== "spatial_reference_render/v2" ||
-      (!row.scopeRecovery && row.launchState === undefined))
+      (!row.scopeRecovery && row.launchState === undefined && !row.guardianReservation) ||
+      exactGuardianNeverSpawned(row, claim) ||
+      exactPrearmGuardianExitWitness(row, claim))
   );
 }
 
@@ -490,6 +603,9 @@ export function createSpatialReferenceJournalStore(params: {
         owner.runId !== existing.runId
       ) {
         delete next.scopeRecovery;
+        delete next.guardianReservation;
+        delete next.prearmGuardianExitWitness;
+        delete next.launchState;
       }
       next.recoveryCount = reclaimed ? (next.recoveryCount ?? 0) + 1 : (next.recoveryCount ?? 0);
       next.phase = "claimed";
@@ -750,6 +866,129 @@ export function createSpatialReferenceJournalStore(params: {
     });
   }
 
+  async function reserveScopeGuardianLaunch(
+    input: SpatialReferenceJournalReserveGuardianInput,
+  ): Promise<SpatialReferenceJournalReserveGuardianResult> {
+    assertIdentity(input.identity);
+    assertOwner(input.owner);
+    if (
+      !input.generation ||
+      !input.guardianBuildDigest ||
+      !Number.isSafeInteger(input.nowMs) ||
+      input.nowMs < 0
+    ) {
+      fail("JOURNAL_SCOPE_GUARDIAN_RESERVATION_INVALID");
+    }
+    return pair(input.identity.key, (transaction) => {
+      const { row: current } = requirePair(transaction, input);
+      const claim = current.claim;
+      if (!claim) fail("JOURNAL_STALE_CLAIM");
+      const reservation: SpatialReferenceJournalScopeGuardianReservation = {
+        protocol: "spatial_guardian_reservation/v1",
+        generation: input.generation,
+        claimVersion: claim.claimVersion,
+        owner: clone(input.owner),
+        scopeKey: claim.scopeKey,
+        runId: claim.runId,
+        guardianBuildDigest: input.guardianBuildDigest,
+        reservedAtMs: input.nowMs,
+      };
+      if (current.guardianReservation) {
+        if (
+          !sameReservationIdentity(current.guardianReservation, reservation) ||
+          current.launchState !== "guardian_reserved" ||
+          current.prearmGuardianExitWitness
+        ) {
+          fail("JOURNAL_SCOPE_GUARDIAN_RESERVATION_CONFLICT");
+        }
+        return clone(current.guardianReservation);
+      }
+      if (
+        current.scopeRecovery ||
+        current.worker ||
+        current.launchState !== undefined ||
+        current.prearmGuardianExitWitness
+      ) {
+        fail("JOURNAL_SCOPE_GUARDIAN_RESERVATION_CONFLICT");
+      }
+      const row = {
+        ...clone(current),
+        guardianReservation: clone(reservation),
+        launchState: "guardian_reserved" as const,
+      };
+      transaction.set(input.identity.key, row);
+      return clone(reservation);
+    });
+  }
+
+  async function recordPrearmGuardianExit(
+    input: SpatialReferenceJournalPrearmGuardianExitInput,
+  ): Promise<SpatialReferenceJournalRow> {
+    assertIdentity(input.identity);
+    assertOwner(input.owner);
+    assertGuardianProcessIdentity(input.guardian);
+    if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) {
+      fail("JOURNAL_SCOPE_PREARM_EXIT_INVALID");
+    }
+    return pair(input.identity.key, (transaction) => {
+      const { lock, row: current } = requirePair(transaction, input, { allowCancelledExit: true });
+      const reservation = current.guardianReservation;
+      if (
+        !reservation ||
+        !reservationMatchesClaim(reservation, current.claim) ||
+        !guardianMatchesReservation(input.guardian, reservation) ||
+        !guardianIsSeparateFromOwner(input.guardian, current.claim) ||
+        input.nowMs < reservation.reservedAtMs ||
+        current.worker
+      ) {
+        fail("JOURNAL_SCOPE_PREARM_EXIT_INVALID");
+      }
+      if (current.launchState === "guardian_reserved" && !current.scopeRecovery) {
+        if (
+          current.prearmGuardianExitWitness &&
+          (!sameReservationIdentity(current.prearmGuardianExitWitness.reservation, reservation) ||
+            !sameGuardian(current.prearmGuardianExitWitness.guardian, input.guardian))
+        ) {
+          fail("JOURNAL_SCOPE_PREARM_EXIT_CONFLICT");
+        }
+        const row = {
+          ...clone(current),
+          prearmGuardianExitWitness: {
+            protocol: "spatial_guardian_prearm_exit/v1" as const,
+            reservation: clone(reservation),
+            guardian: clone(input.guardian),
+            observedAtMs: input.nowMs,
+          },
+        };
+        transaction.set(input.identity.key, row);
+        transaction.set(RUNTIME_LOCK_KEY, lock);
+        return clone(row);
+      }
+      const recovery = current.scopeRecovery;
+      if (
+        current.launchState !== "armed" ||
+        !recovery ||
+        !recoveryMatchesClaim(recovery, current.claim) ||
+        !guardianMatchesReservation(recovery.guardian, reservation) ||
+        !sameGuardian(recovery.guardian, input.guardian)
+      ) {
+        fail("JOURNAL_SCOPE_PREARM_EXIT_INVALID");
+      }
+      if (recovery.state === "never_spawned") return clone(current);
+      if (recovery.state !== "armed") fail("JOURNAL_SCOPE_PREARM_EXIT_INVALID");
+      const row = clone(current);
+      row.scopeRecovery = {
+        ...recovery,
+        state: "never_spawned",
+        observedAtMs: input.nowMs,
+        probes: Math.min(3, recovery.probes + 1),
+      };
+      transaction.set(input.identity.key, row);
+      transaction.set(RUNTIME_LOCK_KEY, lock);
+      return clone(row);
+    });
+  }
+
   async function armScopeGuardian(
     input: SpatialReferenceJournalArmScopeGuardianInput,
   ): Promise<SpatialReferenceJournalRow> {
@@ -773,6 +1012,14 @@ export function createSpatialReferenceJournalStore(params: {
           return clone(current);
         }
         fail("JOURNAL_SCOPE_GUARDIAN_CONFLICT");
+      }
+      if (
+        current.launchState !== "guardian_reserved" ||
+        !reservationMatchesClaim(current.guardianReservation, current.claim) ||
+        !guardianMatchesReservation(input.guardian, current.guardianReservation) ||
+        current.prearmGuardianExitWitness
+      ) {
+        fail("JOURNAL_SCOPE_GUARDIAN_RESERVATION_REQUIRED");
       }
       const row = clone(current);
       row.scopeRecovery = {
@@ -803,6 +1050,8 @@ export function createSpatialReferenceJournalStore(params: {
         !current.scopeRecovery ||
         !current.claim ||
         !recoveryMatchesClaim(current.scopeRecovery, current.claim) ||
+        !reservationMatchesClaim(current.guardianReservation, current.claim) ||
+        !guardianMatchesReservation(input.guardian, current.guardianReservation) ||
         !sameGuardian(current.scopeRecovery.guardian, input.guardian) ||
         current.worker
       ) {
@@ -906,6 +1155,8 @@ export function createSpatialReferenceJournalStore(params: {
         !current.claim ||
         !recovery ||
         !recoveryMatchesClaim(recovery, current.claim) ||
+        !reservationMatchesClaim(current.guardianReservation, current.claim) ||
+        !guardianMatchesReservation(input.guardian, current.guardianReservation) ||
         !sameGuardian(recovery.guardian, input.guardian)
       ) {
         fail("JOURNAL_SCOPE_GUARDIAN_STALE");
@@ -1083,6 +1334,8 @@ export function createSpatialReferenceJournalStore(params: {
     checkpoint,
     release,
     armScopeGuardian,
+    reserveScopeGuardianLaunch,
+    recordPrearmGuardianExit,
     recordSpawnIntent,
     recordWorkerPrepared,
     authorizeWorkerStart,

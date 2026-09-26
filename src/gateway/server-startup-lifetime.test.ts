@@ -127,13 +127,28 @@ describe("Gateway startup lifetime", () => {
     }
   });
 
-  it("maps unknown qualification text to fixed reason codes without echoing it", () => {
+  it("preserves only allowlisted qualification codes and hides unknown text", () => {
     const suspicious = "untrusted spatial_v2_host_memory_unavailable secret-marker";
     expect(spatialReferenceRuntimeReasonCode(suspicious)).toBe("qualification_failed");
     expect(spatialReferenceRuntimeReasonCode("constructor")).toBe("qualification_failed");
     expect(
       spatialReferenceRuntimeReasonCode(
+        "v2 toolchain probe failed: spatial_v2_browser_launch_failed",
+      ),
+    ).toBe("spatial_v2_browser_launch_failed");
+    expect(
+      spatialReferenceRuntimeReasonCode(
+        "v2 toolchain probe failed: spatial_v2_libx264_encoder_missing",
+      ),
+    ).toBe("spatial_v2_libx264_encoder_missing");
+    expect(
+      spatialReferenceRuntimeReasonCode(
         "v2 toolchain probe failed: spatial_v2_host_memory_unavailable secret-marker",
+      ),
+    ).toBe("v2_toolchain_probe_failed");
+    expect(
+      spatialReferenceRuntimeReasonCode(
+        "v2 toolchain probe failed: spatial_v2_browser_launch_failed token-secret",
       ),
     ).toBe("v2_toolchain_probe_failed");
     expect(spatialReferenceRuntimeReasonCode("spatial_v2_host_memory_unavailable")).toBe(

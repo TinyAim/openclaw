@@ -1,8 +1,9 @@
 import { spawn, spawnSync, type ChildProcess, type Serializable } from "node:child_process";
 /**
- * Private per-execution guardian. It has no Control API token, upload grant,
- * geometry, or journal handle. The trusted gateway writes the narrow journal
- * checkpoints only after receiving these exact IPC facts from this incarnation.
+ * Private per-execution Guardian. It has no Control API token, upload grant,
+ * or render geometry. Its reserved journal context permits only this
+ * incarnation's scoped lifecycle checkpoints; the gateway still owns product
+ * state and authorizes the Worker start after exact IPC readback.
  */
 import { createHash } from "node:crypto";
 import { resolveRuntimeWorkerArgv } from "../../infra/runtime-worker-url.js";
@@ -10,14 +11,21 @@ import { closePluginStateDatabase } from "../../plugin-state/plugin-state-store.
 import { signalProcessTree } from "../../process/kill-tree.js";
 import { getFileLockProcessStartTime } from "../../shared/pid-alive.js";
 import type {
+  SpatialReferenceJournalIdentity,
+  SpatialReferenceJournalOwner,
   SpatialReferenceJournalScopeGuardian,
+  SpatialReferenceJournalScopeGuardianReservation,
   SpatialReferenceJournalWorker,
 } from "./reference-journal-record.js";
+import { sameIdentity, sameOwner } from "./reference-journal-record.js";
 import {
   createSpatialReferenceJournal,
   type SpatialReferenceJournal,
 } from "./reference-journal.js";
-import type { SpatialReferenceV2GuardianJournalContext } from "./v2-renderer.contract.js";
+import type {
+  SpatialReferenceV2GuardianJournalContext,
+  SpatialReferenceV2GuardianLaunchContext,
+} from "./v2-renderer.contract.js";
 
 type WorkerIdentity = { pid: number; startTime: number };
 
@@ -87,7 +95,10 @@ type GuardianJournalControl = {
   type: "spatial-guardian-journal-context-v1";
   generation: string;
   sequence: 0;
-  journal: SpatialReferenceV2GuardianJournalContext;
+  journal: Pick<
+    SpatialReferenceV2GuardianJournalContext,
+    "stateDir" | "namespace" | "identity" | "owner"
+  >;
   guardian: SpatialReferenceJournalScopeGuardian;
   scope: { scopeKey: string; runId: string };
 };
@@ -108,6 +119,43 @@ function requiredArgument(name: string): string {
     throw new Error("spatial_guardian_arguments_invalid");
   }
   return value;
+}
+
+function launchContextArgument(): SpatialReferenceV2GuardianLaunchContext {
+  try {
+    const value: unknown = JSON.parse(requiredArgument("--journal-launch-v1"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("spatial_guardian_launch_context_invalid");
+    }
+    const context = value as Partial<SpatialReferenceV2GuardianLaunchContext>;
+    const reservation = context.reservation as
+      | Partial<SpatialReferenceJournalScopeGuardianReservation>
+      | undefined;
+    const identity = context.identity as SpatialReferenceJournalIdentity | undefined;
+    const owner = context.owner as SpatialReferenceJournalOwner | undefined;
+    if (
+      typeof context.stateDir !== "string" ||
+      !context.stateDir ||
+      typeof context.namespace !== "string" ||
+      !context.namespace ||
+      !identity ||
+      !owner ||
+      reservation?.protocol !== "spatial_guardian_reservation/v1" ||
+      typeof reservation.generation !== "string" ||
+      !reservation.generation ||
+      typeof reservation.guardianBuildDigest !== "string" ||
+      !reservation.guardianBuildDigest ||
+      typeof reservation.scopeKey !== "string" ||
+      !reservation.scopeKey ||
+      typeof reservation.runId !== "string" ||
+      !reservation.runId
+    ) {
+      throw new Error("spatial_guardian_launch_context_invalid");
+    }
+    return context as SpatialReferenceV2GuardianLaunchContext;
+  } catch {
+    throw new Error("spatial_guardian_launch_context_invalid");
+  }
 }
 
 function send(message: unknown): void {
@@ -208,6 +256,36 @@ function isJournalContext(message: unknown, generation: string): message is Guar
   );
 }
 
+function sameGuardian(
+  left: SpatialReferenceJournalScopeGuardian,
+  right: SpatialReferenceJournalScopeGuardian,
+): boolean {
+  return (
+    left.protocol === right.protocol &&
+    left.guardianId === right.guardianId &&
+    left.generation === right.generation &&
+    left.pid === right.pid &&
+    left.pidStartTimeMs === right.pidStartTimeMs &&
+    left.guardianBuildDigest === right.guardianBuildDigest
+  );
+}
+
+function matchesLaunchContext(
+  received: GuardianJournalControl,
+  expected: GuardianJournalControl,
+): boolean {
+  return (
+    received.generation === expected.generation &&
+    received.journal.stateDir === expected.journal.stateDir &&
+    received.journal.namespace === expected.journal.namespace &&
+    sameIdentity(received.journal.identity, expected.journal.identity) &&
+    sameOwner(received.journal.owner, expected.journal.owner) &&
+    sameGuardian(received.guardian, expected.guardian) &&
+    received.scope.scopeKey === expected.scope.scopeKey &&
+    received.scope.runId === expected.scope.runId
+  );
+}
+
 function childMessage(child: ChildProcess, message: unknown): Promise<void> {
   if (!child.connected) return Promise.reject(new Error("spatial_guardian_worker_ipc_closed"));
   return new Promise((resolve, reject) => {
@@ -269,31 +347,62 @@ async function run(): Promise<void> {
   const requestPath = requiredArgument("--request");
   const manifestPath = requiredArgument("--manifest");
   const generation = requiredArgument("--generation");
+  const launch = launchContextArgument();
+  const reservation = launch.reservation;
+  if (
+    reservation.generation !== generation ||
+    !sameOwner(reservation.owner, launch.owner) ||
+    launch.identity.runtimeId.length === 0
+  ) {
+    throw new Error("spatial_guardian_launch_context_invalid");
+  }
+  const guardianStartTime = getFileLockProcessStartTime(process.pid);
+  if (guardianStartTime === null) throw new Error("spatial_guardian_identity_unavailable");
+  const guardian: SpatialReferenceJournalScopeGuardian = {
+    protocol: "spatial_guardian/v1",
+    guardianId: `spatial-guardian:${reservation.owner.epoch}:${process.pid}`,
+    generation,
+    pid: process.pid,
+    pidStartTimeMs: guardianStartTime,
+    guardianBuildDigest: reservation.guardianBuildDigest,
+    armedAtMs: Date.now(),
+  };
+  const journalContext: GuardianJournalControl = {
+    type: "spatial-guardian-journal-context-v1",
+    generation,
+    sequence: 0,
+    journal: {
+      stateDir: launch.stateDir,
+      namespace: launch.namespace,
+      identity: launch.identity,
+      owner: launch.owner,
+    },
+    guardian,
+    scope: { scopeKey: reservation.scopeKey, runId: reservation.runId },
+  };
+  const journal = createSpatialReferenceJournal({
+    env: { OPENCLAW_STATE_DIR: launch.stateDir },
+    namespace: launch.namespace,
+  });
+  durable = { journal, context: journalContext, spawnIntentRecorded: false };
+  await journal.armScopeGuardian({
+    identity: launch.identity,
+    owner: launch.owner,
+    guardian,
+    nowMs: Date.now(),
+  });
+
   const initialStart = waitForMessage(isStart);
   send({ type: "openclaw-worker-ready-v1" });
   await initialStart;
   send({ type: "openclaw-worker-started-v1" });
-  const context = await waitForMessage((message): message is GuardianJournalControl =>
+  const receivedContext = await waitForMessage((message): message is GuardianJournalControl =>
     isJournalContext(message, generation),
   );
-  const guardianStartTime = getFileLockProcessStartTime(process.pid);
-  if (
-    guardianStartTime === null ||
-    context.guardian.protocol !== "spatial_guardian/v1" ||
-    context.guardian.pid !== process.pid ||
-    context.guardian.pidStartTimeMs !== guardianStartTime ||
-    context.guardian.generation !== generation
-  ) {
+  if (!matchesLaunchContext(receivedContext, journalContext)) {
     throw new Error("spatial_guardian_journal_identity_invalid");
   }
-  durable = {
-    journal: createSpatialReferenceJournal({
-      env: { OPENCLAW_STATE_DIR: context.journal.stateDir },
-      namespace: context.journal.namespace,
-    }),
-    context,
-    spawnIntentRecorded: false,
-  };
+  const context = journalContext;
   await durable.journal.recordSpawnIntent({
     identity: context.journal.identity,
     owner: context.journal.owner,
@@ -443,8 +552,9 @@ async function run(): Promise<void> {
   // Close it only after the terminal scope observation; an open channel would
   // retain the guardian forever and prevent scope settlement.
   closePluginStateDatabase();
-  if (process.connected) {
-    process.disconnect(() => process.exit(0));
+  if (process.connected && typeof process.disconnect === "function") {
+    process.once("disconnect", () => process.exit(0));
+    process.disconnect();
   } else {
     process.exit(0);
   }

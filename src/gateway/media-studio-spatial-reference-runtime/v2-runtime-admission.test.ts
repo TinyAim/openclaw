@@ -234,11 +234,18 @@ describe("Spatial v2 runtime qualification admission", () => {
       runtimeId: "runtime-admission",
       executionMode: "packaged",
       readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
-      testRenderQualification: async (_dispatch, _signal, lifecycle) => {
+      testRenderQualification: async (dispatch, _signal, lifecycle) => {
         const claimedRow = await journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY);
         if (!claimedRow?.claim) {
           throw new Error("qualification_fixture_claim_missing");
         }
+        await journal.reserveScopeGuardianLaunch({
+          identity: claimedRow.identity!,
+          owner: claimedRow.claim,
+          generation: guardian.generation,
+          guardianBuildDigest: dispatch.renderIntent.rendererBuildDigest,
+          nowMs: Date.now(),
+        });
         const guardianForRender = {
           ...guardian,
           runId: claimedRow.claim.runId,
@@ -317,5 +324,93 @@ describe("Spatial v2 runtime qualification admission", () => {
     });
     expect("reason" in result).toBe(false);
     expect(scopeEvidence).toBe("extinct");
+  });
+
+  it("records a settled pre-READY Guardian from its exact process receipt", async () => {
+    const journal = createSpatialReferenceJournal();
+    const release = journal.releaseExclusiveAdmission.bind(journal);
+    let releaseInput: { scopeEvidence: string; spawned?: boolean } | undefined;
+    journal.releaseExclusiveAdmission = async (input) => {
+      releaseInput = { scopeEvidence: input.scopeEvidence, spawned: input.spawned };
+      return await release(input);
+    };
+    const receiptBase = {
+      pid: 101,
+      startTime: 202,
+      generation: "pre-ready-generation",
+    };
+    const result = await resolveSpatialReferenceV2RuntimeToolchain({
+      bundleDir,
+      chromiumExecutablePath: process.execPath,
+      journal,
+      runtimeId: "runtime-admission",
+      executionMode: "packaged",
+      readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
+      testRenderQualification: async (dispatch, _signal, lifecycle) => {
+        const claimedRow = await journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY);
+        if (!claimedRow?.claim || !claimedRow.identity) {
+          throw new Error("qualification_fixture_claim_missing");
+        }
+        const receipt = {
+          ...receiptBase,
+          runId: claimedRow.claim.runId,
+          scopeKey: claimedRow.claim.scopeKey,
+        };
+        await journal.reserveScopeGuardianLaunch({
+          identity: claimedRow.identity,
+          owner: claimedRow.claim,
+          generation: receipt.generation,
+          guardianBuildDigest: dispatch.renderIntent.rendererBuildDigest,
+          nowMs: Date.now(),
+        });
+        await lifecycle?.onGuardianExitedBeforeSpawnIntent?.(receipt);
+        return fakeRender;
+      },
+    });
+
+    expect(result).toMatchObject({
+      reason: expect.stringContaining("spatial_v2_toolchain_proof_missing"),
+    });
+    expect(releaseInput).toEqual({ scopeEvidence: "never_spawned", spawned: true });
+    await expect(journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY)).resolves.toMatchObject({
+      prearmGuardianExitWitness: {
+        protocol: "spatial_guardian_prearm_exit/v1",
+        guardian: {
+          pid: receiptBase.pid,
+          pidStartTimeMs: receiptBase.startTime,
+          generation: receiptBase.generation,
+        },
+      },
+    });
+    await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+  });
+
+  it("keeps a reserved Guardian quarantined when no process-exit identity is available", async () => {
+    const journal = createSpatialReferenceJournal();
+    const result = await resolveSpatialReferenceV2RuntimeToolchain({
+      bundleDir,
+      chromiumExecutablePath: process.execPath,
+      journal,
+      guardianJournal: { stateDir: "/fixture/state", namespace: "missing-identity" },
+      runtimeId: "runtime-admission",
+      executionMode: "packaged",
+      readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
+      testRenderQualification: async (_dispatch, _signal, lifecycle) => {
+        await lifecycle?.guardianJournal?.reserveGuardianLaunch({
+          generation: "missing-process-identity",
+          nowMs: Date.now(),
+        });
+        return fakeRender;
+      },
+    });
+
+    expect(result).toMatchObject({ reason: "spatial_v2_qualification_scope_unconfirmed" });
+    await expect(journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY)).resolves.toMatchObject({
+      launchState: "guardian_reserved",
+    });
+    await expect(journal.get(SPATIAL_REFERENCE_QUALIFICATION_KEY)).resolves.not.toHaveProperty(
+      "prearmGuardianExitWitness",
+    );
+    await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "quarantined" });
   });
 });

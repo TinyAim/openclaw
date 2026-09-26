@@ -7,10 +7,17 @@ import { createCorePluginStateSyncKeyedStore } from "../../plugin-state/plugin-s
 import type { SpatialReferenceRelayDispatchAck } from "../media-studio-spatial-reference-render-http.js";
 import type { SpatialReferenceTerminalCallback } from "./reference-callback.js";
 import {
+  applyExclusiveAdmissionClaim,
+  quarantineLock,
+  SPATIAL_REFERENCE_QUALIFICATION_KEY,
+  SPATIAL_REFERENCE_RUNTIME_LOCK_KEY,
+} from "./reference-journal-admission.js";
+import {
   createSpatialReferenceJournal,
   type SpatialReferenceExpectedOutput,
   type SpatialReferenceJournalIdentity,
   type SpatialReferenceJournalOwner,
+  type SpatialReferenceJournalScopeGuardian,
 } from "./reference-journal.js";
 
 const digest = "a".repeat(64);
@@ -89,6 +96,22 @@ function journal(env: NodeJS.ProcessEnv, legacyFilePath?: string) {
     env,
     namespace: "spatial-reference-journal-test",
     ...(legacyFilePath ? { legacyFilePath } : {}),
+  });
+}
+
+async function reserveGuardian(
+  value: ReturnType<typeof journal>,
+  reservedAtMs: number,
+  targetOwner = owner,
+  targetIdentity = identity,
+  targetGuardian: SpatialReferenceJournalScopeGuardian = guardian,
+) {
+  return await value.reserveScopeGuardianLaunch({
+    identity: targetIdentity,
+    owner: targetOwner,
+    generation: targetGuardian.generation,
+    guardianBuildDigest: targetGuardian.guardianBuildDigest,
+    nowMs: reservedAtMs,
   });
 }
 
@@ -188,6 +211,7 @@ describe("Spatial reference SQLite execution journal", () => {
       scopeKey: "scope-test",
       runId: "run-test",
     });
+    await reserveGuardian(value, 1);
     await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
     await value.release({ identity, owner, nowMs: 3 });
 
@@ -376,6 +400,7 @@ describe("Spatial reference SQLite execution journal", () => {
       scopeKey: "scope-test",
       runId: "run-test",
     });
+    await reserveGuardian(value, 1);
     await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
     await value.recordSpawnIntent({ identity, owner, nowMs: 2, guardian });
     await expect(
@@ -426,6 +451,7 @@ describe("Spatial reference SQLite execution journal", () => {
       scopeKey: "scope-test",
       runId: "run-test",
     });
+    await reserveGuardian(value, 1);
     await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
     const activeWorker = {
       pid: 10,
@@ -625,7 +651,10 @@ describe("Spatial reference SQLite execution journal", () => {
     });
     const selfGuardian = { ...guardian, pid: owner.pid, pidStartTimeMs: owner.pidStartTimeMs };
     await expect(
-      value.armScopeGuardian({ identity, owner, nowMs: 1, guardian: selfGuardian }),
+      reserveGuardian(value, 1, owner, identity, selfGuardian).then(
+        async () =>
+          await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian: selfGuardian }),
+      ),
     ).rejects.toThrow("JOURNAL_SCOPE_GUARDIAN_INVALID");
   });
 
@@ -643,7 +672,10 @@ describe("Spatial reference SQLite execution journal", () => {
     });
     const selfGuardian = { ...guardian, pid: owner.pid, pidStartTimeMs: owner.pidStartTimeMs };
     await expect(
-      value.armScopeGuardian({ identity, owner, nowMs: 1, guardian: selfGuardian }),
+      reserveGuardian(value, 1, owner, identity, selfGuardian).then(
+        async () =>
+          await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian: selfGuardian }),
+      ),
     ).rejects.toThrow("JOURNAL_SCOPE_GUARDIAN_INVALID");
   });
 
@@ -666,6 +698,7 @@ describe("Spatial reference SQLite execution journal", () => {
       scopeKey: "scope-test",
       runId: "run-test",
     });
+    await reserveGuardian(value, 1);
     await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
     await value.recordSpawnIntent({ identity, owner, nowMs: 2, guardian });
     await value.recordWorkerPrepared({ identity, owner, nowMs: 2, guardian, worker });
@@ -744,6 +777,407 @@ describe("Spatial reference SQLite execution journal", () => {
         runtimeId: identity.runtimeId,
       }),
     ).resolves.toMatchObject({ claimed: false, reason: "runtime_quarantined" });
+  });
+
+  it("keeps a reservation-only Guardian launch quarantined when the parent exit witness is absent", async () => {
+    const env = await state();
+    const value = journal(env);
+    const claimed = await value.claimExclusiveAdmission({
+      owner,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "qualification-reservation-only",
+      runId: "qualification-reservation-only-run",
+      runtimeId: identity.runtimeId,
+    });
+    if (!claimed.claimed) throw new Error("qualification_claim_fixture_failed");
+    await value.reserveScopeGuardianLaunch({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      generation: "qualification-reservation-only-generation",
+      guardianBuildDigest: "qualification-build-digest",
+      nowMs: 2,
+    });
+
+    await expect(
+      value.releaseExclusiveAdmission({
+        owner: claimed.owner,
+        nowMs: 3,
+        scopeEvidence: "never_spawned",
+        spawned: true,
+      }),
+    ).resolves.toMatchObject({ released: false, quarantined: true });
+    await expect(value.get("@qualification")).resolves.toMatchObject({
+      launchState: "guardian_reserved",
+    });
+    await expect(value.get("@qualification")).resolves.not.toHaveProperty(
+      "prearmGuardianExitWitness",
+    );
+    await expect(value.getRuntimeAdmission()).resolves.toMatchObject({ state: "quarantined" });
+  });
+
+  it("persists an exact prearm Guardian exit and CAS-reclaims only after the old lease expires", async () => {
+    const env = await state();
+    const value = journal(env);
+    const claimed = await value.claimExclusiveAdmission({
+      owner,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "qualification-scope",
+      runId: "qualification-run",
+      runtimeId: identity.runtimeId,
+    });
+    if (!claimed.claimed) throw new Error("qualification_claim_fixture_failed");
+    const receipt: SpatialReferenceJournalScopeGuardian = {
+      ...guardian,
+      generation: "qualification-generation",
+      guardianBuildDigest: "qualification-build-digest",
+    };
+    await value.reserveScopeGuardianLaunch({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      generation: receipt.generation,
+      guardianBuildDigest: receipt.guardianBuildDigest,
+      nowMs: 2,
+    });
+    await value.recordPrearmGuardianExit({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      guardian: receipt,
+      nowMs: 3,
+    });
+    await expect(value.get("@qualification")).resolves.toMatchObject({
+      launchState: "guardian_reserved",
+      prearmGuardianExitWitness: {
+        protocol: "spatial_guardian_prearm_exit/v1",
+        reservation: {
+          generation: receipt.generation,
+          claimVersion: claimed.owner.claimVersion,
+          guardianBuildDigest: receipt.guardianBuildDigest,
+        },
+        guardian: { pid: receipt.pid, pidStartTimeMs: receipt.pidStartTimeMs },
+      },
+    });
+
+    const nextOwner = { ...owner, epoch: "epoch-recovered", ownerInstanceId: "instance-recovered" };
+    await expect(
+      value.claimExclusiveAdmission({
+        owner: nextOwner,
+        nowMs: 4,
+        leaseExpiresAtMs: 5,
+        scopeKey: "qualification-scope-next",
+        runId: "qualification-run-next",
+        runtimeId: identity.runtimeId,
+      }),
+    ).resolves.toMatchObject({
+      claimed: true,
+      owner: { claimVersion: claimed.owner.claimVersion + 1, epoch: nextOwner.epoch },
+    });
+    const recoveredRow = await value.get("@qualification");
+    expect(recoveredRow).toBeDefined();
+    expect(recoveredRow).not.toHaveProperty("launchState");
+    expect(recoveredRow).not.toHaveProperty("guardianReservation");
+    expect(recoveredRow).not.toHaveProperty("prearmGuardianExitWitness");
+  });
+
+  it("reclaims a regular execution only after its exact reserved Guardian exited pre-spawn", async () => {
+    const env = await state();
+    const value = await acceptTyped(env);
+    await value.claim({
+      identity,
+      owner,
+      expectedOutputs: expected,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "scope-prearm",
+      runId: "run-prearm",
+    });
+    await reserveGuardian(value, 2);
+    await value.recordPrearmGuardianExit({ identity, owner, guardian, nowMs: 3 });
+
+    const nextOwner = { ...owner, epoch: "epoch-prearm-recovered" };
+    await expect(
+      value.claim({
+        identity,
+        owner: nextOwner,
+        expectedOutputs: expected,
+        nowMs: 4,
+        leaseExpiresAtMs: 5,
+        scopeKey: "scope-prearm-next",
+        runId: "run-prearm-next",
+      }),
+    ).resolves.toMatchObject({ claimed: true, row: { claim: { claimVersion: 2 } } });
+    const recoveredRow = await value.get(identity.key);
+    expect(recoveredRow).not.toHaveProperty("guardianReservation");
+    expect(recoveredRow).not.toHaveProperty("prearmGuardianExitWitness");
+    expect(recoveredRow).not.toHaveProperty("launchState");
+  });
+
+  it("does not reclaim an owned Guardian receipt after the execution contract drifts", async () => {
+    const env = await state();
+    const value = await acceptTyped(env);
+    const claimed = await value.claim({
+      identity,
+      owner,
+      expectedOutputs: expected,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "scope-contract-drift",
+      runId: "run-contract-drift",
+    });
+    if (!claimed.claimed) throw new Error("contract_drift_claim_fixture_failed");
+    await reserveGuardian(value, 2);
+    await value.recordPrearmGuardianExit({ identity, owner, guardian, nowMs: 3 });
+
+    const row = await value.get(identity.key);
+    if (!row?.claim) throw new Error("contract_drift_row_fixture_missing");
+    const previousOwner = row.claim;
+    row.identity = { ...row.identity!, contractVersion: "spatial_reference_render/v1" };
+    const lockSeed = quarantineLock({
+      runtimeId: identity.runtimeId,
+      sourceExecutionKey: SPATIAL_REFERENCE_QUALIFICATION_KEY,
+      rowOwner: previousOwner,
+      scope: { scopeKey: previousOwner.scopeKey, runId: previousOwner.runId },
+      reason: "scope_stop_unconfirmed",
+    });
+    const entries = new Map<string, unknown>([
+      [SPATIAL_REFERENCE_QUALIFICATION_KEY, row],
+      [
+        SPATIAL_REFERENCE_RUNTIME_LOCK_KEY,
+        {
+          ...lockSeed,
+          state: "owned" as const,
+          executionKey: SPATIAL_REFERENCE_QUALIFICATION_KEY,
+          owner: previousOwner,
+          claimVersion: previousOwner.claimVersion,
+          quarantine: undefined,
+        },
+      ],
+    ]);
+    expect(
+      applyExclusiveAdmissionClaim({
+        transaction: {
+          lookup: (key) => entries.get(key) as never,
+          set: (key, stored) => entries.set(key, stored),
+        },
+        input: {
+          owner: { ...owner, epoch: "epoch-contract-drift" },
+          nowMs: 4,
+          leaseExpiresAtMs: 5,
+          scopeKey: "scope-contract-drift-next",
+          runId: "run-contract-drift-next",
+          runtimeId: identity.runtimeId,
+        },
+      }),
+    ).toMatchObject({ claimed: false, reason: "active_owner" });
+  });
+
+  it("releases a reserved Guardian only after its exact armed scope records never-spawned", async () => {
+    const env = await state();
+    const value = journal(env);
+    const claimed = await value.claimExclusiveAdmission({
+      owner,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "qualification-scope",
+      runId: "qualification-run",
+      runtimeId: identity.runtimeId,
+    });
+    if (!claimed.claimed) throw new Error("qualification_claim_fixture_failed");
+    const receipt: SpatialReferenceJournalScopeGuardian = {
+      ...guardian,
+      generation: "qualification-generation",
+      guardianBuildDigest: "qualification-build-digest",
+    };
+    await value.reserveScopeGuardianLaunch({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      generation: receipt.generation,
+      guardianBuildDigest: receipt.guardianBuildDigest,
+      nowMs: 2,
+    });
+    await value.armScopeGuardian({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      guardian: receipt,
+      nowMs: 3,
+    });
+    await value.recordScopeObservation({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      guardian: receipt,
+      nowMs: 4,
+      observation: { state: "never_spawned", observedAtMs: 4 },
+    });
+    await expect(
+      value.releaseExclusiveAdmission({
+        owner: claimed.owner,
+        nowMs: 5,
+        scopeEvidence: "never_spawned",
+        spawned: true,
+      }),
+    ).resolves.toMatchObject({ released: true });
+    await expect(value.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+  });
+
+  it("does not treat an active lease or a stale Guardian receipt as an exact recovery", async () => {
+    const env = await state();
+    const value = journal(env);
+    const claimed = await value.claimExclusiveAdmission({
+      owner,
+      nowMs: 1,
+      leaseExpiresAtMs: 100,
+      scopeKey: "qualification-scope",
+      runId: "qualification-run",
+      runtimeId: identity.runtimeId,
+    });
+    if (!claimed.claimed) throw new Error("qualification_claim_fixture_failed");
+    const receipt: SpatialReferenceJournalScopeGuardian = {
+      ...guardian,
+      generation: "qualification-generation",
+      guardianBuildDigest: "qualification-build-digest",
+    };
+    await value.reserveScopeGuardianLaunch({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      generation: receipt.generation,
+      guardianBuildDigest: receipt.guardianBuildDigest,
+      nowMs: 2,
+    });
+    await expect(
+      value.recordPrearmGuardianExit({
+        identity: claimed.identity,
+        owner: claimed.owner,
+        guardian: { ...receipt, generation: "stale-generation" },
+        nowMs: 3,
+      }),
+    ).rejects.toThrow("JOURNAL_SCOPE_PREARM_EXIT_INVALID");
+    await value.recordPrearmGuardianExit({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      guardian: receipt,
+      nowMs: 3,
+    });
+    await expect(
+      value.claimExclusiveAdmission({
+        owner: { ...owner, epoch: "epoch-contender", ownerInstanceId: "instance-contender" },
+        nowMs: 4,
+        leaseExpiresAtMs: 5,
+        scopeKey: "qualification-scope-contender",
+        runId: "qualification-run-contender",
+        runtimeId: identity.runtimeId,
+      }),
+    ).resolves.toMatchObject({ claimed: false, reason: "active_owner" });
+  });
+
+  it("CAS-recovers a quarantined qualification only when its persisted Guardian exit receipt is exact", async () => {
+    const env = await state();
+    const value = journal(env);
+    const claimed = await value.claimExclusiveAdmission({
+      owner,
+      nowMs: 1,
+      leaseExpiresAtMs: 2,
+      scopeKey: "qualification-scope",
+      runId: "qualification-run",
+      runtimeId: identity.runtimeId,
+    });
+    if (!claimed.claimed) throw new Error("qualification_claim_fixture_failed");
+    const receipt: SpatialReferenceJournalScopeGuardian = {
+      ...guardian,
+      generation: "qualification-generation",
+      guardianBuildDigest: "qualification-build-digest",
+    };
+    await value.reserveScopeGuardianLaunch({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      generation: receipt.generation,
+      guardianBuildDigest: receipt.guardianBuildDigest,
+      nowMs: 2,
+    });
+    await value.recordPrearmGuardianExit({
+      identity: claimed.identity,
+      owner: claimed.owner,
+      guardian: receipt,
+      nowMs: 3,
+    });
+    await value.releaseExclusiveAdmission({
+      owner: claimed.owner,
+      nowMs: 4,
+      scopeEvidence: "never_spawned",
+      spawned: true,
+    });
+    const releasedRow = await value.get(SPATIAL_REFERENCE_QUALIFICATION_KEY);
+    if (!releasedRow) throw new Error("qualification_release_fixture_missing");
+    const nextOwner = { ...owner, epoch: "epoch-quarantined-recovery" };
+    const recoverExact = () => {
+      const entries = new Map<string, unknown>([
+        [SPATIAL_REFERENCE_QUALIFICATION_KEY, releasedRow],
+        [
+          SPATIAL_REFERENCE_RUNTIME_LOCK_KEY,
+          quarantineLock({
+            runtimeId: identity.runtimeId,
+            sourceExecutionKey: SPATIAL_REFERENCE_QUALIFICATION_KEY,
+            rowOwner: claimed.owner,
+            scope: { scopeKey: claimed.owner.scopeKey, runId: claimed.owner.runId },
+            reason: "scope_stop_unconfirmed",
+          }),
+        ],
+      ]);
+      const result = applyExclusiveAdmissionClaim({
+        transaction: {
+          lookup: (key) => entries.get(key) as never,
+          set: (key, stored) => entries.set(key, stored),
+        },
+        input: {
+          owner: nextOwner,
+          nowMs: 5,
+          leaseExpiresAtMs: 6,
+          scopeKey: "qualification-next-scope",
+          runId: "qualification-next-run",
+          runtimeId: identity.runtimeId,
+        },
+      });
+      return { result, entries };
+    };
+    const recovered = recoverExact();
+    expect(recovered.result).toMatchObject({
+      claimed: true,
+      owner: { claimVersion: claimed.owner.claimVersion + 1, epoch: nextOwner.epoch },
+    });
+
+    const legacyRow = { ...releasedRow };
+    delete legacyRow.guardianReservation;
+    delete legacyRow.prearmGuardianExitWitness;
+    delete legacyRow.launchState;
+    const blockedEntries = new Map<string, unknown>([
+      [SPATIAL_REFERENCE_QUALIFICATION_KEY, legacyRow],
+      [
+        SPATIAL_REFERENCE_RUNTIME_LOCK_KEY,
+        quarantineLock({
+          runtimeId: identity.runtimeId,
+          sourceExecutionKey: SPATIAL_REFERENCE_QUALIFICATION_KEY,
+          rowOwner: claimed.owner,
+          scope: { scopeKey: claimed.owner.scopeKey, runId: claimed.owner.runId },
+          reason: "scope_stop_unconfirmed",
+        }),
+      ],
+    ]);
+    expect(
+      applyExclusiveAdmissionClaim({
+        transaction: {
+          lookup: (key) => blockedEntries.get(key) as never,
+          set: (key, stored) => blockedEntries.set(key, stored),
+        },
+        input: {
+          owner: nextOwner,
+          nowMs: 5,
+          leaseExpiresAtMs: 6,
+          scopeKey: "qualification-next-scope",
+          runId: "qualification-next-run",
+          runtimeId: identity.runtimeId,
+        },
+      }),
+    ).toMatchObject({ claimed: false, reason: "runtime_quarantined" });
   });
 
   it("imports a strictly valid v1 file once, reads it back, and archives it instead of dual-reading", async () => {

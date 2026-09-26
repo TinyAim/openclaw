@@ -25,6 +25,7 @@ import {
   type SpatialReferenceJournalWorker,
   type SpatialReferenceFinalizedOutput,
   type SpatialReferenceJournalScopeGuardian,
+  type SpatialReferenceJournalScopeGuardianProcessIdentity,
 } from "./reference-journal-record.js";
 import {
   createSpatialReferenceJournal,
@@ -256,17 +257,22 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
     active.set(key, controller);
     let worker: SpatialReferenceJournalWorker | undefined;
     let spawnIntentRecorded = false;
+    let guardianLaunchReserved = false;
+    let prearmGuardianExitRecorded = false;
     let guardian: SpatialReferenceJournalScopeGuardian | undefined;
     const fixtureRenderer = Boolean(options.v2Renderer && !options.guardianJournal);
-    // The guardian, not this parent, persists either `never_spawned` or
-    // `unknown`. The parent only consumes that exact durable result on finish.
+    // The Guardian persists execution observations. The parent may add an
+    // exact pre-spawn exit receipt only after ProcessSupervisor settles that
+    // reserved Guardian; it never converts an unknown scope to success.
     const observeNeverSpawned = async () => undefined;
     const terminalScopeEvidence = (): "extinct" | "never_spawned" | undefined =>
       fixtureRenderer
         ? "never_spawned"
         : worker?.exited
           ? "extinct"
-          : !spawnIntentRecorded || input?.contractVersion !== "spatial_reference_render/v2"
+          : prearmGuardianExitRecorded ||
+              (!guardianLaunchReserved && !spawnIntentRecorded) ||
+              input?.contractVersion !== "spatial_reference_render/v2"
             ? "never_spawned"
             : undefined;
     let heartbeatBusy = false;
@@ -300,6 +306,17 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
               ...options.guardianJournal,
               identity,
               owner,
+              guardianBuildDigest: identity.rendererBuildDigest,
+              reserveGuardianLaunch: async ({ generation, nowMs }) => {
+                const reservation = await journal.reserveScopeGuardianLaunch({
+                  ...context(),
+                  generation,
+                  guardianBuildDigest: identity.rendererBuildDigest,
+                  nowMs,
+                });
+                guardianLaunchReserved = true;
+                return reservation;
+              },
               guardianFor: (receipt) =>
                 guardian &&
                 guardian.pid === receipt.pid &&
@@ -321,6 +338,34 @@ export function createMediaStudioSpatialReferenceRuntimeExecutor(options: {
           armedAtMs: Date.now(),
         };
         await journal.armScopeGuardian({ ...context(), guardian });
+        // Once the exact Guardian is durably armed, qualification and render
+        // settlement must use its scope witness even if no Worker is prepared.
+      },
+      onGuardianExitedBeforeSpawnIntent: async (receipt) => {
+        if (
+          receipt.scopeKey !== scopeKey ||
+          receipt.runId !== runId ||
+          (guardian &&
+            (receipt.pid !== guardian.pid ||
+              receipt.startTime !== guardian.pidStartTimeMs ||
+              receipt.generation !== guardian.generation))
+        ) {
+          throw new Error("spatial_guardian_exit_identity_invalid");
+        }
+        const exitedGuardian: SpatialReferenceJournalScopeGuardianProcessIdentity = {
+          protocol: "spatial_guardian/v1",
+          guardianId: `spatial-guardian:${owner.epoch}:${receipt.pid}`,
+          generation: receipt.generation,
+          pid: receipt.pid,
+          pidStartTimeMs: receipt.startTime,
+          guardianBuildDigest: identity.rendererBuildDigest,
+        };
+        await journal.recordPrearmGuardianExit({
+          ...context(),
+          guardian: guardian ?? exitedGuardian,
+          nowMs: Date.now(),
+        });
+        prearmGuardianExitRecorded = true;
       },
       onSpawnIntent: async () => {
         if (!guardian) throw new Error("spatial_guardian_identity_missing");

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { createProcessSupervisor } from "../../process/supervisor/supervisor.js";
 import { createMediaStudioSpatialReferenceRuntimeExecutor } from "./executor.js";
+import { createSpatialReferenceJournal } from "./reference-journal.js";
 import { dispatch, v2Dispatch } from "./reference.test-harness.js";
+import { createSpatialReferenceV2Renderer } from "./v2-renderer.js";
+import { supportsSpatialReferenceV2ResourceLimits } from "./v2-resource-watch.js";
+
+const preReadyExitFixtureUrl = new URL("./v2-renderer.pre-ready-exit.fixture.mjs", import.meta.url);
 
 function mockV2Renderer() {
   return vi.fn(async (_input, _signal, lifecycle) => {
@@ -228,6 +234,141 @@ describe("Media Studio Spatial reference Runtime executor", () => {
       ],
     });
   });
+
+  it("records the exact pre-READY Guardian exit in the Runtime executor owner", async () => {
+    const callbacks: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      if (String(url).includes("/spatial-reference/upload")) {
+        throw new Error("pre-READY Guardian exit must not upload output");
+      }
+      callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify({ data: { accepted: true } }), { status: 200 });
+    });
+    const journal = createSpatialReferenceJournal();
+    const render = vi.fn(async (_input, _signal, lifecycle) => {
+      const scope = lifecycle?.executionScope;
+      const guardianJournal = lifecycle?.guardianJournal;
+      if (!scope || !guardianJournal) throw new Error("prearm_fixture_context_missing");
+      const generation = "executor-pre-ready-generation";
+      await guardianJournal.reserveGuardianLaunch({ generation, nowMs: Date.now() });
+      await lifecycle?.onGuardianExitedBeforeSpawnIntent?.({
+        pid: 101,
+        startTime: 202,
+        runId: scope.runId,
+        scopeKey: scope.scopeKey,
+        generation,
+      });
+      const row = await journal.get(guardianJournal.identity.key);
+      expect(row).toMatchObject({
+        prearmGuardianExitWitness: {
+          protocol: "spatial_guardian_prearm_exit/v1",
+          guardian: {
+            pid: 101,
+            pidStartTimeMs: 202,
+            generation,
+          },
+        },
+      });
+      throw new Error("spatial_guardian_exited_before_ready");
+    });
+    const executor = createMediaStudioSpatialReferenceRuntimeExecutor({
+      controlApiUrl: "https://control.example",
+      runtimeId: "runtime-1",
+      token: "runtime-token",
+      fetchImpl: fetchMock as unknown as typeof fetch,
+      v2Renderer: { render },
+      guardianJournal: {
+        stateDir: "/fixture/state",
+        namespace: "executor-pre-ready",
+      },
+      journal,
+    });
+
+    try {
+      await executor.dispatch(v2Dispatch());
+      await vi.waitFor(() => expect(callbacks).toHaveLength(1));
+
+      expect(callbacks[0]).toMatchObject({ status: "failed" });
+      expect(callbacks[0]).not.toHaveProperty("receipt");
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes("/spatial-reference/upload")),
+      ).toBe(false);
+      await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+    } finally {
+      executor.stop();
+    }
+  });
+
+  it.skipIf(process.platform === "win32" || !supportsSpatialReferenceV2ResourceLimits())(
+    "persists a real pre-READY Guardian exit before any armed Guardian callback",
+    async () => {
+      const callbacks: Array<Record<string, unknown>> = [];
+      const fetchMock = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+        if (String(url).includes("/spatial-reference/upload")) {
+          throw new Error("pre-READY Guardian exit must not upload output");
+        }
+        callbacks.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return new Response(JSON.stringify({ data: { accepted: true } }), { status: 200 });
+      });
+      const journal = createSpatialReferenceJournal();
+      const armGuardian = journal.armScopeGuardian.bind(journal);
+      journal.armScopeGuardian = vi.fn((input) => armGuardian(input));
+      const recordPrearmExit = journal.recordPrearmGuardianExit.bind(journal);
+      let prearmRow: Awaited<ReturnType<typeof journal.recordPrearmGuardianExit>> | undefined;
+      journal.recordPrearmGuardianExit = vi.fn(async (input) => {
+        expect(journal.armScopeGuardian).not.toHaveBeenCalled();
+        prearmRow = await recordPrearmExit(input);
+        return prearmRow;
+      });
+      const supervisor = createProcessSupervisor();
+      const renderer = createSpatialReferenceV2Renderer({
+        chromiumExecutablePath: "fixture-no-chromium",
+        referenceRenderHtmlPath: "/fixture/no-html",
+        supervisor,
+        guardianWorkerUrl: preReadyExitFixtureUrl,
+      });
+      const executor = createMediaStudioSpatialReferenceRuntimeExecutor({
+        controlApiUrl: "https://control.example",
+        runtimeId: "runtime-1",
+        token: "runtime-token",
+        fetchImpl: fetchMock as unknown as typeof fetch,
+        v2Renderer: renderer,
+        guardianJournal: {
+          stateDir: "/fixture/state",
+          namespace: "executor-real-pre-ready",
+        },
+        journal,
+      });
+
+      try {
+        await executor.dispatch(v2Dispatch());
+        await vi.waitFor(() => expect(callbacks).toHaveLength(1), { timeout: 5_000 });
+
+        expect(journal.recordPrearmGuardianExit).toHaveBeenCalledOnce();
+        expect(journal.armScopeGuardian).not.toHaveBeenCalled();
+        expect(prearmRow).toMatchObject({
+          launchState: "guardian_reserved",
+          prearmGuardianExitWitness: {
+            protocol: "spatial_guardian_prearm_exit/v1",
+            guardian: {
+              pid: expect.any(Number),
+              pidStartTimeMs: expect.any(Number),
+              generation: expect.any(String),
+            },
+          },
+        });
+        expect(callbacks[0]).toMatchObject({ status: "failed" });
+        expect(callbacks[0]).not.toHaveProperty("receipt");
+        expect(
+          fetchMock.mock.calls.some(([url]) => String(url).includes("/spatial-reference/upload")),
+        ).toBe(false);
+        await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+      } finally {
+        executor.stop();
+        await supervisor.shutdown();
+      }
+    },
+  );
 
   it("rejects a v2 upload grant bound to a different Artifact before making requests", async () => {
     const fetchMock = vi.fn();
