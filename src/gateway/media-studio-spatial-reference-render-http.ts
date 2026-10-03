@@ -10,6 +10,14 @@ import {
   sendMethodNotAllowed,
 } from "./http-common.js";
 import { getBearerToken, getHeader } from "./http-utils.js";
+import {
+  parseSpatialReferenceRelayCamera,
+  type SpatialReferenceRelayCamera,
+} from "./media-studio-spatial-reference-runtime/relay-camera.js";
+import {
+  parseSpatialReferenceTerrainProfile,
+  type SpatialReferenceTerrainProfile,
+} from "./media-studio-spatial-reference-runtime/terrain-profile.js";
 
 export const MEDIA_STUDIO_SPATIAL_REFERENCE_RENDER_PATH =
   "/v1/runtime/media-studio/spatial-reference/render" as const;
@@ -57,17 +65,13 @@ type SpatialReferenceRelayDispatchBase = {
     version: number;
     blueprintDigest: string;
     frameAspectRatio: number;
-    camera: {
-      position: Vector3;
-      targetPoint: Vector3;
-      focalLengthMm: number;
-      sensorWidthMm: number;
-    };
+    camera: SpatialReferenceRelayCamera;
     nodes: Array<{
       nodeId: string;
       kind: string;
       label?: string;
       primitiveType?: string;
+      terrainProfile?: SpatialReferenceTerrainProfile;
       propType?: string;
       appearance?: { colorToken?: string; materialPreset?: string };
       position: Vector3;
@@ -296,12 +300,22 @@ export function parseSpatialReferenceRelayDispatch(
       const scale = vector(node?.scale);
       const orientationQuaternion = quaternion(node?.orientationQuaternion);
       const nodeAppearance = appearance(node?.appearance);
+      const terrainProfile =
+        node?.terrainProfile === undefined
+          ? undefined
+          : parseSpatialReferenceTerrainProfile(node.terrainProfile);
+      if (
+        node?.terrainProfile !== undefined &&
+        (!terrainProfile || node.kind !== "primitive" || node.primitiveType !== "floor")
+      )
+        return undefined;
       return node && text(node.nodeId) && text(node.kind) && position
         ? {
             nodeId: text(node.nodeId),
             kind: text(node.kind),
             ...(text(node.label) ? { label: text(node.label) } : {}),
             ...(text(node.primitiveType) ? { primitiveType: text(node.primitiveType) } : {}),
+            ...(terrainProfile ? { terrainProfile } : {}),
             ...(text(node.propType) ? { propType: text(node.propType) } : {}),
             ...(nodeAppearance ? { appearance: nodeAppearance } : {}),
             position,
@@ -315,7 +329,8 @@ export function parseSpatialReferenceRelayDispatch(
       : (nodes as SpatialReferenceRelayDispatchBase["blueprint"]["nodes"]);
   };
   const nodes = parseNodes(blueprint?.nodes);
-  const position = vector(camera?.position);
+  const projectedCamera = parseSpatialReferenceRelayCamera(camera);
+  const position = projectedCamera?.position;
   const targetPoint = vector(camera?.targetPoint);
   const focalLengthMm = number(camera?.focalLengthMm);
   const sensorWidthMm = number(camera?.sensorWidthMm);
@@ -379,6 +394,13 @@ export function parseSpatialReferenceRelayDispatch(
   // version. Keep the narrowed value rather than carrying `unknown` into the
   // v2-only parser below.
   const contractVersion = raw.contractVersion as ContractVersion;
+  // Legacy composition is a 2D rectangle renderer. Never silently replace a
+  // continuous terrain strip with that proxy and claim successful geometry.
+  if (
+    contractVersion === SPATIAL_REFERENCE_RENDER_CONTRACT_V1 &&
+    nodes.some((node) => node.terrainProfile)
+  )
+    return null;
   if (contractVersion === SPATIAL_REFERENCE_RENDER_CONTRACT_V1 && !outputUploadGrant?.artifactId) {
     return null;
   }
@@ -422,7 +444,8 @@ export function parseSpatialReferenceRelayDispatch(
     for (const rawFrame of rawFrames) {
       const frame = record(rawFrame);
       const frameCamera = record(frame?.camera);
-      const framePosition = vector(frameCamera?.position);
+      const projectedFrameCamera = parseSpatialReferenceRelayCamera(frameCamera);
+      const framePosition = projectedFrameCamera?.position;
       const frameTarget = vector(frameCamera?.targetPoint);
       const frameNodes = parseNodes(frame?.nodes);
       const timeMs = number(frame?.timeMs);
@@ -444,15 +467,7 @@ export function parseSpatialReferenceRelayDispatch(
       frames.push({
         timeMs,
         snapshotDigest: text(frame.snapshotDigest),
-        camera: {
-          position: framePosition,
-          targetPoint: frameTarget,
-          ...(vector(frameCamera?.worldAimTarget)
-            ? { worldAimTarget: vector(frameCamera?.worldAimTarget) }
-            : {}),
-          focalLengthMm: number(frameCamera?.focalLengthMm)!,
-          sensorWidthMm: number(frameCamera?.sensorWidthMm)!,
-        },
+        camera: projectedFrameCamera!,
         nodes: frameNodes,
       });
     }
@@ -475,7 +490,8 @@ export function parseSpatialReferenceRelayDispatch(
       const slot = text(reference?.slot);
       const ordinal = number(reference?.ordinal);
       const frameCamera = record(reference?.camera);
-      const framePosition = vector(frameCamera?.position);
+      const projectedFrameCamera = parseSpatialReferenceRelayCamera(frameCamera);
+      const framePosition = projectedFrameCamera?.position;
       const frameTarget = vector(frameCamera?.targetPoint);
       const frameNodes = parseNodes(reference?.nodes);
       const sourceTimeMs = number(reference?.sourceTimeMs);
@@ -512,15 +528,7 @@ export function parseSpatialReferenceRelayDispatch(
         ordinal,
         ...(sourceTimeMs === undefined ? {} : { sourceTimeMs }),
         snapshotDigest: text(reference.snapshotDigest),
-        camera: {
-          position: framePosition,
-          targetPoint: frameTarget,
-          ...(vector(frameCamera?.worldAimTarget)
-            ? { worldAimTarget: vector(frameCamera?.worldAimTarget) }
-            : {}),
-          focalLengthMm: number(frameCamera?.focalLengthMm)!,
-          sensorWidthMm: number(frameCamera?.sensorWidthMm)!,
-        },
+        camera: projectedFrameCamera!,
         nodes: frameNodes,
       });
     }
@@ -735,12 +743,7 @@ export function parseSpatialReferenceRelayDispatch(
     ...(raw as unknown as SpatialReferenceRelayDispatch),
     blueprint: {
       ...(blueprint as unknown as SpatialReferenceRelayDispatch["blueprint"]),
-      camera: {
-        position,
-        targetPoint,
-        focalLengthMm: focalLengthMm!,
-        sensorWidthMm: sensorWidthMm!,
-      },
+      camera: projectedCamera!,
       nodes,
       ...(cropValue ? { environmentCrop: cropValue } : {}),
     },

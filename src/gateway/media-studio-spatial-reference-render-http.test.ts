@@ -6,6 +6,9 @@ function relay(contractVersion: "spatial_reference_render/v1" | "spatial_referen
     position: { x: 0, y: 1, z: 4 },
     targetPoint: { x: 0, y: 1, z: 0 },
     worldAimTarget: { x: 0, y: 1, z: 0 },
+    aimMode: "look_at" as const,
+    targetNodeId: "hero",
+    rollDegrees: 12,
     focalLengthMm: 35,
     sensorWidthMm: 36,
   };
@@ -54,6 +57,26 @@ function relay(contractVersion: "spatial_reference_render/v1" | "spatial_referen
 }
 
 describe("Spatial reference Runtime relay parser", () => {
+  it("keeps frozen static camera world aim and roll through the relay", () => {
+    const input = relay("spatial_reference_render/v1");
+    const camera = {
+      ...input.blueprint.camera,
+      aimMode: "look_at",
+      targetNodeId: "hero",
+      rollDegrees: 12,
+    };
+    const parsed = parseSpatialReferenceRelayDispatch({
+      ...input,
+      blueprint: { ...input.blueprint, camera },
+    });
+    expect(parsed?.blueprint.camera).toEqual(camera);
+    expect(
+      parseSpatialReferenceRelayDispatch({
+        ...input,
+        blueprint: { ...input.blueprint, camera: { ...camera, aimMode: "future" } },
+      }),
+    ).toBeNull();
+  });
   it("keeps v1 composition-only and rejects state(t) fields", () => {
     const v1 = relay("spatial_reference_render/v1");
     expect(parseSpatialReferenceRelayDispatch(v1)?.contractVersion).toBe(
@@ -209,6 +232,9 @@ describe("Spatial reference Runtime relay parser", () => {
       },
       motionReferenceUploadGrant: { artifactId: "artifact_motion" },
     });
+    expect(parsed?.blueprint.camera).toEqual(v2.blueprint.camera);
+    expect(parsed?.motionReference?.frames[0]?.camera).toEqual(v2.blueprint.camera);
+    expect(parsed?.motionReference?.referenceFrames?.[0]?.camera).toEqual(v2.blueprint.camera);
     expect(
       parseSpatialReferenceRelayDispatch({
         ...v2,
