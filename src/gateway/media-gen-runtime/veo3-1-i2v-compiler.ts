@@ -227,16 +227,18 @@ export function compileVeo31I2vRequest(input: MediaGenRuntimeVendorInput): Veo31
   }
 
   const references = intent.references;
+  const firstReference = references[0];
   const sources = input.sources;
   if (
     references.length !== 1 ||
+    !firstReference ||
     sources?.length !== 1 ||
     sources[0]?.role !== "first_frame" ||
     sources[0]?.ordinal !== 0
   ) {
     return fail("Veo 3.1 Image-to-Video requires exactly one typed first frame.");
   }
-  const image = firstFrameImage(references[0], sources[0].source);
+  const image = firstFrameImage(firstReference, sources[0].source);
   if (!image) {
     return fail("The frozen Veo first frame failed byte, MIME, digest, or authority verification.");
   }

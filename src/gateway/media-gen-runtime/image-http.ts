@@ -112,6 +112,7 @@ function parseImageReceipt(raw: unknown): ImageReceipt | undefined {
     token(raw.taskId) === undefined ||
     token(raw.workspaceId) === undefined ||
     token(raw.presetId) === undefined ||
+    typeof raw.executionAttempt !== "number" ||
     !Number.isSafeInteger(raw.executionAttempt) ||
     raw.executionAttempt < 1 ||
     !SHA256.test(String(raw.frozenPlanDigest)) ||
@@ -279,6 +280,7 @@ function parsePlan(value: unknown): Record<string, unknown> | undefined {
     plan.constraintPlan.length === 0
   )
     return undefined;
+  const constraintPlan = plan.constraintPlan;
   const intentKeys =
     plan.schemaVersion === 4
       ? new Set([
@@ -372,9 +374,9 @@ function parsePlan(value: unknown): Record<string, unknown> | undefined {
           "output.qualityIntent",
         ];
   if (
-    !plan.constraintPlan.every((raw) => isRecord(raw) && typeof raw.intentPath === "string") ||
+    !constraintPlan.every((raw) => isRecord(raw) && typeof raw.intentPath === "string") ||
     !requiredMappingPaths.every((path) =>
-      plan.constraintPlan.some(
+      constraintPlan.some(
         (raw) =>
           isRecord(raw) &&
           raw.intentPath === path &&
@@ -435,6 +437,7 @@ function parseDispatch(value: unknown): ImageDispatch | undefined {
     typeof value.frozenPlanDigest !== "string" ||
     !SHA256.test(value.frozenPlanDigest) ||
     digest(plan) !== value.frozenPlanDigest ||
+    typeof value.executionAttempt !== "number" ||
     !Number.isSafeInteger(value.executionAttempt) ||
     value.executionAttempt < 1 ||
     (value.runtimeJobId !== undefined && !runtimeJobId)
@@ -898,6 +901,7 @@ export function createMediaGenRuntimeImageExecutor(options: {
             ...spec,
           });
           const image = generated.images[0];
+          if (!image) throw new Error("Image generation returned no image output.");
           const completed: ImageReceipt = {
             ...started,
             state: "succeeded",
@@ -928,19 +932,15 @@ export function createMediaGenRuntimeImageExecutor(options: {
           failureMessage: "exact image runtime receipt not found",
         });
       if (input.op === "cancel") {
-        if (existing.state === "succeeded") {
-          const artifact = await handoff(input, existing);
-          return result(input, "succeeded", {
-            runtimeJobId: existing.runtimeJobId,
-            artifact,
-            snapshot: existing.snapshot,
-          });
-        }
-        const canceled = { ...existing, state: "canceled" as const };
-        await store.write(canceled);
+        // Image generation has no abort/readback protocol. A local receipt
+        // mutation cannot prove that provider execution stopped. Preserve the
+        // attempt for reconciliation and never hand off bytes in a stop path.
         return result(input, "canceled", {
           runtimeJobId: existing.runtimeJobId,
-          runtimeStopOutcome: { state: "confirmed", reasonCode: "runtime_confirmed" },
+          runtimeStopOutcome:
+            existing.state === "succeeded"
+              ? { state: "confirmed", reasonCode: "runtime_confirmed" }
+              : { state: "not_supported", reasonCode: "adapter_not_supported" },
         });
       }
       if (existing.state === "succeeded") {
@@ -960,7 +960,8 @@ export function createMediaGenRuntimeImageExecutor(options: {
       if (existing.state === "canceled")
         return result(input, "canceled", {
           runtimeJobId: existing.runtimeJobId,
-          runtimeStopOutcome: { state: "confirmed", reasonCode: "runtime_confirmed" },
+          // Legacy canceled receipts only recorded local intent, never stop proof.
+          runtimeStopOutcome: { state: "unknown", reasonCode: "transport_uncertain" },
         });
       return result(input, "submission_unknown", {
         providerRequestDigest: digest({

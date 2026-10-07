@@ -168,6 +168,7 @@ export function createSeedanceV2RuntimeVendor(
         vendorJobId: jobReceipt,
         reason: "vendor_failed",
         message: "The Seedance task receipt is not bound to an Adapter V2 route.",
+        retryDisposition: "reconcile_only",
       };
     }
     const { mode, providerJobId } = decoded;
@@ -209,6 +210,18 @@ export function createSeedanceV2RuntimeVendor(
         "failed",
       );
     }
+    if (json.id !== undefined && json.id !== providerJobId) {
+      return observed(
+        {
+          state: "failed",
+          vendorJobId: jobReceipt,
+          reason: "vendor_failed",
+          message: "Seedance returned a task receipt with a conflicting job identity.",
+          retryDisposition: "reconcile_only",
+        },
+        "failed",
+      );
+    }
     if (json.status === "queued" || json.status === "running") {
       return observed({ state: "processing", vendorJobId: jobReceipt }, "processing");
     }
@@ -224,6 +237,7 @@ export function createSeedanceV2RuntimeVendor(
             vendorJobId: jobReceipt,
             reason: "download_failed",
             message: "Seedance completed without a retrievable video output.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -414,7 +428,8 @@ export function createSeedanceV2RuntimeVendor(
         return observed("confirmed", "canceled");
       }
       const body = (await response.json().catch(() => null)) as SeedancePollResponse | null;
-      return body?.status === "canceled" || body?.status === "cancelled"
+      const matchesTask = body?.id === undefined || body.id === decoded.providerJobId;
+      return matchesTask && (body?.status === "canceled" || body?.status === "cancelled")
         ? observed("confirmed", "canceled")
         : observed("requested", "processing");
     },

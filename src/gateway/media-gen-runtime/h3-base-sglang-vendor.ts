@@ -119,9 +119,14 @@ function errorMessage(value: unknown): string {
     : "";
 }
 
-function failure(status: number, body: unknown, vendorJobId?: string): MediaGenRuntimeVendorJob {
+function failure(
+  status: number,
+  body: unknown,
+  vendorJobId?: string,
+  retryDisposition: "replacement_allowed" | "reconcile_only" = "reconcile_only",
+): MediaGenRuntimeVendorJob {
   const message = errorMessage(body);
-  const common = vendorJobId ? { vendorJobId } : {};
+  const common = vendorJobId ? { vendorJobId, retryDisposition } : {};
   if (status === 401 || status === 403) {
     return {
       state: "failed",
@@ -265,6 +270,7 @@ export function createH3BaseSglangRuntimeVendor(
       return observed(
         {
           state: "failed",
+          retryDisposition: "reconcile_only",
           vendorJobId,
           reason: "vendor_failed",
           message: "Local SGLang job id is invalid.",
@@ -287,6 +293,7 @@ export function createH3BaseSglangRuntimeVendor(
       return observed(
         {
           state: "failed",
+          retryDisposition: "reconcile_only",
           vendorJobId,
           reason: "vendor_failed",
           message: "Local SGLang returned a mismatched H3 receipt.",
@@ -300,12 +307,13 @@ export function createH3BaseSglangRuntimeVendor(
     if (body.status === "failed") {
       await cleanup(stagedByJob.get(vendorJobId) ?? []);
       stagedByJob.delete(vendorJobId);
-      return observed(failure(500, body, vendorJobId), "failed");
+      return observed(failure(500, body, vendorJobId, "replacement_allowed"), "failed");
     }
     if (body.status !== "completed" || body.url != null) {
       return observed(
         {
           state: "failed",
+          retryDisposition: "reconcile_only",
           vendorJobId,
           reason: "vendor_failed",
           message: "Local SGLang returned an unknown or egressing H3 result.",
@@ -490,6 +498,18 @@ export function createH3BaseSglangRuntimeVendor(
         );
       }
       const body = (await response.json().catch(() => null)) as Record<string, unknown> | null;
+      if (response.status === 408 || response.status >= 500) {
+        return observation(
+          {
+            state: "submission_unknown",
+            message: "Local SGLang create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          "submit",
+          "submission_unknown",
+          startedAtMs,
+        );
+      }
       if (!response.ok) {
         await cleanup(staged);
         stagedByTask.delete(input.taskId);

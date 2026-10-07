@@ -3038,6 +3038,66 @@ describe("createOllamaStreamFn", () => {
 
   it.each([
     {
+      name: "defaults native output limit to the catalog maxTokens",
+      model: { maxTokens: 16_384 },
+      expected: 16_384,
+    },
+    {
+      name: "bounds a larger request limit by the catalog maxTokens",
+      model: { maxTokens: 16_384 },
+      options: { maxTokens: 262_144 },
+      expected: 16_384,
+    },
+    {
+      name: "keeps a smaller explicit request limit",
+      model: { maxTokens: 16_384 },
+      options: { maxTokens: 512 },
+      expected: 512,
+    },
+    {
+      name: "keeps a smaller configured native limit",
+      model: { maxTokens: 16_384, params: { num_predict: 256 } },
+      expected: 256,
+    },
+    {
+      name: "never expands a smaller configured limit when the request asks for more",
+      model: { maxTokens: 16_384, params: { num_predict: 2048 } },
+      options: { maxTokens: 8192 },
+      expected: 2048,
+    },
+    {
+      name: "bounds configured unlimited output by the catalog maxTokens",
+      model: { maxTokens: 16_384, params: { num_predict: -1 } },
+      expected: 16_384,
+    },
+    {
+      name: "bounds configured context-sized output by the catalog maxTokens",
+      model: { maxTokens: 16_384, params: { num_predict: 262_144 } },
+      expected: 16_384,
+    },
+    {
+      name: "does not send a nonfinite request limit",
+      model: { maxTokens: 16_384 },
+      options: { maxTokens: Number.POSITIVE_INFINITY },
+      expected: 16_384,
+    },
+    {
+      name: "rounds fractional limits down",
+      model: { maxTokens: 16_384 },
+      options: { maxTokens: 512.9 },
+      expected: 512,
+    },
+  ])("$name", async ({ model, options, expected }) => {
+    await expectSuccessfulOllamaRequest(
+      { baseUrl: "http://ollama-host:11434", model, options },
+      ({ body }) => {
+        expect(requireRecord(body.options, "Ollama request options").num_predict).toBe(expected);
+      },
+    );
+  });
+
+  it.each([
+    {
       name: "forwards request stop sequences as native Ollama options",
       model: {},
       stop: ["END", "DONE"],

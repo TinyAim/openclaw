@@ -230,6 +230,24 @@ function resolveOllamaModelOptions(model: ProviderRuntimeModel): Record<string, 
   return options;
 }
 
+function resolveOllamaOutputLimit(
+  model: ProviderRuntimeModel,
+  requested: unknown,
+  configured: unknown,
+): number | undefined {
+  const positiveInteger = (value: unknown): number | undefined =>
+    typeof value === "number" && Number.isFinite(value) && value >= 1
+      ? Math.floor(value)
+      : undefined;
+  const limits = [model.maxTokens, requested, configured]
+    .map(positiveInteger)
+    .filter((value): value is number => value !== undefined);
+  // maxTokens is the output cap, not num_ctx. Forward it even when the
+  // embedded runner did not supply a request-level option; Ollama otherwise
+  // permits output up to its context window (including num_predict=-1).
+  return limits.length > 0 ? Math.min(...limits) : undefined;
+}
+
 function normalizeOllamaGreedySamplingOptions(options: Record<string, unknown>): void {
   if (options.temperature !== 0) {
     return;
@@ -1029,8 +1047,13 @@ function createRawOllamaStreamFn(
         if (typeof options?.temperature === "number") {
           ollamaOptions.temperature = options.temperature;
         }
-        if (typeof options?.maxTokens === "number") {
-          ollamaOptions.num_predict = options.maxTokens;
+        const outputLimit = resolveOllamaOutputLimit(
+          model,
+          options?.maxTokens,
+          ollamaOptions.num_predict,
+        );
+        if (outputLimit !== undefined) {
+          ollamaOptions.num_predict = outputLimit;
         }
         if (typeof options?.topP === "number") {
           ollamaOptions.top_p = options.topP;

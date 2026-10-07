@@ -9,7 +9,7 @@ import {
 } from "./ffmpeg-limits.js";
 
 /** Process limits and optional stdin payload for ffmpeg/ffprobe helper calls. */
-type MediaExecOptions = {
+export type MediaExecOptions = {
   timeoutMs?: number;
   maxBufferBytes?: number;
   input?: Buffer | string;

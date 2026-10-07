@@ -128,9 +128,15 @@ function normalizedFailure(input: {
   body: RunwayErrorResponse | RunwayTaskResponse | null;
   phase: "submit" | "task";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = errorText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        retryDisposition: input.retryDisposition ?? ("reconcile_only" as const),
+      }
+    : {};
   if (input.status === 401 || input.status === 403) {
     return {
       state: "failed",
@@ -213,6 +219,7 @@ export function createRunwayRuntimeVendor(
           vendorJobId: jobReceipt,
           reason: "vendor_failed",
           message: "Runway task receipt is invalid.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -247,6 +254,7 @@ export function createRunwayRuntimeVendor(
           vendorJobId: jobReceipt,
           reason: "vendor_failed",
           message: "Runway returned an unreadable task receipt.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -264,6 +272,7 @@ export function createRunwayRuntimeVendor(
           body: json,
           phase: "task",
           vendorJobId: jobReceipt,
+          retryDisposition: "replacement_allowed",
         }),
         "failed",
       );
@@ -281,6 +290,7 @@ export function createRunwayRuntimeVendor(
             vendorJobId: jobReceipt,
             reason: "download_failed",
             message: "Runway completed without a retrievable video output.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -300,6 +310,7 @@ export function createRunwayRuntimeVendor(
         vendorJobId: jobReceipt,
         reason: "vendor_failed",
         message: "Runway returned an unknown task status.",
+        retryDisposition: "reconcile_only",
       },
       "failed",
     );
@@ -385,6 +396,22 @@ export function createRunwayRuntimeVendor(
       const json = (await response.json().catch(() => null)) as
         | (RunwayCreateResponse & RunwayErrorResponse)
         | null;
+      if (response.status === 408 || response.status >= 500) {
+        return withObservation(
+          {
+            state: "submission_unknown",
+            message: "Runway create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          route,
+          {
+            operation: "submit",
+            outcome: "submission_unknown",
+            startedAtMs,
+            finishedAt: now(),
+          },
+        );
+      }
       if (!response.ok) {
         return withObservation(
           {

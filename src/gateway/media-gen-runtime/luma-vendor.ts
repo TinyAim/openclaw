@@ -113,9 +113,15 @@ function normalizedFailure(input: {
   body: LumaGenerationResponse | null;
   phase: "submit" | "generation";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = errorText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        ...(input.retryDisposition && { retryDisposition: input.retryDisposition }),
+      }
+    : {};
   if (input.status === 401 || input.status === 403) {
     return {
       state: "failed",
@@ -203,6 +209,7 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
           vendorJobId: jobReceipt,
           reason: "vendor_failed",
           message: "The Luma generation receipt is invalid.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -224,6 +231,7 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
           body: json,
           phase: "generation",
           vendorJobId: jobReceipt,
+          retryDisposition: "reconcile_only",
         }),
         "failed",
       );
@@ -235,6 +243,19 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
           vendorJobId: jobReceipt,
           reason: "vendor_failed",
           message: "Luma returned an unreadable generation receipt.",
+          retryDisposition: "reconcile_only",
+        },
+        "failed",
+      );
+    }
+    if (json.id !== undefined && json.id !== providerJobId) {
+      return observed(
+        {
+          state: "failed",
+          vendorJobId: jobReceipt,
+          reason: "vendor_failed",
+          message: "Luma returned a generation receipt with a conflicting job identity.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -249,6 +270,7 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
           body: json,
           phase: "generation",
           vendorJobId: jobReceipt,
+          retryDisposition: "replacement_allowed",
         }),
         "failed",
       );
@@ -262,6 +284,7 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
             vendorJobId: jobReceipt,
             reason: "download_failed",
             message: "Luma completed without a retrievable HTTPS video output.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -281,6 +304,7 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
         vendorJobId: jobReceipt,
         reason: "vendor_failed",
         message: "Luma returned an unknown generation state.",
+        retryDisposition: "reconcile_only",
       },
       "failed",
     );
@@ -366,6 +390,17 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
         );
       }
       const json = (await response.json().catch(() => null)) as LumaGenerationResponse | null;
+      if (response.status === 408 || response.status >= 500) {
+        return withObservation(
+          {
+            state: "submission_unknown",
+            message: "Luma create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          route,
+          { operation: "submit", outcome: "submission_unknown", startedAtMs, finishedAt: now() },
+        );
+      }
       if (!response.ok) {
         return withObservation(
           {

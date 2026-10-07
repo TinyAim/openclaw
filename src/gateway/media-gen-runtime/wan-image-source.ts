@@ -77,6 +77,9 @@ function jpegDimensions(bytes: Buffer): ImageDimensions | null {
       return null;
     }
     const marker = bytes[offset];
+    if (marker === undefined) {
+      return null;
+    }
     offset += 1;
     if (marker === 0xd8 || marker === 0x01) {
       continue;

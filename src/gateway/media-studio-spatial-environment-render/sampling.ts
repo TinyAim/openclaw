@@ -69,8 +69,10 @@ export async function decodeNormalizedSource(encoded: Buffer): Promise<RawRgbaLe
   }
 }
 
-export async function buildMipPyramid(base: RawRgbaLevel): Promise<readonly RawRgbaLevel[]> {
-  const levels: RawRgbaLevel[] = [base];
+export async function buildMipPyramid(
+  base: RawRgbaLevel,
+): Promise<readonly [RawRgbaLevel, ...RawRgbaLevel[]]> {
+  const levels: [RawRgbaLevel, ...RawRgbaLevel[]] = [base];
   for (const divisor of [2, 4]) {
     const width = Math.max(1, Math.floor(base.width / divisor));
     const height = Math.max(1, Math.floor(base.height / divisor));
@@ -139,11 +141,23 @@ export function sampleTrilinearRgba(
   const upperIndex = Math.min(maximumLevel, lowerIndex + 1);
   const fraction = normalizedLod - lowerIndex;
   const lower = levels[lowerIndex];
+  if (!lower) {
+    throw new ModelFreePanoramaError(
+      "invalid_source",
+      "mip pyramid is missing the lower sample level",
+    );
+  }
   if (upperIndex === lowerIndex || fraction <= 0) {
     sampleBilinearRgba(lower, u, v, target, targetOffset);
     return;
   }
   const upper = levels[upperIndex];
+  if (!upper) {
+    throw new ModelFreePanoramaError(
+      "invalid_source",
+      "mip pyramid is missing the upper sample level",
+    );
+  }
   const lowerPx = Math.max(0, Math.min(lower.width - 1, u * (lower.width - 1)));
   const lowerPy = Math.max(0, Math.min(lower.height - 1, v * (lower.height - 1)));
   const lowerX0 = Math.floor(lowerPx);

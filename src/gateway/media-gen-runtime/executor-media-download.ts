@@ -152,6 +152,9 @@ export async function downloadMedia(
       mimeType,
     };
   } finally {
+    // A rejected status/MIME/size can leave an unread, unending response body.
+    // Release that transfer as well as its deadline; this is not job stop proof.
+    controller.abort();
     clearTimeout(timer);
   }
 }

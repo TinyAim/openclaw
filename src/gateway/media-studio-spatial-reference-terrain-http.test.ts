@@ -229,3 +229,69 @@ describe("terrain relay admission and frozen geometry inheritance", () => {
     ).toBeNull();
   });
 });
+
+describe("bounded world surface/component relay admission", () => {
+  const surface = {
+    schemaVersion: 1,
+    kind: "heightfield",
+    origin: { x: -40, y: 0, z: -60 },
+    widthM: 80,
+    lengthM: 60,
+    depthM: 2,
+    rows: 2,
+    columns: 2,
+    heightsM: [0, 2, 4, 10],
+  };
+  it("preserves the exact heightfield/v1 parameters and rejects mixing old strip", () => {
+    const body = request(),
+      old = body.blueprint.nodes[0]!;
+    const { terrainProfile: _, ...base } = old;
+    const parsed = parseSpatialReferenceRelayDispatch({
+      ...body,
+      blueprint: { ...body.blueprint, nodes: [{ ...base, terrainSurface: surface }] },
+    });
+    expect(parsed?.blueprint.nodes[0]?.terrainSurface).toEqual(surface);
+    expect(
+      parseSpatialReferenceRelayDispatch({
+        ...body,
+        blueprint: { ...body.blueprint, nodes: [{ ...old, terrainSurface: surface }] },
+      }),
+    ).toBeNull();
+  });
+  it("refuses unknown mesh fields and expanded resource budget without downgrading", () => {
+    const body = request();
+    const n = {
+      nodeId: "ground",
+      kind: "primitive",
+      primitiveType: "floor",
+      position: { x: 0, y: 0, z: 0 },
+      terrainSurface: surface,
+    };
+    expect(
+      parseSpatialReferenceRelayDispatch({
+        ...body,
+        blueprint: { ...body.blueprint, nodes: [{ ...n, meshUrl: "https://untrusted.invalid" }] },
+      }),
+    ).toBeNull();
+    const large = { ...surface, rows: 33, columns: 33, heightsM: Array(1089).fill(0) };
+    expect(
+      parseSpatialReferenceRelayDispatch({
+        ...body,
+        blueprint: {
+          ...body.blueprint,
+          nodes: Array.from({ length: 10 }, (_, i) => ({
+            ...n,
+            nodeId: `ground_${i}`,
+            terrainSurface: large,
+          })),
+        },
+      }),
+    ).toBeNull();
+    expect(
+      parseSpatialReferenceRelayDispatch({
+        ...body,
+        blueprint: { ...body.blueprint, nodes: [{ ...n, actorPose: {} }] },
+      }),
+    ).toBeNull();
+  });
+});

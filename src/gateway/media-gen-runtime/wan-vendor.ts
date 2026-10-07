@@ -83,9 +83,15 @@ function normalizedFailure(input: {
   body: WanTaskResponse | null;
   phase: "submit" | "generation";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = errorText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        ...(input.retryDisposition && { retryDisposition: input.retryDisposition }),
+      }
+    : {};
   if (input.status === 401 || input.status === 403 || /invalid.?api.?key/iu.test(text)) {
     return {
       state: "failed",
@@ -182,6 +188,7 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "vendor_failed",
           message: "The Wan task receipt is invalid or belongs to an unsupported route.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -203,7 +210,21 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
           body: json,
           phase: "generation",
           vendorJobId,
+          retryDisposition: "reconcile_only",
         }),
+        "failed",
+      );
+    }
+    const reportedJobId = json?.output?.task_id;
+    if (reportedJobId !== undefined && reportedJobId !== decoded.providerJobId) {
+      return observed(
+        {
+          state: "failed",
+          vendorJobId,
+          reason: "vendor_failed",
+          message: "DashScope returned a task receipt with a conflicting job identity.",
+          retryDisposition: "reconcile_only",
+        },
         "failed",
       );
     }
@@ -218,6 +239,7 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
           body: json,
           phase: "generation",
           vendorJobId,
+          retryDisposition: "replacement_allowed",
         }),
         "failed",
       );
@@ -234,6 +256,7 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
             vendorJobId,
             reason: "download_failed",
             message: "DashScope completed without a retrievable HTTPS video output.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -256,6 +279,7 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
           status === "UNKNOWN"
             ? "DashScope no longer recognizes this Wan task receipt."
             : "DashScope returned an unknown Wan task state.",
+        retryDisposition: "reconcile_only",
       },
       "failed",
     );
@@ -323,6 +347,17 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
         );
       }
       const json = (await response.json().catch(() => null)) as WanTaskResponse | null;
+      if (response.status === 408 || response.status >= 500) {
+        return withObservation(
+          {
+            state: "submission_unknown",
+            message: "Wan create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          route,
+          { operation: "submit", outcome: "submission_unknown", startedAtMs, finishedAt: now() },
+        );
+      }
       if (!response.ok) {
         return withObservation(
           {

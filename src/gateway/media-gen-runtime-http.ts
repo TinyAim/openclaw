@@ -438,7 +438,10 @@ function resolveConnectAuth(req: IncomingMessage): { token?: string; password?: 
 export async function authorizeMediaGenRuntimeRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  options: MediaGenRuntimeHttpOptions,
+  options: Pick<
+    MediaGenRuntimeHttpOptions,
+    "auth" | "trustedProxies" | "allowRealIpFallback" | "rateLimiter"
+  >,
 ): Promise<boolean> {
   const connectAuth = resolveConnectAuth(req);
   if (connectAuth?.token && connectAuth?.password) {

@@ -72,6 +72,16 @@ export async function submitViduQ1T2v(input: {
   }
 
   const json = (await response.json().catch(() => null)) as ViduQ1T2vCreateResponse | null;
+  if (response.status === 408 || response.status >= 500) {
+    return observed(
+      {
+        state: "submission_unknown",
+        message: "Vidu create may have been accepted; reconciliation is required.",
+        providerRequestDigest: compiled.providerRequestDigest,
+      },
+      "submission_unknown",
+    );
+  }
   if (!response.ok) {
     return observed(
       {

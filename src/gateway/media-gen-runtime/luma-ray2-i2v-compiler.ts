@@ -201,16 +201,18 @@ export function compileLumaRay2I2vRequest(
   }
 
   const references = intent.references;
+  const firstReference = references[0];
   const sources = input.sources;
   if (
     references.length !== 1 ||
+    !firstReference ||
     sources?.length !== 1 ||
     sources[0]?.role !== "first_frame" ||
     sources[0]?.ordinal !== 0
   ) {
     return fail("Luma Ray 2 Image-to-Video requires exactly one typed first frame.");
   }
-  const imageUrl = httpsImageUrl(references[0], sources[0].source);
+  const imageUrl = httpsImageUrl(firstReference, sources[0].source);
   if (!imageUrl) {
     return fail("The frozen Luma first frame failed URL, MIME, digest, or authority verification.");
   }

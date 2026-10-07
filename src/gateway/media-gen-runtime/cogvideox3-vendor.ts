@@ -125,9 +125,15 @@ function normalizedFailure(input: {
   body: CogVideoXResponse | null;
   phase: "submit" | "poll";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = responseText(input.body);
-  const receipt = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const receipt = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        retryDisposition: input.retryDisposition ?? ("reconcile_only" as const),
+      }
+    : {};
   if (input.status === 401 || input.status === 403 || /auth|token|credential/iu.test(text)) {
     return {
       state: "failed",
@@ -243,6 +249,7 @@ export function createCogVideoX3RuntimeVendor(
         vendorJobId: runtimeJobId,
         reason: "vendor_failed",
         message: "The CogVideoX-3 runtime job receipt is invalid.",
+        retryDisposition: "reconcile_only",
       };
     }
     const { providerJobId, route } = receipt;
@@ -270,13 +277,14 @@ export function createCogVideoX3RuntimeVendor(
         "failed",
       );
     }
-    if (typeof json?.id === "string" && json.id !== providerJobId) {
+    if (json?.id !== undefined && json.id !== providerJobId) {
       return finish(
         {
           state: "failed",
           vendorJobId: runtimeJobId,
           reason: "vendor_failed",
           message: "Zhipu BigModel returned a mismatched CogVideoX-3 task receipt.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -292,6 +300,7 @@ export function createCogVideoX3RuntimeVendor(
           body: json,
           phase: "poll",
           vendorJobId: runtimeJobId,
+          retryDisposition: "replacement_allowed",
         }),
         "failed",
       );
@@ -305,6 +314,7 @@ export function createCogVideoX3RuntimeVendor(
             vendorJobId: runtimeJobId,
             reason: "download_failed",
             message: "CogVideoX-3 completed without a retrievable HTTPS video URL.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -324,6 +334,7 @@ export function createCogVideoX3RuntimeVendor(
         vendorJobId: runtimeJobId,
         reason: "vendor_failed",
         message: "Zhipu BigModel returned an unknown CogVideoX-3 task status.",
+        retryDisposition: "reconcile_only",
       },
       "failed",
     );
@@ -426,6 +437,17 @@ export function createCogVideoX3RuntimeVendor(
         );
       }
       const json = (await response.json().catch(() => null)) as CogVideoXResponse | null;
+      if (response.status === 408 || response.status >= 500) {
+        return observed(
+          route,
+          {
+            state: "submission_unknown",
+            message: "CogVideoX-3 create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          { operation: "submit", outcome: "submission_unknown", startedAtMs, finishedAt: now() },
+        );
+      }
       if (!response.ok || json?.task_status === "FAIL") {
         return observed(
           route,

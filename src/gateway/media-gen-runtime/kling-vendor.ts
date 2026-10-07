@@ -188,6 +188,19 @@ export function createKlingRuntimeVendor(
             classified.reason === "vendor_rejected"
               ? "The Kling task could not be reconciled."
               : classified.message,
+          retryDisposition: "reconcile_only",
+        },
+        "failed",
+      );
+    }
+    if (json.data?.task_id !== undefined && json.data.task_id !== taskId) {
+      return observed(
+        {
+          state: "failed",
+          vendorJobId,
+          reason: "vendor_failed",
+          message: "Kling returned a mismatched task receipt.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -208,6 +221,7 @@ export function createKlingRuntimeVendor(
             vendorJobId,
             reason: "download_failed",
             message: "Kling completed without a retrievable video output.",
+            retryDisposition: "reconcile_only",
           },
           "failed",
         );
@@ -228,6 +242,7 @@ export function createKlingRuntimeVendor(
           vendorJobId,
           reason: "vendor_failed",
           message: "Kling could not complete the generation task.",
+          retryDisposition: "replacement_allowed",
         },
         "failed",
       );
@@ -238,6 +253,7 @@ export function createKlingRuntimeVendor(
         vendorJobId,
         reason: "vendor_failed",
         message: "Kling returned an unreadable task status.",
+        retryDisposition: "reconcile_only",
       },
       "failed",
     );
@@ -300,6 +316,21 @@ export function createKlingRuntimeVendor(
           );
         }
         const json = (await response.json().catch(() => null)) as KlingResponse | null;
+        if (
+          response.status === 408 ||
+          response.status >= 500 ||
+          (response.ok && (!json || typeof json.code !== "number"))
+        ) {
+          return withObservation(
+            {
+              state: "submission_unknown",
+              message: "Kling create may have been accepted; reconciliation is required.",
+              providerRequestDigest: compiled.providerRequestDigest,
+            },
+            evidence,
+            { operation: "submit", outcome: "submission_unknown", startedAtMs, finishedAt: now() },
+          );
+        }
         if (!response.ok || !json || json.code !== 0) {
           return withObservation(
             {

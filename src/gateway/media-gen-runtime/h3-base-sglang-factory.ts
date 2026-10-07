@@ -75,6 +75,7 @@ function parseProfilePins(
       const pin = value as Record<string, unknown>;
       if (Object.keys(pin).some((key) => !PROFILE_PIN_KEYS.has(key))) return null;
       if (
+        typeof pin.profileId !== "string" ||
         pin.profileId !== expected[scenario] ||
         !Number.isSafeInteger(pin.revision) ||
         Number(pin.revision) <= 0 ||

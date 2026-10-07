@@ -11,6 +11,11 @@ import {
 } from "./http-common.js";
 import { getBearerToken, getHeader } from "./http-utils.js";
 import {
+  parseSpatialReferenceActorPose,
+  type MediaSpatialHumanoidPose,
+} from "./media-studio-spatial-reference-runtime/actor-pose.js";
+import { parseSpatialReferenceComponentSpec } from "./media-studio-spatial-reference-runtime/component-spec.js";
+import {
   parseSpatialReferenceRelayCamera,
   type SpatialReferenceRelayCamera,
 } from "./media-studio-spatial-reference-runtime/relay-camera.js";
@@ -18,6 +23,12 @@ import {
   parseSpatialReferenceTerrainProfile,
   type SpatialReferenceTerrainProfile,
 } from "./media-studio-spatial-reference-runtime/terrain-profile.js";
+import { parseSpatialReferenceTerrainSurface } from "./media-studio-spatial-reference-runtime/terrain-surface.js";
+import { spatialReferenceWorldGeometryWithinBudget } from "./media-studio-spatial-reference-runtime/world-geometry-budget.js";
+import type {
+  MediaSpatialTerrainSurface,
+  MediaSpatialComponentSpec,
+} from "./media-studio-spatial-reference-runtime/world-spec-types.js";
 
 export const MEDIA_STUDIO_SPATIAL_REFERENCE_RENDER_PATH =
   "/v1/runtime/media-studio/spatial-reference/render" as const;
@@ -72,6 +83,9 @@ type SpatialReferenceRelayDispatchBase = {
       label?: string;
       primitiveType?: string;
       terrainProfile?: SpatialReferenceTerrainProfile;
+      terrainSurface?: MediaSpatialTerrainSurface;
+      componentSpec?: MediaSpatialComponentSpec;
+      actorPose?: MediaSpatialHumanoidPose;
       propType?: string;
       appearance?: { colorToken?: string; materialPreset?: string };
       position: Vector3;
@@ -293,9 +307,67 @@ export function parseSpatialReferenceRelayDispatch(
   const parseNodes = (
     rawNodes: unknown,
   ): SpatialReferenceRelayDispatchBase["blueprint"]["nodes"] | null => {
-    if (!Array.isArray(rawNodes)) return null;
+    if (!Array.isArray(rawNodes) || rawNodes.length > 64) return null;
     const nodes = rawNodes.map((value) => {
       const node = record(value);
+      if (
+        node &&
+        (node.terrainSurface !== undefined ||
+          node.componentSpec !== undefined ||
+          node.actorPose !== undefined)
+      ) {
+        if (
+          Object.keys(node).some(
+            (k) =>
+              ![
+                "nodeId",
+                "kind",
+                "label",
+                "primitiveType",
+                "terrainProfile",
+                "terrainSurface",
+                "componentSpec",
+                "actorPose",
+                "propType",
+                "appearance",
+                "actionIntent",
+                "binding",
+                "position",
+                "orientationQuaternion",
+                "scale",
+              ].includes(k),
+          )
+        )
+          return undefined;
+        // These existing codec facts remain ignored by this renderer. Validate
+        // their closed metadata shape without creating a second pose authority.
+        if (
+          node.actionIntent !== undefined &&
+          (node.kind !== "character_placeholder" ||
+            typeof node.actionIntent !== "string" ||
+            !["hold", "walk", "run", "turn", "sit", "look_at", "squat", "crawl", "prone"].includes(
+              String(node.actionIntent),
+            ))
+        )
+          return undefined;
+        if (node.binding !== undefined) {
+          const binding = record(node.binding),
+            refId = text(binding?.refId);
+          if (
+            !binding ||
+            Object.keys(binding).some((k) => !["kind", "refId"].includes(k)) ||
+            typeof binding.kind !== "string" ||
+            !["asset_ref", "character_bible", "world_bible"].includes(binding.kind) ||
+            !refId ||
+            refId.length > 180 ||
+            refId.includes("://") ||
+            refId.startsWith("/") ||
+            refId.includes("\\") ||
+            refId.includes("..")
+          )
+            return undefined;
+        }
+      }
       const position = vector(node?.position);
       const scale = vector(node?.scale);
       const orientationQuaternion = quaternion(node?.orientationQuaternion);
@@ -309,6 +381,33 @@ export function parseSpatialReferenceRelayDispatch(
         (!terrainProfile || node.kind !== "primitive" || node.primitiveType !== "floor")
       )
         return undefined;
+      const terrainSurface =
+        node?.terrainSurface === undefined
+          ? undefined
+          : parseSpatialReferenceTerrainSurface(node.terrainSurface);
+      const componentSpec =
+        node?.componentSpec === undefined
+          ? undefined
+          : parseSpatialReferenceComponentSpec(node.componentSpec);
+      const actorPose =
+        node?.actorPose === undefined ? undefined : parseSpatialReferenceActorPose(node.actorPose);
+      if (
+        node?.terrainSurface !== undefined &&
+        (!terrainSurface ||
+          terrainProfile ||
+          node.kind !== "primitive" ||
+          node.primitiveType !== "floor")
+      )
+        return undefined;
+      if (
+        node?.componentSpec !== undefined &&
+        (!componentSpec || node.kind !== "prop_placeholder" || node.propType !== componentSpec.kind)
+      )
+        return undefined;
+      if (["tree", "log", "rock"].includes(String(node?.propType ?? "")) && !componentSpec)
+        return undefined;
+      if (node?.actorPose !== undefined && (!actorPose || node.kind !== "character_placeholder"))
+        return undefined;
       return node && text(node.nodeId) && text(node.kind) && position
         ? {
             nodeId: text(node.nodeId),
@@ -316,6 +415,9 @@ export function parseSpatialReferenceRelayDispatch(
             ...(text(node.label) ? { label: text(node.label) } : {}),
             ...(text(node.primitiveType) ? { primitiveType: text(node.primitiveType) } : {}),
             ...(terrainProfile ? { terrainProfile } : {}),
+            ...(terrainSurface ? { terrainSurface } : {}),
+            ...(componentSpec ? { componentSpec } : {}),
+            ...(actorPose ? { actorPose } : {}),
             ...(text(node.propType) ? { propType: text(node.propType) } : {}),
             ...(nodeAppearance ? { appearance: nodeAppearance } : {}),
             position,
@@ -324,9 +426,9 @@ export function parseSpatialReferenceRelayDispatch(
           }
         : undefined;
     });
-    return nodes.some((node) => !node)
-      ? null
-      : (nodes as SpatialReferenceRelayDispatchBase["blueprint"]["nodes"]);
+    if (nodes.some((node) => !node)) return null;
+    const parsed = nodes as SpatialReferenceRelayDispatchBase["blueprint"]["nodes"];
+    return spatialReferenceWorldGeometryWithinBudget(parsed) ? parsed : null;
   };
   const nodes = parseNodes(blueprint?.nodes);
   const projectedCamera = parseSpatialReferenceRelayCamera(camera);
@@ -398,7 +500,9 @@ export function parseSpatialReferenceRelayDispatch(
   // continuous terrain strip with that proxy and claim successful geometry.
   if (
     contractVersion === SPATIAL_REFERENCE_RENDER_CONTRACT_V1 &&
-    nodes.some((node) => node.terrainProfile)
+    nodes.some(
+      (node) => node.terrainProfile || node.terrainSurface || node.componentSpec || node.actorPose,
+    )
   )
     return null;
   if (contractVersion === SPATIAL_REFERENCE_RENDER_CONTRACT_V1 && !outputUploadGrant?.artifactId) {

@@ -88,9 +88,15 @@ function normalizedFailure(input: {
   body: ViduCreateResponse | ViduCreationsResponse | null;
   phase: "submit" | "task";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): Extract<MediaGenRuntimeVendorJob, { state: "failed" }> {
   const text = responseText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        retryDisposition: input.retryDisposition ?? ("reconcile_only" as const),
+      }
+    : {};
   if (input.status === 401 || input.status === 403) {
     return {
       state: "failed",
@@ -274,6 +280,7 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
           vendorJobId,
           reason: "vendor_failed",
           message: "The Vidu task receipt is invalid.",
+          retryDisposition: "reconcile_only",
         },
         operation,
         "failed",
@@ -337,13 +344,20 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
             vendorJobId,
             reason: "download_failed",
             message: "Vidu completed without a retrievable HTTPS creation URL.",
+            retryDisposition: "reconcile_only",
           };
       return observe(identity, job, operation, mediaRef ? "succeeded" : "failed", startedAtMs);
     }
     if (state === "failed") {
       return observe(
         identity,
-        normalizedFailure({ status: 200, body: json, phase: "task", vendorJobId }),
+        normalizedFailure({
+          status: 200,
+          body: json,
+          phase: "task",
+          vendorJobId,
+          retryDisposition: "replacement_allowed",
+        }),
         operation,
         "failed",
         startedAtMs,
@@ -356,6 +370,7 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
         vendorJobId,
         reason: "vendor_failed",
         message: "Vidu returned an unknown task state.",
+        retryDisposition: "reconcile_only",
       },
       operation,
       "failed",
@@ -456,6 +471,19 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
         );
       }
       const json = (await response.json().catch(() => null)) as ViduCreateResponse | null;
+      if (response.status === 408 || response.status >= 500) {
+        return observe(
+          exact ? referenceIdentity : null,
+          {
+            state: "submission_unknown",
+            message: "Vidu create may have been accepted; reconciliation is required.",
+            providerRequestDigest,
+          },
+          "submit",
+          "submission_unknown",
+          startedAtMs,
+        );
+      }
       if (!response.ok) {
         return observe(
           exact ? referenceIdentity : null,

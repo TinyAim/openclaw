@@ -68,9 +68,15 @@ function normalizedFailure(input: {
   body: HailuoH3Response | null;
   phase: "submit" | "generation";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = errorText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        retryDisposition: input.retryDisposition ?? ("reconcile_only" as const),
+      }
+    : {};
   if (input.status === 401 || input.status === 403 || /authorized|credential/iu.test(text)) {
     return {
       state: "failed",
@@ -157,6 +163,7 @@ export function createHailuoH3RuntimeVendor(
       return observed(
         {
           state: "failed",
+          retryDisposition: "reconcile_only",
           vendorJobId,
           reason: "vendor_failed",
           message: "The MiniMax H3 task receipt is invalid.",
@@ -195,6 +202,7 @@ export function createHailuoH3RuntimeVendor(
       return observed(
         {
           state: "failed",
+          retryDisposition: "reconcile_only",
           vendorJobId,
           reason: "vendor_failed",
           message: "MiniMax returned an unreadable or mismatched H3 task receipt.",
@@ -215,6 +223,7 @@ export function createHailuoH3RuntimeVendor(
           body: json,
           phase: "generation",
           vendorJobId,
+          retryDisposition: "replacement_allowed",
         }),
         "failed",
       );
@@ -232,6 +241,7 @@ export function createHailuoH3RuntimeVendor(
         return observed(
           {
             state: "failed",
+            retryDisposition: "reconcile_only",
             vendorJobId,
             reason: "download_failed",
             message: "MiniMax H3 completed without the frozen retrievable 2K MP4 output.",
@@ -256,6 +266,7 @@ export function createHailuoH3RuntimeVendor(
     return observed(
       {
         state: "failed",
+        retryDisposition: "reconcile_only",
         vendorJobId,
         reason: "vendor_failed",
         message: "MiniMax returned an unknown H3 task status.",
@@ -314,6 +325,16 @@ export function createHailuoH3RuntimeVendor(
         );
       }
       const json = (await response.json().catch(() => null)) as HailuoH3Response | null;
+      if (response.status === 408 || response.status >= 500) {
+        return withObservation(
+          {
+            state: "submission_unknown",
+            message: "MiniMax H3 create may have been accepted; reconciliation is required.",
+            providerRequestDigest: compiled.providerRequestDigest,
+          },
+          { operation: "submit", outcome: "submission_unknown", startedAtMs, finishedAt: now() },
+        );
+      }
       if (!response.ok) {
         return withObservation(
           {

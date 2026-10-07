@@ -62,6 +62,8 @@ function scenarioMatches(intent: MediaGenerationIntentV2): boolean {
       return count("source_video") === 1;
     case "text_to_video":
       return false;
+    default:
+      return false;
   }
 }
 

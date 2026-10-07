@@ -63,6 +63,20 @@ export async function submitKlingT2vV2(input: {
   }
 
   const json = (await response.json().catch(() => null)) as KlingCreateResponse | null;
+  if (
+    response.status === 408 ||
+    response.status >= 500 ||
+    (response.ok && (!json || typeof json.code !== "number"))
+  ) {
+    return observed(
+      {
+        state: "submission_unknown",
+        message: "Kling create may have been accepted; reconciliation is required.",
+        providerRequestDigest: compiled.providerRequestDigest,
+      },
+      "submission_unknown",
+    );
+  }
   if (!response.ok || !json || json.code !== 0) {
     return observed(
       {

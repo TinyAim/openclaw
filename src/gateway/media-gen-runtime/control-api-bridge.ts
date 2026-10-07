@@ -46,6 +46,7 @@ async function readJson<T>(res: Response, context: string): Promise<T> {
 async function readBoundedBody(res: Response, maxBytes: number, context: string): Promise<Buffer> {
   const declared = Number(res.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxBytes) {
+    await res.body?.cancel().catch(() => undefined);
     throw new Error(`${context} exceeds max bytes`);
   }
   if (!res.body) {
@@ -113,6 +114,7 @@ export function createControlApiMediaGenBridge(
   async function postJson<T>(path: string, body: unknown, context: string): Promise<T> {
     const res = await fetchImpl(joinUrl(baseUrl, path), {
       method: "POST",
+      redirect: "error",
       headers: {
         "content-type": "application/json",
         accept: "application/json",
@@ -170,6 +172,7 @@ export function createControlApiMediaGenBridge(
       );
       const res = await fetchImpl(joinUrl(baseUrl, REFERENCE_REDEEM_PATH), {
         method: "POST",
+        redirect: "error",
         headers: {
           "content-type": "application/json",
           ...authHeaders,
@@ -181,6 +184,7 @@ export function createControlApiMediaGenBridge(
         }),
       });
       if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
         throw new Error(`media-gen reference redeem failed with status ${res.status}`);
       }
       const bytes = await readBoundedBody(res, maxReferenceBytes, "media-gen reference redeem");
@@ -206,6 +210,7 @@ export function createControlApiMediaGenBridge(
         ),
         {
           method: "POST",
+          redirect: "error",
           headers: {
             "content-type": input.output.mimeType,
             accept: "application/json",

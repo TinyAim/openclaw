@@ -108,9 +108,15 @@ function normalizedFailure(input: {
   body: VeoResponse | null;
   phase: "submit" | "generation";
   vendorJobId?: string;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
 }): MediaGenRuntimeVendorJob {
   const text = errorText(input.body);
-  const common = input.vendorJobId ? { vendorJobId: input.vendorJobId } : {};
+  const common = input.vendorJobId
+    ? {
+        vendorJobId: input.vendorJobId,
+        ...(input.retryDisposition && { retryDisposition: input.retryDisposition }),
+      }
+    : {};
   if (
     input.status === 401 ||
     input.status === 403 ||
@@ -224,6 +230,7 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "vendor_failed",
           message: "The Veo operation receipt is invalid.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -238,6 +245,7 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "auth",
           message: "Vertex AI Application Default Credentials are unavailable.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -260,20 +268,29 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           body: json,
           phase: "generation",
           vendorJobId,
+          retryDisposition: "reconcile_only",
         }),
         "failed",
       );
     }
-    if (json?.done === false && json.error == null && json.response == null) {
+    const conflictingIdentity =
+      json?.name !== undefined && json.name !== operationName(projectId, receipt.operationId);
+    if (
+      !conflictingIdentity &&
+      json?.done === false &&
+      json.error == null &&
+      json.response == null
+    ) {
       return observed({ state: "processing", vendorJobId }, "processing");
     }
-    if (json?.done !== true) {
+    if (conflictingIdentity || json?.done !== true) {
       return observed(
         {
           state: "failed",
           vendorJobId,
           reason: "vendor_failed",
           message: "Vertex AI returned an unknown Veo operation state.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -316,6 +333,7 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "download_failed",
           message: "Vertex AI completed without one retrievable Veo video.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -328,6 +346,7 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "download_failed",
           message: "Vertex AI returned an unreadable Veo video output.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -344,6 +363,7 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
           vendorJobId,
           reason: "download_failed",
           message: "Vertex AI did not return the frozen inline MP4 output.",
+          retryDisposition: "reconcile_only",
         },
         "failed",
       );
@@ -434,13 +454,24 @@ export function createVeoRuntimeVendor(options: VeoRuntimeVendorOptions): MediaG
       }
       const json = (await response.json().catch(() => null)) as VeoResponse | null;
       if (!response.ok) {
+        const outcomeUnknown = response.status === 408 || response.status >= 500;
         return withObservation(
           {
-            ...normalizedFailure({ status: response.status, body: json, phase: "submit" }),
+            ...(outcomeUnknown
+              ? {
+                  state: "submission_unknown" as const,
+                  message: "Veo create may have been accepted; reconciliation is required.",
+                }
+              : normalizedFailure({ status: response.status, body: json, phase: "submit" })),
             providerRequestDigest: compiled.providerRequestDigest,
           },
           identity,
-          { operation: "submit", outcome: "failed", startedAtMs, finishedAt: now() },
+          {
+            operation: "submit",
+            outcome: outcomeUnknown ? "submission_unknown" : "failed",
+            startedAtMs,
+            finishedAt: now(),
+          },
         );
       }
       const operationId = operationIdFromName(projectId, json?.name);
