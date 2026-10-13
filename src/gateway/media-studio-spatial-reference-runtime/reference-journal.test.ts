@@ -79,6 +79,19 @@ const guardian = {
   armedAtMs: 1,
 };
 const dirs: string[] = [];
+const observerFailureDetails = {
+  source: "darwin_observer_exec/v1" as const,
+  code: "spatial_v2_rss_observation_exec_timeout",
+  elapsedMs: 3005,
+  closeObserved: false,
+  exitCode: null,
+  signal: null,
+  stdoutBytes: 100,
+  stderrBytes: 0,
+  nativeStage: "unknown",
+  renderStage: "frame_render",
+  frameIndex: 7,
+};
 
 afterEach(async () => {
   closePluginStateDatabase();
@@ -157,6 +170,154 @@ async function acceptTyped(env: NodeJS.ProcessEnv) {
   await value.accept("key-test", ack, "request-digest", { identity, expectedOutputs: expected });
   return value;
 }
+
+async function armedFailureJournal() {
+  const env = await state();
+  const value = await acceptTyped(env);
+  const worker = {
+    pid: 50,
+    startTime: 51,
+    scopeId: "scope-test",
+    runId: "run-test",
+    workerTokenDigest: digest,
+  };
+  await value.claim({
+    identity,
+    owner,
+    expectedOutputs: expected,
+    nowMs: 1,
+    leaseExpiresAtMs: 100,
+    scopeKey: worker.scopeId,
+    runId: worker.runId,
+  });
+  await reserveGuardian(value, 1);
+  await value.armScopeGuardian({ identity, owner, nowMs: 1, guardian });
+  await value.recordSpawnIntent({ identity, owner, nowMs: 2, guardian });
+  await value.recordWorkerPrepared({ identity, owner, nowMs: 3, guardian, worker });
+  await value.authorizeWorkerStart({ identity, owner, nowMs: 4, guardian, worker });
+  return { env, value, worker };
+}
+
+describe("private exact-scope observer failure journal", () => {
+  it.each(["extinct", "unknown"] as const)(
+    "persists %s evidence across reopen and generic exit checkpoint",
+    async (terminalState) => {
+      const { env, value, worker } = await armedFailureJournal();
+      await value.recordScopeObservation({
+        identity,
+        owner,
+        guardian,
+        nowMs: 5,
+        observation: {
+          state: terminalState,
+          observedAtMs: 5,
+          worker: { ...worker, failureDetails: observerFailureDetails },
+          ...(terminalState === "extinct"
+            ? {
+                proof: {
+                  protocol: "windows_job_v1" as const,
+                  jobIncarnationId: "fixture-job",
+                  activeProcessCount: 0 as const,
+                  workerPid: worker.pid,
+                  workerStartTime: worker.startTime,
+                },
+              }
+            : { reason: "scope_observation_unknown" as const }),
+        },
+      });
+      closePluginStateDatabase();
+      const reopened = journal(env);
+      await expect(reopened.get(identity.key)).resolves.toMatchObject({
+        phase: "claimed",
+        scopeRecovery: { state: terminalState, worker: { failureDetails: observerFailureDetails } },
+      });
+      await reopened.checkpoint({
+        identity,
+        owner,
+        nowMs: 6,
+        phase: "worker_exited",
+        worker: { ...worker, exited: { atMs: 6, reason: "completed" } },
+      });
+      const row = await reopened.get(identity.key);
+      expect(row?.scopeRecovery?.worker?.failureDetails).toEqual(observerFailureDetails);
+      expect(row?.callback).toBeUndefined();
+      expect(row?.renderProof).toBeUndefined();
+      expect(row?.prepared).toBeUndefined();
+      if (terminalState === "extinct") {
+        const { receipt: _, ...callback } = successCallback("fixture-storage");
+        await reopened.finish(
+          identity.key,
+          { ...callback, status: "failed", errorCode: observerFailureDetails.code },
+          { identity, owner, nowMs: 7, scopeEvidence: "extinct" },
+        );
+        expect((await reopened.get(identity.key))?.callback).not.toHaveProperty("failureDetails");
+        expect((await reopened.get(identity.key))?.scopeRecovery?.worker?.failureDetails).toEqual(
+          observerFailureDetails,
+        );
+      }
+    },
+  );
+
+  it.each([
+    { failureDetails: { ...observerFailureDetails, secret: "/private/path" } },
+    { failureDetails: { ...observerFailureDetails, stderrBytes: -1 } },
+    { failureDetails: { ...observerFailureDetails, code: "untrusted raw failure" } },
+    { pid: 51 },
+    { startTime: 52 },
+    { scopeId: "other-scope" },
+    { runId: "other-run" },
+  ])(
+    "rejects raw metadata or mismatched worker identity before durable write",
+    async (override) => {
+      const { value, worker } = await armedFailureJournal();
+      const before = await value.get(identity.key);
+      await expect(
+        value.recordScopeObservation({
+          identity,
+          owner,
+          guardian,
+          nowMs: 5,
+          observation: {
+            state: "unknown",
+            observedAtMs: 5,
+            reason: "scope_observation_unknown",
+            worker: { ...worker, failureDetails: observerFailureDetails, ...override } as never,
+          },
+        }),
+      ).rejects.toThrow("JOURNAL_SCOPE_FAILURE_DETAILS_INVALID");
+      expect(await value.get(identity.key)).toEqual(before);
+    },
+  );
+
+  it("cannot replace the first persisted failure with a late diagnostic", async () => {
+    const { value, worker } = await armedFailureJournal();
+    const input = {
+      identity,
+      owner,
+      guardian,
+      nowMs: 5,
+      observation: {
+        state: "unknown" as const,
+        observedAtMs: 5,
+        reason: "scope_observation_unknown" as const,
+        worker: { ...worker, failureDetails: observerFailureDetails },
+      },
+    };
+    await value.recordScopeObservation(input);
+    await expect(
+      value.recordScopeObservation({
+        ...input,
+        observation: {
+          ...input.observation,
+          worker: { ...worker, failureDetails: { ...observerFailureDetails, elapsedMs: 9999 } },
+        },
+      }),
+    ).rejects.toThrow("JOURNAL_SCOPE_FAILURE_DETAILS_INVALID");
+    expect((await value.get(identity.key))?.scopeRecovery?.worker?.failureDetails).toEqual(
+      observerFailureDetails,
+    );
+  });
+});
 
 describe("Spatial reference SQLite execution journal", () => {
   it("commits the lock and execution claim as one real SQLite pair across reopen", async () => {

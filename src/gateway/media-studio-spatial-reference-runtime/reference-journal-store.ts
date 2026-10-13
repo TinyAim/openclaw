@@ -71,6 +71,7 @@ import {
   recomposePreparedCallback,
   sameAck,
 } from "./reference-journal-validation.js";
+import { validateSpatialReferenceV2ObserverExecDiagnostic } from "./v2-resource-watch.js";
 
 export type {
   SpatialReferenceExclusiveAdmissionClaimInput,
@@ -1162,6 +1163,23 @@ export function createSpatialReferenceJournalStore(params: {
         fail("JOURNAL_SCOPE_GUARDIAN_STALE");
       }
       const requested = input.observation.state;
+      const failureDetails = input.observation.worker?.failureDetails;
+      if (failureDetails !== undefined) {
+        const worker = input.observation.worker!;
+        if (
+          !validateSpatialReferenceV2ObserverExecDiagnostic(failureDetails) ||
+          !current.worker ||
+          worker.pid !== current.worker.pid ||
+          worker.startTime !== current.worker.startTime ||
+          worker.scopeId !== current.claim.scopeKey ||
+          worker.runId !== current.claim.runId ||
+          current.launchState !== "start_authorized" ||
+          (requested !== "extinct" && requested !== "unknown") ||
+          (recovery.worker?.failureDetails &&
+            canonicalJson(recovery.worker.failureDetails) !== canonicalJson(failureDetails))
+        )
+          fail("JOURNAL_SCOPE_FAILURE_DETAILS_INVALID");
+      }
       if (recovery.probes >= 3 && requested !== "unknown") {
         fail("JOURNAL_SCOPE_OBSERVATION_EXPIRED");
       }

@@ -35,7 +35,11 @@ import type {
   SpatialReferenceV2GuardianJournalContext,
   SpatialReferenceV2GuardianLaunchContext,
 } from "./v2-renderer.contract.js";
-import { validateSpatialReferenceV2NativeRssDiagnostic } from "./v2-resource-watch.js";
+import {
+  validateSpatialReferenceV2NativeRssDiagnostic,
+  validateSpatialReferenceV2ObserverExecDiagnostic,
+  type SpatialReferenceV2ObserverExecDiagnostic,
+} from "./v2-resource-watch.js";
 
 type GuardianJournalControl = {
   type: "spatial-guardian-journal-context-v1";
@@ -249,6 +253,7 @@ async function recordGuardianObservation(
               startTime: worker.startTime,
               scopeId: worker.scopeId,
               runId: worker.runId,
+              ...(workerFailureDetails ? { failureDetails: workerFailureDetails } : {}),
             },
           }
         : {}),
@@ -259,6 +264,7 @@ async function recordGuardianObservation(
 }
 
 let guardianGeneration: string | undefined;
+let workerFailureDetails: SpatialReferenceV2ObserverExecDiagnostic | undefined;
 
 async function run(): Promise<void> {
   const workerUrl = new URL(requiredArgument("--renderer-worker-url"));
@@ -373,11 +379,16 @@ async function run(): Promise<void> {
         (message as { type?: unknown }).type === "spatial-v2-failed"
       ) {
         const failure = message as Record<string, unknown>;
+        // Retain the first failure snapshot; a later message cannot rewrite its probe identity.
+        workerFailureDetails ??= validateSpatialReferenceV2ObserverExecDiagnostic(
+          failure.failureDetails,
+        );
         send({
           type: "spatial-v2-failed",
           code: failure.code,
           generation,
           nativeDiagnostic: validateSpatialReferenceV2NativeRssDiagnostic(failure.nativeDiagnostic),
+          failureDetails: workerFailureDetails,
         });
       }
     });
@@ -454,7 +465,10 @@ async function run(): Promise<void> {
       nowMs: Date.now(),
       observation: {
         state: "extinct",
-        worker: journalWorker,
+        worker: {
+          ...journalWorker,
+          ...(workerFailureDetails ? { failureDetails: workerFailureDetails } : {}),
+        },
         proof: posixProof,
         observedAtMs: Date.now(),
       },

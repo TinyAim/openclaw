@@ -28,6 +28,7 @@ import {
 import {
   createSpatialReferenceV2RssWatch,
   spatialReferenceV2NativeRssErrorDiagnostic,
+  spatialReferenceV2ObserverExecErrorDiagnostic,
 } from "./v2-resource-watch.js";
 
 type BrowserRenderHost = {
@@ -382,6 +383,8 @@ async function run(): Promise<void> {
     SPATIAL_V2_TOTAL_TIMEOUT_MS,
   );
   deadline.unref?.();
+  let failureStage = "request_accounting";
+  let frameIndex: number | null = null;
   const rssWatch = createSpatialReferenceV2RssWatch({
     resourceObserverExecutablePath: request.resourceObserverExecutablePath,
     rootPid: process.pid,
@@ -389,6 +392,7 @@ async function run(): Promise<void> {
     abort,
     maxTreeRssBytes: request.resourceProfile.maxTreeRssBytes,
     pollMs: request.resourceProfile.pollMs,
+    observationContext: () => ({ renderStage: failureStage, frameIndex }),
   });
   const stopTempWatch = startTempWatch({
     workDir: request.workDir,
@@ -414,7 +418,6 @@ async function run(): Promise<void> {
   const manifest: WorkerManifest = { outputs: [] };
   let toolchainProof: Awaited<ReturnType<typeof collectToolchainProof>> | undefined;
   let completed = false;
-  let failureStage = "request_accounting";
   const outputPng = async (params: { output: SpatialReferenceV2MissingOutput; png: Buffer }) => {
     const file = `${params.output.slot}-${params.output.ordinal}.png`;
     await writeBoundedFile({
@@ -533,6 +536,7 @@ async function run(): Promise<void> {
       let frameBytes = 0;
       const frameFiles: string[] = [];
       for (let index = 0; index < request.input.motionReference.frames.length; index += 1) {
+        frameIndex = index;
         if (controller.signal.aborted) {
           throw controller.signal.reason;
         }
@@ -549,6 +553,7 @@ async function run(): Promise<void> {
         frameFiles.push(file);
         frameBytes += png.length;
       }
+      frameIndex = null;
       const motionPath = path.join(request.workDir, "motion-reference.mp4");
       const maxMotionBytes = SPATIAL_V2_MAX_TEMP_BYTES - trackedBytes.value - frameBytes;
       if (maxMotionBytes < 1) {
@@ -616,10 +621,15 @@ async function run(): Promise<void> {
     throw new Error(
       workerFailureCode(controller.signal.aborted ? controller.signal.reason : error, failureStage),
       {
-        cause: spatialReferenceV2NativeRssErrorDiagnostic(
-          controller.signal.aborted ? controller.signal.reason : error,
-          failureStage,
-        ),
+        cause: {
+          nativeDiagnostic: spatialReferenceV2NativeRssErrorDiagnostic(
+            controller.signal.aborted ? controller.signal.reason : error,
+            failureStage,
+          ),
+          failureDetails: spatialReferenceV2ObserverExecErrorDiagnostic(
+            controller.signal.aborted ? controller.signal.reason : error,
+          ),
+        },
       },
     );
   } finally {
@@ -648,6 +658,7 @@ void run().catch((error: unknown) => {
     type: "spatial-v2-failed",
     code: workerFailureCode(error, "worker"),
     nativeDiagnostic: spatialReferenceV2NativeRssErrorDiagnostic(error),
+    failureDetails: spatialReferenceV2ObserverExecErrorDiagnostic(error),
   });
   process.exitCode = 1;
 });

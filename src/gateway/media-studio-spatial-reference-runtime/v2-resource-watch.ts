@@ -132,6 +132,65 @@ export type SpatialReferenceV2NativeRssDiagnostic = {
   renderStage: string;
 };
 
+/** Private probe-start context and observations frozen at the exec promise settlement. */
+export type SpatialReferenceV2ObserverExecDiagnostic = {
+  source: "darwin_observer_exec/v1";
+  code: string;
+  elapsedMs: number;
+  closeObserved: boolean;
+  exitCode: number | null;
+  signal: string | null;
+  stdoutBytes: number | null;
+  stderrBytes: number | null;
+  nativeStage: string;
+  renderStage: string;
+  frameIndex: number | null;
+};
+
+export function validateSpatialReferenceV2ObserverExecDiagnostic(
+  value: unknown,
+): SpatialReferenceV2ObserverExecDiagnostic | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as SpatialReferenceV2ObserverExecDiagnostic;
+  const integer = (v: unknown, min = 0, max = Number.MAX_SAFE_INTEGER) =>
+    Number.isSafeInteger(v) && Number(v) >= min && Number(v) <= max;
+  if (
+    Object.keys(row).toSorted().join(",") !==
+      "closeObserved,code,elapsedMs,exitCode,frameIndex,nativeStage,renderStage,signal,source,stderrBytes,stdoutBytes" ||
+    row.source !== "darwin_observer_exec/v1" ||
+    !integer(row.elapsedMs) ||
+    typeof row.code !== "string" ||
+    !/^spatial_v2_rss_observation_[a-z_]{1,64}$/u.test(row.code) ||
+    typeof row.closeObserved !== "boolean" ||
+    !(row.exitCode === null || integer(row.exitCode, -2147483648, 2147483647)) ||
+    !(
+      row.signal === null ||
+      (typeof row.signal === "string" &&
+        /^SIG(?:ABRT|ALRM|BUS|CHLD|CONT|FPE|HUP|ILL|INT|KILL|PIPE|QUIT|SEGV|STOP|TERM|TRAP|TSTP|TTIN|TTOU|USR1|USR2)$/u.test(
+          row.signal,
+        ))
+    ) ||
+    (!row.closeObserved && (row.exitCode !== null || row.signal !== null)) ||
+    (row.exitCode !== null && row.signal !== null) ||
+    ![row.stdoutBytes, row.stderrBytes].every((v) => v === null || integer(v)) ||
+    !(row.nativeStage === "unknown" || nativeStages.includes(row.nativeStage)) ||
+    !(row.renderStage === "unknown" || renderStages.includes(row.renderStage)) ||
+    !(row.frameIndex === null || integer(row.frameIndex, 0, 359))
+  )
+    return undefined;
+  return { ...row };
+}
+
+export function spatialReferenceV2ObserverExecErrorDiagnostic(
+  error: unknown,
+): SpatialReferenceV2ObserverExecDiagnostic | undefined {
+  if (!(error instanceof Error) || !error.cause || typeof error.cause !== "object")
+    return undefined;
+  return validateSpatialReferenceV2ObserverExecDiagnostic(
+    (error.cause as { failureDetails?: unknown }).failureDetails,
+  );
+}
+
 /** Credential-free private IPC diagnostics only; reject rather than strip extra fields. */
 export function validateSpatialReferenceV2NativeRssDiagnostic(
   value: unknown,
@@ -194,7 +253,11 @@ export function spatialReferenceV2NativeRssErrorDiagnostic(
   renderStage?: string,
 ): SpatialReferenceV2NativeRssDiagnostic | undefined {
   if (!(error instanceof Error)) return undefined;
-  const value = validateSpatialReferenceV2NativeRssDiagnostic(error.cause);
+  const value =
+    validateSpatialReferenceV2NativeRssDiagnostic(error.cause) ??
+    validateSpatialReferenceV2NativeRssDiagnostic(
+      (error.cause as { nativeDiagnostic?: unknown } | undefined)?.nativeDiagnostic,
+    );
   return value
     ? validateSpatialReferenceV2NativeRssDiagnostic({
         ...value,
@@ -203,12 +266,23 @@ export function spatialReferenceV2NativeRssErrorDiagnostic(
     : undefined;
 }
 
-async function darwinDescendantRssBytes(rootPid: number, executablePath?: string): Promise<number> {
+async function darwinDescendantRssBytes(
+  rootPid: number,
+  executablePath?: string,
+  context?: { renderStage: string; frameIndex: number | null },
+): Promise<number> {
   if (!executablePath || !path.isAbsolute(executablePath) || rootPid !== process.pid) {
     throw new Error("spatial_v2_rss_observation_parent_binding");
   }
   let stdout: string;
   let observerPid: number | undefined;
+  const startedAt = performance.now();
+  let closeObserved = false,
+    exitCode: number | null = null,
+    signal: string | null = null;
+  let stdoutBytes: number | null = null,
+    stderrBytes: number | null = null;
+  let detach = () => {};
   try {
     const child = spawnCommand([executablePath, "--observe-spatial-tree-rss", String(rootPid)], {
       encoding: "utf8",
@@ -219,6 +293,32 @@ async function darwinDescendantRssBytes(rootPid: number, executablePath?: string
       forceKillAfterDelay: 100,
     });
     observerPid = child.nodeChildProcess.pid;
+    const process = child.nodeChildProcess;
+    const onClose = (code: number | null, value: NodeJS.Signals | null) => {
+      closeObserved = true;
+      exitCode = code;
+      signal = value;
+    };
+    const countOut = (chunk: Buffer | string) => {
+      stdoutBytes = (stdoutBytes ?? 0) + Buffer.byteLength(chunk);
+    };
+    const countErr = (chunk: Buffer | string) => {
+      stderrBytes = (stderrBytes ?? 0) + Buffer.byteLength(chunk);
+    };
+    if (process.on) process.on("close", onClose);
+    if (process.stdout) {
+      stdoutBytes = 0;
+      process.stdout.on("data", countOut);
+    }
+    if (process.stderr) {
+      stderrBytes = 0;
+      process.stderr.on("data", countErr);
+    }
+    detach = () => {
+      process.off?.("close", onClose);
+      process.stdout?.off("data", countOut);
+      process.stderr?.off("data", countErr);
+    };
     ({ stdout } = await child);
   } catch (error) {
     const value =
@@ -227,12 +327,30 @@ async function darwinDescendantRssBytes(rootPid: number, executablePath?: string
       typeof value.stderr === "string"
         ? /spatial_v2_rss_observation_[a-z_]+/u.exec(value.stderr.slice(0, 512))?.[0]
         : undefined;
-    throw new Error(
-      value.timedOut
-        ? "spatial_v2_rss_observation_exec_timeout"
-        : (boundedReason ?? "spatial_v2_rss_observation_exec_failed"),
-      { cause: parseSpatialReferenceV2NativeRssDiagnostic(value.stderr) },
-    );
+    const code = value.timedOut
+      ? "spatial_v2_rss_observation_exec_timeout"
+      : (boundedReason ?? "spatial_v2_rss_observation_exec_failed");
+    throw new Error(code, {
+      cause: {
+        nativeDiagnostic: parseSpatialReferenceV2NativeRssDiagnostic(value.stderr),
+        failureDetails: validateSpatialReferenceV2ObserverExecDiagnostic({
+          source: "darwin_observer_exec/v1",
+          code,
+          elapsedMs: Math.floor(performance.now() - startedAt),
+          closeObserved,
+          exitCode,
+          signal,
+          stdoutBytes,
+          stderrBytes,
+          nativeStage: parseSpatialReferenceV2NativeRssDiagnostic(value.stderr)?.stage ?? "unknown",
+          renderStage: context?.renderStage ?? "unknown",
+          frameIndex: context?.frameIndex ?? null,
+        }),
+      },
+    });
+  } finally {
+    // A late close/data callback cannot mutate the persisted failure snapshot.
+    detach();
   }
   let sample: Record<string, unknown>;
   try {
@@ -321,6 +439,7 @@ export function createSpatialReferenceV2RssWatch(params: {
   maxTreeRssBytes: number;
   pollMs?: number;
   resourceObserverExecutablePath?: string;
+  observationContext?: () => { renderStage: string; frameIndex: number | null };
 }): SpatialReferenceV2RssWatch {
   if (!supportsSpatialReferenceV2ResourceLimits()) {
     throw new Error("spatial_v2_supervision_unsupported");
@@ -345,6 +464,7 @@ export function createSpatialReferenceV2RssWatch(params: {
               ? await darwinDescendantRssBytes(
                   params.rootPid,
                   params.resourceObserverExecutablePath,
+                  params.observationContext?.(),
                 )
               : await readSpatialReferenceV2TreeRssBytes(params.rootPid);
         } catch (error) {

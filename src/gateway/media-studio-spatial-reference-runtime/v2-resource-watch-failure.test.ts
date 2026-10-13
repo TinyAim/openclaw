@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { spawnCommand } from "../../process/exec.js";
 import {
@@ -7,6 +8,8 @@ import {
   parseSpatialReferenceV2NativeRssDiagnostic,
   validateSpatialReferenceV2NativeRssDiagnostic,
   spatialReferenceV2NativeRssErrorDiagnostic,
+  spatialReferenceV2ObserverExecErrorDiagnostic,
+  validateSpatialReferenceV2ObserverExecDiagnostic,
 } from "./v2-resource-watch.js";
 
 vi.mock("../../process/exec.js", () => ({ spawnCommand: vi.fn() }));
@@ -38,7 +41,171 @@ const watch = (abort = vi.fn()) =>
 afterEach(() => {
   Object.defineProperty(process, "platform", originalPlatform);
   vi.resetAllMocks();
+  vi.restoreAllMocks();
   vi.useRealTimers();
+});
+
+describe("private observer exec failure evidence", () => {
+  const detail = {
+    source: "darwin_observer_exec/v1",
+    code: "spatial_v2_rss_observation_exec_timeout",
+    elapsedMs: 3005,
+    closeObserved: false,
+    exitCode: null,
+    signal: null,
+    stdoutBytes: 5,
+    stderrBytes: 7,
+    nativeStage: "unknown",
+    renderStage: "frame_render",
+    frameIndex: 42,
+  };
+
+  it.each([
+    { ...detail, path: "/private/secret" },
+    { ...detail, stderr: "secret" },
+    { ...detail, elapsedMs: -1 },
+    { ...detail, stdoutBytes: NaN },
+    { ...detail, stderrBytes: Number.MAX_SAFE_INTEGER + 1 },
+    { ...detail, frameIndex: 360 },
+    { ...detail, nativeStage: "unrecognized" },
+    { ...detail, renderStage: "secret" },
+    { ...detail, signal: "SIGSECRET", closeObserved: true },
+    { ...detail, signal: { toString: () => "SIGKILL" }, closeObserved: true },
+    { ...detail, exitCode: 1 },
+    { ...detail, exitCode: 1, signal: "SIGKILL", closeObserved: true },
+    { ...detail, code: "/path/private error" },
+    { ...detail, closeObserved: "false" },
+  ])(
+    "rejects unknown fields, raw strings, impossible terminal state and unbounded scalars",
+    (value) => {
+      expect(validateSpatialReferenceV2ObserverExecDiagnostic(value)).toBeUndefined();
+    },
+  );
+
+  it.each([false, true])(
+    "freezes only actual close and partial stream observations (close=%s)",
+    async (closed) => {
+      Object.defineProperty(process, "platform", { value: "darwin" });
+      let reject!: (error: unknown) => void;
+      const nodeChild = Object.assign(new EventEmitter(), {
+        pid: observerPid,
+        stdout: new EventEmitter(),
+        stderr: new EventEmitter(),
+      });
+      const command = Object.assign(
+        new Promise<{ stdout: string }>((_, no) => {
+          reject = no;
+        }),
+        {
+          nodeChildProcess: nodeChild,
+        },
+      ) as unknown as ReturnType<typeof spawnCommand>;
+      vi.mocked(spawnCommand)
+        .mockReturnValueOnce(child(Promise.resolve(output())))
+        .mockReturnValue(command);
+      const now = vi.spyOn(performance, "now").mockReturnValue(10);
+      let context = { renderStage: "frame_render", frameIndex: 42 as number | null };
+      const abort = vi.fn();
+      const watcher = createSpatialReferenceV2RssWatch({
+        rootPid: process.pid,
+        signal: new AbortController().signal,
+        abort,
+        maxTreeRssBytes: 1_000_000,
+        resourceObserverExecutablePath: path,
+        observationContext: () => context,
+      });
+      try {
+        const rejected = watcher.sampleBoundary("post_first_webgl_frame").catch((error) => error);
+        await vi.waitFor(() => expect(nodeChild.listenerCount("close")).toBe(1));
+        context = { renderStage: "motion_encode", frameIndex: null };
+        nodeChild.stdout.emit("data", Buffer.from("密钥"));
+        nodeChild.stderr.emit("data", "private path/token");
+        if (closed) nodeChild.emit("close", null, "SIGKILL");
+        now.mockReturnValue(3015);
+        reject({
+          timedOut: true,
+          exitCode: 777,
+          signal: "secret",
+          stdout: "raw-secret",
+          stderr: "private path/token",
+        });
+        const error = await rejected;
+        const snapshot = spatialReferenceV2ObserverExecErrorDiagnostic(error);
+        expect(error.message).toBe("spatial_v2_rss_observation_exec_timeout");
+        expect(snapshot).toEqual({
+          ...detail,
+          closeObserved: closed,
+          signal: closed ? "SIGKILL" : null,
+          stdoutBytes: 6,
+          stderrBytes: 18,
+        });
+        expect(abort).toHaveBeenCalledWith(error);
+        expect(spatialReferenceV2NativeRssErrorDiagnostic(error)).toBeUndefined();
+        expect(JSON.stringify(snapshot)).not.toMatch(/密钥|private|token|secret|777/);
+        expect(nodeChild.listenerCount("close")).toBe(0);
+        expect(nodeChild.stdout.listenerCount("data")).toBe(0);
+        expect(nodeChild.stderr.listenerCount("data")).toBe(0);
+        nodeChild.emit("close", 0, null);
+        nodeChild.stdout.emit("data", "late");
+        expect(spatialReferenceV2ObserverExecErrorDiagnostic(error)).toEqual(snapshot);
+        expect(spawnCommand).toHaveBeenCalledTimes(2);
+        expect(spawnCommand).toHaveBeenLastCalledWith(
+          [path, "--observe-spatial-tree-rss", String(process.pid)],
+          expect.objectContaining({
+            timeout: 3000,
+            forceKillAfterDelay: 100,
+            maxBuffer: 4194304,
+            reject: true,
+          }),
+        );
+      } finally {
+        watcher.stop();
+      }
+    },
+  );
+
+  it("keeps typed native evidence separate and unknown exec output unavailable", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const stderr =
+      "Error: spatial_v2_rss_observation_node_missing pid=123 stage=task_rss errno=3 read_bytes=0 lifecycle_proven=true\n";
+    vi.mocked(spawnCommand).mockReturnValue(child(Promise.reject({ stderr })));
+    const watcher = watch();
+    const error = await watcher.sampleBoundary("before_ffmpeg").catch((value) => value);
+    expect(error.message).toBe("spatial_v2_rss_observation_node_missing");
+    expect(spatialReferenceV2ObserverExecErrorDiagnostic(error)).toMatchObject({
+      nativeStage: "task_rss",
+      renderStage: "unknown",
+      frameIndex: null,
+      closeObserved: false,
+      exitCode: null,
+      signal: null,
+      stdoutBytes: null,
+      stderrBytes: null,
+    });
+    expect(spatialReferenceV2NativeRssErrorDiagnostic(error)?.errno).toBe(3);
+    watcher.stop();
+  });
+
+  it("records no fabricated close/bytes for a synchronous spawn refusal", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    vi.mocked(spawnCommand).mockImplementation(() => {
+      throw new Error("raw-private-spawn-error");
+    });
+    const watcher = watch();
+    const error = await watcher.sampleBoundary("post_browser_launch").catch((value) => value);
+    expect(error.message).toBe("spatial_v2_rss_observation_exec_failed");
+    expect(spatialReferenceV2ObserverExecErrorDiagnostic(error)).toMatchObject({
+      closeObserved: false,
+      exitCode: null,
+      signal: null,
+      stdoutBytes: null,
+      stderrBytes: null,
+      nativeStage: "unknown",
+      renderStage: "unknown",
+      frameIndex: null,
+    });
+    watcher.stop();
+  });
 });
 
 describe("Darwin armed tree RSS observer fail-closed diagnostics", () => {
