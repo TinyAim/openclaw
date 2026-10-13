@@ -39,7 +39,11 @@ import {
   type SpatialReferenceV2ToolchainProof,
   type SpatialReferenceV2WorkerIdentity,
 } from "./v2-renderer.contract.js";
-import { supportsSpatialReferenceV2ResourceLimits } from "./v2-resource-watch.js";
+import {
+  supportsSpatialReferenceV2ResourceLimits,
+  validateSpatialReferenceV2NativeRssDiagnostic,
+  type SpatialReferenceV2NativeRssDiagnostic,
+} from "./v2-resource-watch.js";
 
 const STOP_CONFIRM_TIMEOUT_MS = 10_000;
 /** Factory callers import this rather than substituting factory.ts as the build parent. */
@@ -74,6 +78,7 @@ export type SpatialReferenceV2Renderer = {
 
 export type SpatialReferenceV2RendererConfig = {
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   referenceRenderHtmlPath: string;
   /** Required for a production relay; absent only in isolated worker-fixture tests. */
   buildIdentity?: {
@@ -93,6 +98,7 @@ type WorkerRequest = {
   input: SpatialReferenceV2RenderInput;
   outputs: SpatialReferenceV2MissingOutput[];
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   referenceRenderHtmlPath: string;
   workDir: string;
   resourceProfile: SpatialReferenceV2ResourceProfile;
@@ -144,6 +150,13 @@ async function resolveExecutionResourceProfile(params: {
       ...identity.manifestInput,
       rendererModuleUrl: SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL,
     });
+    if (
+      process.platform === "darwin" &&
+      params.config.resourceObserverExecutablePath !==
+        manifest.artifacts.resourceObserverExecutable?.path
+    ) {
+      throw new Error("spatial_v2_resource_observer_unavailable");
+    }
     actualDigest = spatialReferenceV2BuildDigest(manifest);
     resourceProfile = manifest.resourceProfile;
   } catch (error) {
@@ -319,6 +332,7 @@ async function runSupervisedWorker(params: {
       input: renderInput,
       outputs: [...params.outputs],
       chromiumExecutablePath: params.config.chromiumExecutablePath,
+      resourceObserverExecutablePath: params.config.resourceObserverExecutablePath,
       referenceRenderHtmlPath: params.config.referenceRenderHtmlPath,
       workDir,
       resourceProfile,
@@ -384,6 +398,7 @@ async function runSupervisedWorker(params: {
   let closeScopeCleanup: (() => Promise<void>) | undefined;
   let scopeCleanupClosed = false;
   let workerFailureCode: string | undefined;
+  let workerFailureDiagnostic: SpatialReferenceV2NativeRssDiagnostic | undefined;
   const guardianProtocol = createSpatialReferenceV2GuardianProtocol(generation);
   const rejectGuardianCheckpoints = (code: string): void => {
     workerFailureCode ??= code;
@@ -458,13 +473,18 @@ async function runSupervisedWorker(params: {
         }
         const protocol = guardianProtocol.consume(event);
         if (protocol?.kind === "protocol-error") {
+          workerFailureCode = protocol.code;
           rejectGuardianCheckpoints(protocol.code);
           return;
         }
         if (!protocol || protocol.kind === "failure") {
           if (protocol?.kind === "failure") {
+            workerFailureDiagnostic = validateSpatialReferenceV2NativeRssDiagnostic(
+              event.nativeDiagnostic,
+            );
             workerFailureCode =
-              typeof event.code === "string" && /^spatial_v2_[a-z0-9_]{1,120}$/.test(event.code)
+              typeof event.code === "string" &&
+              /^spatial_(?:v2|guardian)_[a-z0-9_]{1,120}$/.test(event.code)
                 ? event.code
                 : "spatial_v2_guardian_failed";
             rejectGuardianCheckpoints(workerFailureCode);
@@ -721,8 +741,10 @@ async function runSupervisedWorker(params: {
       guardianProtocol.markParentAuthorizedStart();
     }
     const exit = await guardianExit;
-    if (exit.reason !== "exit" || exit.exitCode !== 0)
-      throw new Error(workerFailureCode ?? "spatial_v2_worker_failed");
+    if (workerFailureCode || exit.reason !== "exit" || exit.exitCode !== 0)
+      throw new Error(workerFailureCode ?? "spatial_v2_worker_failed", {
+        cause: workerFailureDiagnostic,
+      });
     if (invalidToolchainProof) throw invalidToolchainProof;
     if (params.config.collectToolchainProof && !receivedToolchainProof) {
       throw new Error("spatial_v2_toolchain_proof_missing");

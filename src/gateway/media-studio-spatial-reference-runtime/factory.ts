@@ -208,6 +208,10 @@ export async function createMediaStudioSpatialReferenceRuntimeFromEnv(
           env,
           "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_CHROMIUM_PATH",
         ),
+        resourceObserverExecutablePath: envString(
+          env,
+          "OPENCLAW_MEDIA_STUDIO_SPATIAL_RENDER_RESOURCE_OBSERVER_PATH",
+        ),
         journal,
         runtimeId,
         guardianJournal,
@@ -224,6 +228,7 @@ export async function createMediaStudioSpatialReferenceRuntimeFromEnv(
     ? (v2Toolchain as {
         referenceRenderHtmlPath: string;
         chromiumExecutablePath: string;
+        resourceObserverExecutablePath?: string;
         rendererBuildDigest: string;
         buildIdentity: {
           advertisedDigest: string;
@@ -321,6 +326,7 @@ export async function createMediaStudioSpatialReferenceRuntimeFromEnv(
       ? {
           v2Renderer: createSpatialReferenceV2Renderer({
             chromiumExecutablePath: enabledV2Toolchain!.chromiumExecutablePath,
+            resourceObserverExecutablePath: enabledV2Toolchain!.resourceObserverExecutablePath,
             referenceRenderHtmlPath: enabledV2Toolchain!.referenceRenderHtmlPath,
             buildIdentity: enabledV2Toolchain!.buildIdentity,
           }),

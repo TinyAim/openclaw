@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { runExec } from "../../process/exec.js";
+import { spawnCommand } from "../../process/exec.js";
 
 const RSS_POLL_MS = 100;
 type LinuxProcess = { pid: number; ppid: number; rssBytes: number };
@@ -88,96 +88,201 @@ async function linuxDescendantRssBytes(rootPid: number): Promise<number | undefi
   return rssBytes;
 }
 
-function parseDarwinProcessSnapshot(output: string): Map<number, LinuxProcess> | undefined {
-  const processes = new Map<number, LinuxProcess>();
-  for (const line of output.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      continue;
-    }
-    const [pidValue, ppidValue, residentKbValue, ...extra] = trimmed.split(/\s+/u);
-    const pid = Number(pidValue);
-    const ppid = Number(ppidValue);
-    const residentKb = Number(residentKbValue);
-    if (
-      extra.length > 0 ||
-      !Number.isSafeInteger(pid) ||
-      pid <= 0 ||
-      !Number.isSafeInteger(ppid) ||
-      ppid < 0 ||
-      !Number.isSafeInteger(residentKb) ||
-      residentKb < 0 ||
-      processes.has(pid)
-    ) {
-      return undefined;
-    }
-    processes.set(pid, { pid, ppid, rssBytes: residentKb * 1024 });
-  }
-  return processes;
-}
+export const SPATIAL_DARWIN_RSS_PROTOCOL = "darwin_spatial_tree_rss_span/v1";
 
-function descendantRssBytes(
-  rootPid: number,
-  processes: ReadonlyMap<number, LinuxProcess>,
-): number | undefined {
-  if (!processes.has(rootPid)) {
+const nativeStages = [
+  "observation",
+  "bsd_identity",
+  "child_census",
+  "parent_identity",
+  "census_incarnation",
+  "child_parent",
+  "event_arm",
+  "event_read",
+  "event_flags",
+  "root_event",
+  "span_event",
+  "node_exit_proven",
+  "task_rss",
+  "rss_identity",
+  "stable_census",
+  "root_pin",
+];
+const renderStages = [
+  "observer",
+  "worker",
+  "request_accounting",
+  "browser_launch",
+  "toolchain_probe",
+  "page_create",
+  "reference_host_load",
+  "frame_render",
+  "motion_encode",
+  "motion_verify",
+  "render_host_dispose",
+  "manifest_write",
+];
+export type SpatialReferenceV2NativeRssDiagnostic = {
+  source: "darwin_native_rss/v1";
+  pid: number;
+  errno: number;
+  readBytes: number;
+  stage: string;
+  lifecycleProven: boolean;
+  renderStage: string;
+};
+
+/** Credential-free private IPC diagnostics only; reject rather than strip extra fields. */
+export function validateSpatialReferenceV2NativeRssDiagnostic(
+  value: unknown,
+): SpatialReferenceV2NativeRssDiagnostic | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (
+    Object.keys(row).toSorted().join(",") !==
+      "errno,lifecycleProven,pid,readBytes,renderStage,source,stage" ||
+    row.source !== "darwin_native_rss/v1" ||
+    !Number.isSafeInteger(row.pid) ||
+    Number(row.pid) < 0 ||
+    Number(row.pid) > 2147483647 ||
+    !Number.isSafeInteger(row.errno) ||
+    Number(row.errno) < 0 ||
+    Number(row.errno) > 2147483647 ||
+    !Number.isSafeInteger(row.readBytes) ||
+    Number(row.readBytes) < -1 ||
+    Number(row.readBytes) > 4194304 ||
+    typeof row.lifecycleProven !== "boolean" ||
+    typeof row.stage !== "string" ||
+    !nativeStages.includes(row.stage) ||
+    typeof row.renderStage !== "string" ||
+    !renderStages.includes(row.renderStage)
+  )
     return undefined;
-  }
-  const children = new Map<number, number[]>();
-  for (const process of processes.values()) {
-    const descendants = children.get(process.ppid) ?? [];
-    descendants.push(process.pid);
-    children.set(process.ppid, descendants);
-  }
-  const pending = [rootPid];
-  const visited = new Set<number>();
-  let rssBytes = 0;
-  while (pending.length > 0) {
-    const pid = pending.pop()!;
-    if (visited.has(pid)) {
-      continue;
-    }
-    visited.add(pid);
-    const process = processes.get(pid);
-    if (!process) {
-      return undefined;
-    }
-    rssBytes += process.rssBytes;
-    pending.push(...(children.get(pid) ?? []));
-  }
-  return rssBytes;
+  return {
+    source: "darwin_native_rss/v1",
+    pid: Number(row.pid),
+    errno: Number(row.errno),
+    readBytes: Number(row.readBytes),
+    stage: String(row.stage),
+    lifecycleProven: row.lifecycleProven,
+    renderStage: String(row.renderStage),
+  };
 }
 
-async function darwinDescendantRssBytes(rootPid: number): Promise<number | undefined> {
+export function parseSpatialReferenceV2NativeRssDiagnostic(
+  stderr: unknown,
+): SpatialReferenceV2NativeRssDiagnostic | undefined {
+  if (typeof stderr !== "string" || stderr.length > 512) return undefined;
+  const match =
+    /^Error: spatial_v2_rss_observation_[a-z_]{1,64} pid=(\d{1,10}) stage=([a-z_]{1,32}) errno=(\d{1,10}) read_bytes=(-?\d{1,10}) lifecycle_proven=(true|false)\s*$/u.exec(
+      stderr,
+    );
+  if (!match) return undefined;
+  return validateSpatialReferenceV2NativeRssDiagnostic({
+    source: "darwin_native_rss/v1",
+    pid: Number(match[1]),
+    stage: match[2],
+    errno: Number(match[3]),
+    readBytes: Number(match[4]),
+    lifecycleProven: match[5] === "true",
+    renderStage: "observer",
+  });
+}
+
+export function spatialReferenceV2NativeRssErrorDiagnostic(
+  error: unknown,
+  renderStage?: string,
+): SpatialReferenceV2NativeRssDiagnostic | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const value = validateSpatialReferenceV2NativeRssDiagnostic(error.cause);
+  return value
+    ? validateSpatialReferenceV2NativeRssDiagnostic({
+        ...value,
+        renderStage: renderStage ?? value.renderStage,
+      })
+    : undefined;
+}
+
+async function darwinDescendantRssBytes(rootPid: number, executablePath?: string): Promise<number> {
+  if (!executablePath || !path.isAbsolute(executablePath) || rootPid !== process.pid) {
+    throw new Error("spatial_v2_rss_observation_parent_binding");
+  }
+  let stdout: string;
+  let observerPid: number | undefined;
   try {
-    // /bin/ps is an OS-owned, absolute-path observer. The one-shot snapshot keeps
-    // PID/PPID/RSS internally consistent rather than stitching multiple reads.
-    const { stdout } = await runExec("/bin/ps", ["-axo", "pid=,ppid=,rss="], {
-      timeoutMs: 1_000,
+    const child = spawnCommand([executablePath, "--observe-spatial-tree-rss", String(rootPid)], {
+      encoding: "utf8",
+      stdin: "ignore",
+      reject: true,
+      timeout: 3_000,
       maxBuffer: 4 * 1024 * 1024,
-      logOutput: false,
+      forceKillAfterDelay: 100,
     });
-    const processes = parseDarwinProcessSnapshot(stdout);
-    return processes ? descendantRssBytes(rootPid, processes) : undefined;
-  } catch {
-    return undefined;
+    observerPid = child.nodeChildProcess.pid;
+    ({ stdout } = await child);
+  } catch (error) {
+    const value =
+      error && typeof error === "object" ? (error as { timedOut?: boolean; stderr?: unknown }) : {};
+    const boundedReason =
+      typeof value.stderr === "string"
+        ? /spatial_v2_rss_observation_[a-z_]+/u.exec(value.stderr.slice(0, 512))?.[0]
+        : undefined;
+    throw new Error(
+      value.timedOut
+        ? "spatial_v2_rss_observation_exec_timeout"
+        : (boundedReason ?? "spatial_v2_rss_observation_exec_failed"),
+      { cause: parseSpatialReferenceV2NativeRssDiagnostic(value.stderr) },
+    );
   }
+  let sample: Record<string, unknown>;
+  try {
+    sample = JSON.parse(stdout) as Record<string, unknown>;
+  } catch {
+    throw new Error("spatial_v2_rss_observation_snapshot_invalid");
+  }
+  if (
+    !sample ||
+    typeof sample !== "object" ||
+    Array.isArray(sample) ||
+    Object.keys(sample).toSorted().join(",") !==
+      "nodeCount,observerPid,protocol,rootPid,rssBytes,verifiedSpanMs" ||
+    sample.protocol !== SPATIAL_DARWIN_RSS_PROTOCOL ||
+    sample.rootPid !== rootPid ||
+    !Number.isSafeInteger(observerPid) ||
+    sample.observerPid !== observerPid ||
+    !Number.isSafeInteger(sample.rssBytes) ||
+    Number(sample.rssBytes) <= 0 ||
+    !Number.isSafeInteger(sample.nodeCount) ||
+    Number(sample.nodeCount) < 2 ||
+    Number(sample.nodeCount) > Math.floor((4 * 1024 * 1024) / 24) ||
+    !Number.isSafeInteger(sample.verifiedSpanMs) ||
+    Number(sample.verifiedSpanMs) < 0 ||
+    Number(sample.verifiedSpanMs) >= 3_000
+  ) {
+    throw new Error("spatial_v2_rss_observation_snapshot_invalid");
+  }
+  return Number(sample.rssBytes);
 }
 
-/** Verified full-tree RSS observers: Linux procfs and Darwin's atomic ps snapshot. */
+/** Verified tree observers: Linux procfs and Darwin armed, stable libproc measurement span. */
 export function supportsSpatialReferenceV2ResourceLimits(): boolean {
   return process.platform === "linux" || process.platform === "darwin";
 }
 
-/** Return an exact one-snapshot tree RSS reading, or undefined when observation is incomplete. */
+/** Fresh sum over identity-verified nodes; unknown observation stays unavailable. */
 export async function readSpatialReferenceV2TreeRssBytes(
   rootPid: number,
+  resourceObserverExecutablePath?: string,
 ): Promise<number | undefined> {
   if (process.platform === "linux") {
     return await linuxDescendantRssBytes(rootPid);
   }
   if (process.platform === "darwin") {
-    return await darwinDescendantRssBytes(rootPid);
+    try {
+      return await darwinDescendantRssBytes(rootPid, resourceObserverExecutablePath);
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }
@@ -200,6 +305,7 @@ export type SpatialReferenceV2RssWatch = {
   /** Boundary samples are awaited; an unavailable/over-limit observation aborts before work continues. */
   sampleBoundary: (phase: Exclude<SpatialReferenceV2RssSamplePhase, "periodic">) => Promise<void>;
   stop: () => void;
+  /** Maximum observed sample sum, not a continuous peak between measurement spans. */
   diagnostics: () => { peakBytes: number; samples: readonly SpatialReferenceV2RssSample[] };
 };
 
@@ -214,32 +320,56 @@ export function createSpatialReferenceV2RssWatch(params: {
   abort: (reason: Error) => void;
   maxTreeRssBytes: number;
   pollMs?: number;
+  resourceObserverExecutablePath?: string;
 }): SpatialReferenceV2RssWatch {
   if (!supportsSpatialReferenceV2ResourceLimits()) {
     throw new Error("spatial_v2_supervision_unsupported");
   }
   let stopped = false;
   let sampling: Promise<void> = Promise.resolve();
+  let pendingSamples = 0;
   let peakBytes = 0;
   const samples: SpatialReferenceV2RssSample[] = [];
   const sample = (phase: SpatialReferenceV2RssSamplePhase): Promise<void> => {
-    const next = sampling.then(async () => {
-      if (stopped || params.signal.aborted) return;
-      const rssBytes = await readSpatialReferenceV2TreeRssBytes(params.rootPid);
-      if (rssBytes === undefined) {
-        const error = new Error("spatial_v2_rss_observation_unavailable");
-        params.abort(error);
-        throw error;
-      }
-      const observation = { phase, rssBytes, observedAtMs: Date.now() };
-      samples.push(observation);
-      peakBytes = Math.max(peakBytes, rssBytes);
-      if (rssBytes > params.maxTreeRssBytes) {
-        const error = new Error("spatial_v2_rss_limit_exceeded");
-        params.abort(error);
-        throw error;
-      }
-    });
+    // Expired interval ticks are not fresh observations. Bound the interval
+    // queue while retaining every mandatory boundary as a new awaited read.
+    if (phase === "periodic" && pendingSamples > 0) return Promise.resolve();
+    pendingSamples += 1;
+    const next = sampling
+      .then(async () => {
+        if (stopped || params.signal.aborted) return;
+        let rssBytes: number | undefined;
+        try {
+          rssBytes =
+            process.platform === "darwin"
+              ? await darwinDescendantRssBytes(
+                  params.rootPid,
+                  params.resourceObserverExecutablePath,
+                )
+              : await readSpatialReferenceV2TreeRssBytes(params.rootPid);
+        } catch (error) {
+          params.abort(
+            error instanceof Error ? error : new Error("spatial_v2_rss_observation_unavailable"),
+          );
+          throw error;
+        }
+        if (rssBytes === undefined) {
+          const error = new Error("spatial_v2_rss_observation_unavailable");
+          params.abort(error);
+          throw error;
+        }
+        const observation = { phase, rssBytes, observedAtMs: Date.now() };
+        samples.push(observation);
+        peakBytes = Math.max(peakBytes, rssBytes);
+        if (rssBytes > params.maxTreeRssBytes) {
+          const error = new Error("spatial_v2_rss_limit_exceeded");
+          params.abort(error);
+          throw error;
+        }
+      })
+      .finally(() => {
+        pendingSamples -= 1;
+      });
     // A failed periodic sample must not poison a later mandatory boundary;
     // that boundary still re-observes and sees the controller's abort fence.
     sampling = next.catch(() => undefined);
@@ -267,6 +397,7 @@ export function startSpatialReferenceV2RssWatch(params: {
   signal: AbortSignal;
   abort: (reason: Error) => void;
   maxTreeRssBytes?: number;
+  resourceObserverExecutablePath?: string;
 }): () => void {
   return createSpatialReferenceV2RssWatch({
     ...params,

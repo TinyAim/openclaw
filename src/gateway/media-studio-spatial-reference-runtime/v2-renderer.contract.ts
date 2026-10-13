@@ -7,8 +7,8 @@ import type {
 } from "./reference-journal-record.js";
 
 export const SPATIAL_V2_FPS = 12 as const;
-export const SPATIAL_V2_MAX_DURATION_MS = 10_000;
-export const SPATIAL_V2_MAX_FRAMES = 120;
+export const SPATIAL_V2_MAX_DURATION_MS = 30_000;
+export const SPATIAL_V2_MAX_FRAMES = 360;
 export const SPATIAL_V2_MAX_WIDTH = 1280;
 export const SPATIAL_V2_MAX_PIXELS = 921_600;
 export const SPATIAL_V2_MAX_TEMP_BYTES = 512 * 1024 * 1024;

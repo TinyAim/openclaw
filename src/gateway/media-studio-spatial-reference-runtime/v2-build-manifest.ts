@@ -17,6 +17,8 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import { resolveFfmpegBin } from "../../media/ffmpeg-exec.js";
+import { runExec } from "../../process/exec.js";
+import { SPATIAL_DARWIN_RSS_PROTOCOL } from "./v2-resource-watch.js";
 
 export const SPATIAL_V2_RESOURCE_PROFILE_ID = "spatial_tree_rss_2gib/v1" as const;
 export const SPATIAL_V2_RESOURCE_PROFILE_VERSION = 1 as const;
@@ -27,7 +29,7 @@ export const SPATIAL_V2_RESOURCE_PROFILE_POLL_MS = 100 as const;
 export type SpatialReferenceV2ResourceProfile = {
   profileId: typeof SPATIAL_V2_RESOURCE_PROFILE_ID;
   profileVersion: typeof SPATIAL_V2_RESOURCE_PROFILE_VERSION;
-  metric: "darwin_ps_tree_rss_sum_v1" | "linux_proc_status_tree_rss_sum_v1";
+  metric: "darwin_libproc_tree_rss_span_v1" | "linux_proc_status_tree_rss_sum_v1";
   rootScope: "isolated_worker_plus_live_descendants";
   maxTreeRssBytes: number;
   minHostAvailableBytes: number;
@@ -64,9 +66,20 @@ export type SpatialReferenceV2BuildManifest = {
     rendererParent: { url: string; sha256: string };
     rendererWorker: { url: string; sha256: string };
     guardianWorker: { url: string; sha256: string };
+    /** Source-only dependency; packaged builds inline this private Guardian owner. */
+    guardianProcessSource?: { url: string; sha256: string };
     referenceRenderHtml: { url: string; sha256: string };
     referenceRenderHost: { url: string; sha256: string };
     chromiumExecutable: { path: string; sha256: string; identityScope: "executable_entry" };
+    resourceObserverExecutable?: {
+      path: string;
+      sha256: string;
+      protocol: typeof SPATIAL_DARWIN_RSS_PROTOCOL;
+      timeoutMs: 3000;
+      maxCaptureBytes: 4194304;
+      maxFreshCensusAttempts: 128;
+      invalidSpanPolicy: "discard_whole_then_fresh_if_lifecycle_proven";
+    };
     nodeExecutable: { path: string; sha256: string };
     ffmpegExecutable: { path: string; sha256: string };
     ffprobeExecutable: { path: string; sha256: string };
@@ -79,6 +92,7 @@ export type SpatialReferenceV2BuildManifestInput = {
   rendererModuleUrl: string;
   referenceRenderHtmlPath: string;
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   toolchain: SpatialReferenceV2ToolchainIdentity;
   resourceProfile?: SpatialReferenceV2ResourceProfile;
 };
@@ -126,7 +140,7 @@ async function urlIdentity(url: URL): Promise<{ url: string; sha256: string }> {
 }
 
 function resourceMetric(): SpatialReferenceV2ResourceProfile["metric"] {
-  if (process.platform === "darwin") return "darwin_ps_tree_rss_sum_v1";
+  if (process.platform === "darwin") return "darwin_libproc_tree_rss_span_v1";
   if (process.platform === "linux") return "linux_proc_status_tree_rss_sum_v1";
   throw new Error("spatial_v2_supervision_unsupported");
 }
@@ -185,6 +199,39 @@ async function resolveTsxLoader(parentUrl: string): Promise<{ url: string; sha25
 export async function buildSpatialReferenceV2Manifest(
   input: SpatialReferenceV2BuildManifestInput,
 ): Promise<SpatialReferenceV2BuildManifest> {
+  if (input.resourceProfile && input.resourceProfile.metric !== resourceMetric()) {
+    throw new Error("spatial_v2_resource_observer_unavailable");
+  }
+  let resourceObserverExecutable: SpatialReferenceV2BuildManifest["artifacts"]["resourceObserverExecutable"];
+  if (process.platform === "darwin") {
+    if (!input.resourceObserverExecutablePath) {
+      throw new Error("spatial_v2_resource_observer_unavailable");
+    }
+    const identity = await fileIdentityFromPath(input.resourceObserverExecutablePath);
+    try {
+      const { stdout, stderr } = await runExec(identity.path, ["--spatial-tree-rss-protocol"], {
+        timeoutMs: 3000,
+        maxBuffer: 4 * 1024 * 1024,
+        logOutput: false,
+      });
+      if (stdout.trim() !== SPATIAL_DARWIN_RSS_PROTOCOL || stderr.trim()) {
+        throw new Error();
+      }
+      if ((await fileIdentityFromPath(identity.path)).sha256 !== identity.sha256) {
+        throw new Error();
+      }
+    } catch (error) {
+      throw new Error("spatial_v2_resource_observer_unavailable", { cause: error });
+    }
+    resourceObserverExecutable = {
+      ...identity,
+      protocol: SPATIAL_DARWIN_RSS_PROTOCOL,
+      timeoutMs: 3000,
+      maxCaptureBytes: 4194304,
+      maxFreshCensusAttempts: 128,
+      invalidSpanPolicy: "discard_whole_then_fresh_if_lifecycle_proven",
+    };
+  }
   const parentUrl = new URL(input.rendererModuleUrl);
   const workerUrl = resolveRuntimeWorkerUrl({
     currentModuleUrl: parentUrl.href,
@@ -223,6 +270,9 @@ export async function buildSpatialReferenceV2Manifest(
   ]);
   const source = isSourceWorker(workerUrl) || isSourceWorker(guardianUrl);
   const tsxLoader = source ? await resolveTsxLoader(parentUrl.href) : undefined;
+  const guardianProcessSource = isSourceWorker(guardianUrl)
+    ? await urlIdentity(new URL("./spatial-guardian-process.ts", guardianUrl))
+    : undefined;
   return {
     contractVersion: "spatial_reference_render/v2",
     resourceProfile: input.resourceProfile ?? createSpatialReferenceV2ResourceProfile(),
@@ -233,9 +283,11 @@ export async function buildSpatialReferenceV2Manifest(
       ...(tsxLoader ? { tsxLoader } : {}),
     },
     artifacts: {
+      ...(resourceObserverExecutable ? { resourceObserverExecutable } : {}),
       rendererParent,
       rendererWorker,
       guardianWorker,
+      ...(guardianProcessSource ? { guardianProcessSource } : {}),
       referenceRenderHtml,
       referenceRenderHost,
       chromiumExecutable: { ...chromium, identityScope: "executable_entry" },

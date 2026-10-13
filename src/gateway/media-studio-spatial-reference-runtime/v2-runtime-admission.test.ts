@@ -1,5 +1,7 @@
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { SPATIAL_REFERENCE_QUALIFICATION_KEY } from "./reference-journal-admission.js";
 import { createSpatialReferenceJournal } from "./reference-journal.js";
 import type { SpatialReferenceJournalOwner } from "./reference-journal.js";
@@ -11,6 +13,13 @@ import type {
 import { resolveSpatialReferenceV2RuntimeToolchain } from "./v2-runtime-admission.js";
 
 const bundleDir = path.resolve(process.cwd(), "../../../apps/control_surface/spatial_babylon/dist");
+
+const observerRoot = mkdtempSync(path.join(os.tmpdir(), "spatial-observer-fixture-"));
+const resourceObserverExecutablePath = path.join(observerRoot, "fixture-observer");
+writeFileSync(resourceObserverExecutablePath, "#!/bin/sh\necho darwin_spatial_tree_rss_span/v1\n", {
+  mode: 0o700,
+});
+afterAll(() => rmSync(observerRoot, { recursive: true, force: true }));
 
 const fakeToolchain = {
   chromiumVersion: "test-chromium",
@@ -52,6 +61,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -72,6 +82,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -117,6 +128,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -150,6 +162,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const params = {
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged" as const,
@@ -182,6 +195,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -193,6 +207,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     });
     expect(result).toMatchObject({
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       buildIdentity: {
         manifestInput: {
           toolchain: {
@@ -230,6 +245,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -342,6 +358,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       runtimeId: "runtime-admission",
       executionMode: "packaged",
@@ -390,6 +407,7 @@ describe("Spatial v2 runtime qualification admission", () => {
     const result = await resolveSpatialReferenceV2RuntimeToolchain({
       bundleDir,
       chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
       journal,
       guardianJournal: { stateDir: "/fixture/state", namespace: "missing-identity" },
       runtimeId: "runtime-admission",

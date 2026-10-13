@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -29,15 +29,22 @@ import {
 // Opt-in isolated real tools: never opens the user's browser or installs binaries.
 const executable = process.env.SPATIAL_TEST_CHROMIUM;
 const html = process.env.SPATIAL_TEST_REFERENCE_HTML;
-const config = { chromiumExecutablePath: executable ?? "", referenceRenderHtmlPath: html ?? "" };
+const config = {
+  resourceObserverExecutablePath: process.env.SPATIAL_TEST_RESOURCE_OBSERVER_PATH,
+  chromiumExecutablePath: executable ?? "",
+  referenceRenderHtmlPath: html ?? "",
+};
 const execFileAsync = promisify(execFile);
 const temporaryStateDirectories: string[] = [];
+const preservedFailedStateDirectories = new Set<string>();
 
 afterEach(async () => {
   closePluginStateDatabase();
   await Promise.all(
     temporaryStateDirectories.splice(0).map(async (directory) => {
-      await rm(directory, { recursive: true, force: true });
+      if (!preservedFailedStateDirectories.has(directory)) {
+        await rm(directory, { recursive: true, force: true });
+      }
     }),
   );
 });
@@ -287,6 +294,38 @@ async function renderWithDurableGuardian(
 
   let guardian: SpatialReferenceJournalScopeGuardian | undefined;
   let worker: SpatialReferenceJournalWorker | undefined;
+  let lastObservation: SpatialReferenceV2ScopeObservation | undefined;
+  const evidenceDir = process.env.SPATIAL_TEST_EVIDENCE_DIR;
+  const persistLifecycle = async (phase: string, journalRow?: unknown, error?: unknown) => {
+    if (!evidenceDir) return;
+    await mkdir(evidenceDir, { recursive: true });
+    await writeFile(
+      path.join(evidenceDir, "runtime-lifecycle-identity.json"),
+      JSON.stringify(
+        {
+          classification: "isolated_actual_runtime_journal_not_project_artifact",
+          capturedUtc: new Date().toISOString(),
+          phase,
+          stateDir: directory,
+          namespace,
+          scopeKey,
+          runId,
+          identity,
+          owner,
+          guardian,
+          worker,
+          observation: lastObservation,
+          ...(journalRow ? { journalReadback: journalRow } : {}),
+          ...(error
+            ? { failureCode: error instanceof Error ? error.message.slice(0, 160) : "unknown" }
+            : {}),
+        },
+        null,
+        2,
+      ),
+    );
+  };
+  await persistLifecycle("claimed");
   const lifecycle: SpatialReferenceV2RenderLifecycle = {
     executionScope: { scopeKey, runId },
     guardianJournal: {
@@ -322,6 +361,7 @@ async function renderWithDurableGuardian(
         armedAtMs: Date.now(),
       };
       await journal.armScopeGuardian({ identity, owner, nowMs: Date.now(), guardian });
+      await persistLifecycle("guardian_armed");
     },
     onSpawnIntent: async () => {
       if (!guardian) throw new Error("spatial_render_guardian_identity_missing");
@@ -341,6 +381,7 @@ async function renderWithDurableGuardian(
         phase: "worker_started",
         worker,
       });
+      await persistLifecycle("worker_prepared");
     },
     onStartAuthorized: async (_receiptGuardian, receipt) => {
       if (!worker || receipt.pid !== worker.pid || receipt.startTime !== worker.startTime) {
@@ -359,6 +400,8 @@ async function renderWithDurableGuardian(
       ) {
         throw new Error("spatial_render_scope_observation_invalid");
       }
+      lastObservation = observation;
+      await persistLifecycle("scope_observed");
     },
     onExited: async (receipt) => {
       if (!worker || receipt.pid !== worker.pid || receipt.startTime !== worker.startTime) {
@@ -377,24 +420,31 @@ async function renderWithDurableGuardian(
       });
     },
   };
-  const result = await createSpatialReferenceV2Renderer(config).render(
-    scene,
-    new AbortController().signal,
-    lifecycle,
-  );
-  await expect(journal.get(identity.key)).resolves.toMatchObject({
-    launchState: "start_authorized",
-    worker: { scopeId: scopeKey, runId, exited: { reason: "completed" } },
-    scopeRecovery: {
-      state: "extinct",
-      proof: {
-        protocol: "posix_group_observation_v1",
-        processGroupId: expect.any(Number),
-        rootState: "dead",
+  try {
+    const result = await createSpatialReferenceV2Renderer(config).render(
+      scene,
+      new AbortController().signal,
+      lifecycle,
+    );
+    await expect(journal.get(identity.key)).resolves.toMatchObject({
+      launchState: "start_authorized",
+      worker: { scopeId: scopeKey, runId, exited: { reason: "completed" } },
+      scopeRecovery: {
+        state: "extinct",
+        proof: {
+          protocol: "posix_group_observation_v1",
+          processGroupId: expect.any(Number),
+          rootState: "dead",
+        },
       },
-    },
-  });
-  return result;
+    });
+    await persistLifecycle("completed", await journal.get(identity.key));
+    return result;
+  } catch (error) {
+    if (evidenceDir) preservedFailedStateDirectories.add(directory);
+    await persistLifecycle("failed", await journal.get(identity.key), error);
+    throw error;
+  }
 }
 
 async function decodePngRgb(png: Buffer, label: string): Promise<Buffer> {
@@ -459,7 +509,12 @@ function foregroundBounds(rgb: Buffer, width = 160, height = 90) {
   };
 }
 
-async function decodeSelectedMotionFrames(video: Buffer, frameCount: number) {
+async function decodeSelectedMotionFrames(
+  video: Buffer,
+  frameCount: number,
+  width = 160,
+  height = 90,
+) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "spatial-motion-roi-"));
   temporaryStateDirectories.push(directory);
   const file = path.join(directory, "motion.mp4");
@@ -483,30 +538,118 @@ async function decodeSelectedMotionFrames(video: Buffer, frameCount: number) {
       "rgb24",
       "-",
     ],
-    { encoding: "buffer", maxBuffer: 160 * 90 * 3 * 3 + 1024 },
+    { encoding: "buffer", maxBuffer: width * height * 3 * 3 + 1024 },
   );
   const raw = Buffer.isBuffer(decoded.stdout)
     ? decoded.stdout
     : Buffer.from(decoded.stdout, "binary");
-  const frameSize = 160 * 90 * 3;
+  const frameSize = width * height * 3;
   expect(raw).toHaveLength(frameSize * 3);
   return [0, 1, 2].map((index) => raw.subarray(index * frameSize, (index + 1) * frameSize));
 }
 
 describe.skipIf(!executable || !html)("Spatial isolated real Chromium/Babylon/FFmpeg", () => {
-  for (const duration of [1, 83, 84, 9999, 10000]) {
+  for (const duration of [1, 83, 84, 9999, 10000, 30000]) {
     it(`renders and fully decodes ${duration}ms`, async () => {
-      const result = await renderWithDurableGuardian(input(duration));
+      const request = input(duration);
+      if (duration === 30_000) {
+        // Exercise the actual Runtime qualification dimensions at its duration
+        // ceiling rather than treating a small diagnostic video as that proof.
+        request.renderIntent.width = 1280;
+        request.renderIntent.height = 720;
+      }
+      const result = await renderWithDurableGuardian(request);
       expect(result.frameCount).toBe(Math.ceil((duration * 12) / 1000));
       expect(result.motionMp4.subarray(4, 8).toString()).toBe("ftyp");
       expect(result.compositionPng.length).toBeGreaterThan(100);
       expect(result.referencePngs).toHaveLength(3);
       expect(result.evaluatorVersion).toBe("spatial_frame_eval/v4");
+      if (duration === 30_000) {
+        expect(result.width).toBe(1280);
+        expect(result.height).toBe(720);
+        const frames = await decodeSelectedMotionFrames(
+          result.motionMp4,
+          result.frameCount,
+          1280,
+          720,
+        );
+        expect(frames[0]!.equals(frames[1]!)).toBe(false);
+        expect(frames[1]!.equals(frames[2]!)).toBe(false);
+        const evidenceDir = process.env.SPATIAL_TEST_EVIDENCE_DIR;
+        if (evidenceDir) {
+          await mkdir(evidenceDir, { recursive: true });
+          const videoPath = path.join(evidenceDir, "isolated-runtime-30s.mp4");
+          await writeFile(videoPath, result.motionMp4);
+          await writeFile(path.join(evidenceDir, "composition.png"), result.compositionPng);
+          const probe = await execFileAsync(process.env.SPATIAL_TEST_FFPROBE ?? "ffprobe", [
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            videoPath,
+          ]);
+          await writeFile(path.join(evidenceDir, "ffprobe.json"), probe.stdout);
+          const decode = await execFileAsync(
+            process.env.SPATIAL_TEST_FFMPEG ?? "ffmpeg",
+            ["-v", "error", "-i", videoPath, "-f", "null", "-"],
+            { timeout: 30_000 },
+          );
+          await writeFile(
+            path.join(evidenceDir, "decode.json"),
+            JSON.stringify(
+              {
+                classification: "isolated_runtime_fixture_not_project_artifact",
+                sha256: createHash("sha256").update(result.motionMp4).digest("hex"),
+                fps: result.fps,
+                frameCount: result.frameCount,
+                durationMs: result.durationMs,
+                width: result.width,
+                height: result.height,
+                firstMiddleLastFrameSha256: frames.map((frame) =>
+                  createHash("sha256").update(frame).digest("hex"),
+                ),
+                fullDecodeSucceeded: true,
+                stderr: decode.stderr,
+              },
+              null,
+              2,
+            ),
+          );
+        }
+      }
     }, 120_000);
   }
-  it("rejects 10001ms before browser launch", async () => {
+  it("renders identical entity pixels after sparse static frame deduplication", async () => {
+    const full = input(1100);
+    const sparse = structuredClone(full);
+    const base = new Map(sparse.blueprint.nodes.map((node) => [node.nodeId, JSON.stringify(node)]));
+    for (const frame of sparse.motionReference.frames) {
+      frame.nodes = frame.nodes.filter((node) => JSON.stringify(node) !== base.get(node.nodeId));
+    }
+    for (const frame of sparse.motionReference.referenceFrames ?? []) {
+      frame.nodes = frame.nodes.filter((node) => JSON.stringify(node) !== base.get(node.nodeId));
+    }
+    expect(sparse.motionReference.frames[0]!.nodes).toHaveLength(0);
+    expect(sparse.motionReference.frames.at(-1)!.nodes.map((node) => node.nodeId)).toEqual([
+      "actor-right",
+    ]);
+    const original = await renderWithDurableGuardian(full);
+    const deduplicated = await renderWithDurableGuardian(sparse);
+    const originalFrames = await decodeSelectedMotionFrames(
+      original.motionMp4,
+      original.frameCount,
+    );
+    const sparseFrames = await decodeSelectedMotionFrames(
+      deduplicated.motionMp4,
+      deduplicated.frameCount,
+    );
+    originalFrames.forEach((frame, index) => expect(frame.equals(sparseFrames[index]!)).toBe(true));
+  }, 120_000);
+  it("rejects 30001ms before browser launch", async () => {
     await expect(
-      createSpatialReferenceV2Renderer(config).render(input(10001), new AbortController().signal),
+      createSpatialReferenceV2Renderer(config).render(input(30001), new AbortController().signal),
     ).rejects.toThrow("spatial_v2_motion_limits_invalid");
   });
   it("draws geometry rather than only a valid blank PNG and reproduces frozen pixels", async () => {

@@ -20,10 +20,12 @@ import {
   type SpatialReferenceV2BuildManifestInput,
 } from "./v2-build-manifest.js";
 import { assertSpatialReferenceV2DurableExtinction } from "./v2-renderer-scope-evidence.js";
-import type {
-  SpatialReferenceV2RenderLifecycle,
-  SpatialReferenceV2RenderResult,
-  SpatialReferenceV2ToolchainProof,
+import {
+  SPATIAL_V2_MAX_DURATION_MS,
+  SPATIAL_V2_MAX_FRAMES,
+  type SpatialReferenceV2RenderLifecycle,
+  type SpatialReferenceV2RenderResult,
+  type SpatialReferenceV2ToolchainProof,
 } from "./v2-renderer.contract.js";
 import {
   createSpatialReferenceV2Renderer,
@@ -33,6 +35,7 @@ import {
 export type SpatialReferenceV2RuntimeToolchain = {
   referenceRenderHtmlPath: string;
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   rendererBuildDigest: string;
   buildIdentity: {
     advertisedDigest: string;
@@ -74,9 +77,10 @@ function qualificationDispatch(
       position: { x: 0, y: 0, z: 0 },
     },
   ];
-  const sourceDurationMs = 10_000;
-  const frames = Array.from({ length: 120 }, (_, index) => ({
-    timeMs: Math.min(sourceDurationMs, Math.round((index * 1000) / 12)),
+  const sourceDurationMs = SPATIAL_V2_MAX_DURATION_MS;
+  const frames = Array.from({ length: SPATIAL_V2_MAX_FRAMES }, (_, index) => ({
+    timeMs:
+      index === SPATIAL_V2_MAX_FRAMES - 1 ? sourceDurationMs : Math.round((index * 1000) / 12),
     snapshotDigest: `qualification-frame-${index}`,
     camera,
     nodes,
@@ -180,7 +184,7 @@ function qualificationDispatch(
       schemaVersion: 1,
       fps: 12,
       sourceDurationMs,
-      encodedDurationMs: 10_000,
+      encodedDurationMs: sourceDurationMs,
       evaluatorVersion: "spatial_frame_eval/v4",
       frames,
       referenceFrames: [
@@ -239,6 +243,7 @@ function admissionBlockedReason(
 export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
   bundleDir: string;
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   journal: Pick<
     SpatialReferenceJournal,
     | "get"
@@ -346,6 +351,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
       const provisionalManifestInput = {
         referenceRenderHtmlPath,
         chromiumExecutablePath: params.chromiumExecutablePath,
+        resourceObserverExecutablePath: params.resourceObserverExecutablePath,
         toolchain: {
           chromiumVersion: toolchain?.chromiumVersion ?? "qualification-pending",
           ffmpegVersion: toolchain?.ffmpegVersion ?? "qualification-pending",
@@ -524,6 +530,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
         ((dispatch, signal, renderLifecycle) =>
           createSpatialReferenceV2Renderer({
             chromiumExecutablePath: params.chromiumExecutablePath,
+            resourceObserverExecutablePath: params.resourceObserverExecutablePath,
             referenceRenderHtmlPath,
             buildIdentity: qualificationBuildIdentity,
             collectToolchainProof: !toolchain,
@@ -539,6 +546,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
       const manifestInput = {
         referenceRenderHtmlPath,
         chromiumExecutablePath: params.chromiumExecutablePath,
+        resourceObserverExecutablePath: params.resourceObserverExecutablePath,
         toolchain: {
           chromiumVersion: toolchain.chromiumVersion,
           ffmpegVersion: toolchain.ffmpegVersion,
@@ -560,6 +568,7 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
       return {
         referenceRenderHtmlPath,
         chromiumExecutablePath: params.chromiumExecutablePath,
+        resourceObserverExecutablePath: params.resourceObserverExecutablePath,
         rendererBuildDigest,
         buildIdentity,
       };

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertSpatialReferenceV2MissingOutputs,
+  assertSpatialReferenceV2RenderInputLimits,
   createSpatialReferenceV2RenderInput,
   expectedSpatialReferenceV2Outputs,
   type SpatialReferenceV2Input,
@@ -100,6 +101,28 @@ function input(): SpatialReferenceV2Input {
 }
 
 describe("spatial v2 missing output plan", () => {
+  it("admits exactly 30 seconds and 360 frames while rejecting over-budget input", () => {
+    const frozen = input();
+    const frame = frozen.motionReference.frames[0]!;
+    frozen.motionReference.sourceDurationMs = 30_000;
+    frozen.motionReference.encodedDurationMs = 30_000;
+    frozen.motionReference.frames = Array.from({ length: 360 }, (_, index) => ({
+      ...frame,
+      timeMs: index === 359 ? 30_000 : Math.round((index * 1000) / 12),
+    }));
+    frozen.motionReference.referenceFrames![1]!.sourceTimeMs = 30_000;
+    expect(() => assertSpatialReferenceV2RenderInputLimits(frozen)).not.toThrow();
+    frozen.motionReference.sourceDurationMs = 30_001;
+    expect(() => assertSpatialReferenceV2RenderInputLimits(frozen)).toThrow(
+      "spatial_v2_motion_limits_invalid",
+    );
+    frozen.motionReference.sourceDurationMs = 30_000;
+    frozen.motionReference.frames.push(frame);
+    expect(() => assertSpatialReferenceV2RenderInputLimits(frozen)).toThrow(
+      "spatial_v2_motion_limits_invalid",
+    );
+  });
+
   it("enumerates the closed full package and permits a sparse recovery subset", () => {
     const frozen = input();
     expect(expectedSpatialReferenceV2Outputs(frozen)).toEqual([

@@ -79,7 +79,31 @@ async function run() {
     request,
     startMessage: { type: "openclaw-worker-start-v1" },
   });
-  if (request && manifestPath) {
+  const failureCode = argument("--worker-failure-code");
+  if (failureCode) {
+    const diagnosticMode = argument("--native-diagnostic-mode");
+    const nativeDiagnostic = diagnosticMode
+      ? {
+          source: "darwin_native_rss/v1",
+          pid: 123,
+          errno: 3,
+          readBytes: 0,
+          stage: "task_rss",
+          lifecycleProven: true,
+          renderStage: "motion_encode",
+          ...(diagnosticMode === "invalid" ? { argv: ["must-not-forward"] } : {}),
+        }
+      : undefined;
+    report({
+      type: failureCode.startsWith("spatial_guardian_")
+        ? "spatial-guardian-failed-v1"
+        : "spatial-v2-failed",
+      generation,
+      code: failureCode,
+      nativeDiagnostic,
+    });
+  }
+  if (request && manifestPath && !failureCode) {
     const outputs = [];
     for (const output of request.outputs) {
       const extension = output.slot === "motion_reference_video" ? "mp4" : "png";

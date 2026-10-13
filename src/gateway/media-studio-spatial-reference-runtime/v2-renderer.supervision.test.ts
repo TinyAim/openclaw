@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -28,6 +28,13 @@ import {
 import { createSpatialReferenceV2Renderer } from "./v2-renderer.js";
 import { SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL } from "./v2-renderer.js";
 import { supportsSpatialReferenceV2ResourceLimits } from "./v2-resource-watch.js";
+
+const observerFixtureDirectories: string[] = [];
+afterEach(async () => {
+  await Promise.all(
+    observerFixtureDirectories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
+  );
+});
 
 const fixtureUrl = new URL("./v2-renderer.supervision.fixture.mjs", import.meta.url);
 const preReadyExitFixtureUrl = new URL("./v2-renderer.pre-ready-exit.fixture.mjs", import.meta.url);
@@ -794,37 +801,65 @@ describe.skipIf(noWindows || !supportsSpatialReferenceV2ResourceLimits())(
       await fixture.shutdown();
     });
 
-    it("rejects a frozen digest mismatch before it asks the supervisor to spawn a worker", async () => {
-      const fixture = fixtureSupervisor({ audits: [] });
-      const spawn = vi.fn(fixture.supervisor.spawn);
-      const manifestInput = {
-        referenceRenderHtmlPath: buildReferenceHtml,
-        chromiumExecutablePath: process.execPath,
-        toolchain: buildToolchain,
-      };
-      const manifest = await buildSpatialReferenceV2Manifest({
-        ...manifestInput,
-        rendererModuleUrl: SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL,
-      });
-      const input = v2Dispatch();
-      input.renderIntent.rendererBuildDigest = "sha256:frozen-drift";
-      const renderer = createSpatialReferenceV2Renderer({
-        chromiumExecutablePath: process.execPath,
-        referenceRenderHtmlPath: buildReferenceHtml,
-        supervisor: { ...fixture.supervisor, spawn },
-        buildIdentity: {
-          advertisedDigest: spatialReferenceV2BuildDigest(manifest),
-          manifestInput,
-          readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
-        },
-      });
-      await expect(
-        renderer.renderMissing?.(input, new AbortController().signal, [
-          { slot: "end_frame", ordinal: 0 },
-        ]),
-      ).rejects.toThrow("spatial_v2_renderer_build_mismatch");
-      expect(spawn).not.toHaveBeenCalled();
-      await fixture.shutdown();
-    });
+    it.each(["frozen_digest", "private_helper_path"])(
+      "rejects %s before it asks the supervisor to spawn a worker",
+      async (scenario) => {
+        const fixture = fixtureSupervisor({ audits: [] });
+        const spawn = vi.fn(fixture.supervisor.spawn);
+        const observerDirectory = await mkdtemp(
+          path.join(tmpdir(), "spatial-build-observer-fixture-"),
+        );
+        observerFixtureDirectories.push(observerDirectory);
+        const resourceObserverExecutablePath = path.join(
+          observerDirectory,
+          "fixture-protocol-only",
+        );
+        await writeFile(
+          resourceObserverExecutablePath,
+          "#!/bin/sh\necho darwin_spatial_tree_rss_span/v1\n",
+          { mode: 0o700 },
+        );
+        const manifestInput = {
+          resourceObserverExecutablePath,
+          referenceRenderHtmlPath: buildReferenceHtml,
+          chromiumExecutablePath: process.execPath,
+          toolchain: buildToolchain,
+        };
+        const manifest = await buildSpatialReferenceV2Manifest({
+          ...manifestInput,
+          rendererModuleUrl: SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL,
+        });
+        const input = v2Dispatch();
+        input.renderIntent.rendererBuildDigest =
+          scenario === "frozen_digest" || process.platform !== "darwin"
+            ? "sha256:frozen-drift"
+            : spatialReferenceV2BuildDigest(manifest);
+        const renderer = createSpatialReferenceV2Renderer({
+          chromiumExecutablePath: process.execPath,
+          referenceRenderHtmlPath: buildReferenceHtml,
+          resourceObserverExecutablePath:
+            scenario === "private_helper_path" && process.platform === "darwin"
+              ? resourceObserverExecutablePath + "-drift"
+              : resourceObserverExecutablePath,
+          supervisor: { ...fixture.supervisor, spawn },
+          buildIdentity: {
+            advertisedDigest: spatialReferenceV2BuildDigest(manifest),
+            manifestInput,
+            readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
+          },
+        });
+        await expect(
+          renderer.renderMissing?.(input, new AbortController().signal, [
+            { slot: "end_frame", ordinal: 0 },
+          ]),
+        ).rejects.toThrow(
+          scenario === "private_helper_path" && process.platform === "darwin"
+            ? "spatial_v2_renderer_build_unavailable"
+            : "spatial_v2_renderer_build_mismatch",
+        );
+        expect(spawn).not.toHaveBeenCalled();
+        await fixture.shutdown();
+      },
+    );
   },
 );

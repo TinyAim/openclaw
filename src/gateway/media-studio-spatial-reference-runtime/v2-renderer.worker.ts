@@ -7,7 +7,7 @@ import { createHash } from "node:crypto";
 import { readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { chromium, type BrowserContext, type Route } from "playwright-core";
+import { chromium, type BrowserContext, type Page, type Route } from "playwright-core";
 import { resolveSystemBin } from "../../infra/resolve-system-bin.js";
 import { runFfmpeg, runFfprobe, resolveFfmpegBin } from "../../media/ffmpeg-exec.js";
 import { signalProcessTree } from "../../process/kill-tree.js";
@@ -25,16 +25,21 @@ import {
   type SpatialReferenceV2OutputSlot,
   type SpatialReferenceV2RenderInput,
 } from "./v2-renderer.contract.js";
-import { createSpatialReferenceV2RssWatch } from "./v2-resource-watch.js";
+import {
+  createSpatialReferenceV2RssWatch,
+  spatialReferenceV2NativeRssErrorDiagnostic,
+} from "./v2-resource-watch.js";
 
 type BrowserRenderHost = {
   render(snapshot: unknown): Promise<string> | string;
+  dispose(): void;
 };
 
 type WorkerRequest = {
   input: SpatialReferenceV2RenderInput;
   outputs: SpatialReferenceV2MissingOutput[];
   chromiumExecutablePath: string;
+  resourceObserverExecutablePath?: string;
   referenceRenderHtmlPath: string;
   workDir: string;
   resourceProfile: SpatialReferenceV2ResourceProfile;
@@ -344,6 +349,21 @@ async function run(): Promise<void> {
 
   const controller = new AbortController();
   let browser: BrowserContext | undefined;
+  let page: Page | undefined;
+  let renderHostDisposed = false;
+  const disposeRenderHost = async () => {
+    if (!page || renderHostDisposed) return;
+    await page.evaluate(() => {
+      const renderer = (
+        globalThis as typeof globalThis & { WisclawSpatialReferenceRender?: BrowserRenderHost }
+      ).WisclawSpatialReferenceRender;
+      if (!renderer || typeof renderer.dispose !== "function") {
+        throw new Error("spatial_reference_render_host_dispose_missing");
+      }
+      renderer.dispose();
+    });
+    renderHostDisposed = true;
+  };
   let closing: Promise<void> | undefined;
   const closeBrowser = () => {
     if (browser && !closing) {
@@ -363,6 +383,7 @@ async function run(): Promise<void> {
   );
   deadline.unref?.();
   const rssWatch = createSpatialReferenceV2RssWatch({
+    resourceObserverExecutablePath: request.resourceObserverExecutablePath,
     rootPid: process.pid,
     signal: controller.signal,
     abort,
@@ -445,7 +466,8 @@ async function run(): Promise<void> {
     if (pages.length !== request.resourceProfile.persistentContextPages || !pages[0]) {
       throw new Error("spatial_v2_persistent_context_pages_invalid");
     }
-    const page = pages[0];
+    page = pages[0];
+    const renderPage = page;
     const viewport = page.viewportSize();
     if (
       !viewport ||
@@ -468,7 +490,7 @@ async function run(): Promise<void> {
       nodes: unknown[],
     ) => {
       const rendered = await renderPng(
-        page,
+        renderPage,
         snapshot({
           width: request.input.renderIntent.width,
           height: request.input.renderIntent.height,
@@ -533,6 +555,9 @@ async function run(): Promise<void> {
         throw new Error("spatial_v2_temp_limit_exceeded");
       }
       failureStage = "motion_encode";
+      // Scene state never crosses frames; release the sequence's sole Engine
+      // before FFmpeg starts and before any successful result can be published.
+      await disposeRenderHost();
       await rssWatch.sampleBoundary("before_ffmpeg");
       if (controller.signal.aborted) throw controller.signal.reason;
       await runFfmpeg(
@@ -576,6 +601,8 @@ async function run(): Promise<void> {
         file: path.basename(motionPath),
       });
     }
+    failureStage = "render_host_dispose";
+    await disposeRenderHost();
     failureStage = "manifest_write";
     await writeBoundedFile({
       file: manifestPath,
@@ -586,12 +613,23 @@ async function run(): Promise<void> {
   } catch (error) {
     // Preserve only a bounded stage code across the worker boundary. The outer
     // lifecycle reporter sends it after cleanup while IPC remains available.
-    throw new Error(workerFailureCode(error, failureStage));
+    throw new Error(
+      workerFailureCode(controller.signal.aborted ? controller.signal.reason : error, failureStage),
+      {
+        cause: spatialReferenceV2NativeRssErrorDiagnostic(
+          controller.signal.aborted ? controller.signal.reason : error,
+          failureStage,
+        ),
+      },
+    );
   } finally {
     clearTimeout(deadline);
     rssWatch.stop();
     stopTempWatch();
     process.off("disconnect", parentLost);
+    // Success already disposed the render host within the active deadline.
+    // Failure must close the private Browser physically without awaiting a
+    // potentially stalled Page evaluation after that deadline was cleared.
     closeBrowser();
     await closing;
     // A failure must retain IPC until the outer boundary sends its bounded code.
@@ -609,6 +647,7 @@ void run().catch((error: unknown) => {
   report({
     type: "spatial-v2-failed",
     code: workerFailureCode(error, "worker"),
+    nativeDiagnostic: spatialReferenceV2NativeRssErrorDiagnostic(error),
   });
   process.exitCode = 1;
 });

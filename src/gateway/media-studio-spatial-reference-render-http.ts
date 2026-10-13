@@ -24,6 +24,10 @@ import {
   type SpatialReferenceTerrainProfile,
 } from "./media-studio-spatial-reference-runtime/terrain-profile.js";
 import { parseSpatialReferenceTerrainSurface } from "./media-studio-spatial-reference-runtime/terrain-surface.js";
+import {
+  SPATIAL_V2_MAX_DURATION_MS,
+  SPATIAL_V2_MAX_FRAMES,
+} from "./media-studio-spatial-reference-runtime/v2-renderer.contract.js";
 import { spatialReferenceWorldGeometryWithinBudget } from "./media-studio-spatial-reference-runtime/world-geometry-budget.js";
 import type {
   MediaSpatialTerrainSurface,
@@ -533,11 +537,13 @@ export function parseSpatialReferenceRelayDispatch(
       rawPlan?.schemaVersion !== 1 ||
       fps !== 12 ||
       !Number.isInteger(sourceDurationMs) ||
+      sourceDurationMs! < 1 ||
+      sourceDurationMs! > SPATIAL_V2_MAX_DURATION_MS ||
       !Number.isInteger(encodedDurationMs) ||
       !text(rawPlan?.evaluatorVersion) ||
       !rawFrames ||
       rawFrames.length < 1 ||
-      rawFrames.length > 120
+      rawFrames.length > SPATIAL_V2_MAX_FRAMES
     ) {
       return null;
     }

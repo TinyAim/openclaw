@@ -20,6 +20,29 @@ import {
 const guardianUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.spatialReferenceGuardian);
 const rendererFixtureUrl = new URL("./spatial-guardian.renderer.fixture.mjs", import.meta.url);
 
+function nativeGuardianReadiness(messages: unknown[]) {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const ready = new Promise<void>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  void ready.catch(() => undefined);
+  return {
+    ready,
+    onMessage: (message: unknown) => {
+      messages.push(message);
+      if (!message || typeof message !== "object" || Array.isArray(message)) return;
+      const value = message as { type?: unknown; code?: unknown };
+      if (value.type === "openclaw-worker-ready-v1") resolve();
+      if (value.type === "spatial-guardian-failed-v1") {
+        const code = typeof value.code === "string" ? value.code.slice(0, 160) : "unknown";
+        reject(new Error(`guardian_test_native_ready_failed:${code}`));
+      }
+    },
+  };
+}
+
 describe.skipIf(process.platform === "win32")("spatial guardian private launch", () => {
   const supervisors: Array<ReturnType<typeof createProcessSupervisor>> = [];
 
@@ -42,6 +65,7 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
     const supervisor = createProcessSupervisor();
     supervisors.push(supervisor);
     const messages: unknown[] = [];
+    const readiness = nativeGuardianReadiness(messages);
     const generation = "guardian-integration-generation";
     const identity: SpatialReferenceJournalIdentity = {
       key: "guardian-integration-idempotency",
@@ -153,17 +177,15 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
         deferWorkerStart: true,
         workerStartHandshake: true,
         captureOutput: false,
-        onWorkerMessage: (message) => messages.push(message),
+        onWorkerMessage: readiness.onMessage,
       });
       expect(run.openStartGate).toBeTypeOf("function");
       expect(run.sendWorkerMessage).toBeTypeOf("function");
-      await vi.waitFor(
-        async () =>
-          await expect(journal.get(identity.key)).resolves.toMatchObject({
-            launchState: "armed",
-            scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
-          }),
-      );
+      await readiness.ready;
+      await expect(journal.get(identity.key)).resolves.toMatchObject({
+        launchState: "armed",
+        scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
+      });
       const guardianStartTime = getFileLockProcessStartTime(run.pid!);
       if (guardianStartTime === null) throw new Error("guardian_test_identity_unavailable");
       const guardian = {
@@ -272,6 +294,7 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
     );
     const supervisor = createProcessSupervisor();
     supervisors.push(supervisor);
+    const readiness = nativeGuardianReadiness([]);
     const identity: SpatialReferenceJournalIdentity = {
       key: "guardian-prearm-idempotency",
       runtimeId: "guardian-prearm-runtime",
@@ -378,6 +401,7 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
         deferWorkerStart: true,
         workerStartHandshake: true,
         captureOutput: false,
+        onWorkerMessage: readiness.onMessage,
       });
       const guardianStartTime = getFileLockProcessStartTime(run.pid!);
       if (guardianStartTime === null) throw new Error("guardian_test_identity_unavailable");
@@ -390,13 +414,11 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
         guardianBuildDigest: identity.rendererBuildDigest,
         armedAtMs: nowMs,
       };
-      await vi.waitFor(
-        async () =>
-          await expect(journal.get(identity.key)).resolves.toMatchObject({
-            launchState: "armed",
-            scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
-          }),
-      );
+      await readiness.ready;
+      await expect(journal.get(identity.key)).resolves.toMatchObject({
+        launchState: "armed",
+        scopeRecovery: { state: "armed", guardian: { pid: run.pid } },
+      });
       run.cancel();
       await run.wait();
       await journal.recordPrearmGuardianExit({

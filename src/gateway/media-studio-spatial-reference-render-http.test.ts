@@ -90,174 +90,184 @@ describe("Spatial reference Runtime relay parser", () => {
     ).toBeNull();
   });
 
-  it("requires a complete frozen v2 package while permitting sparse missing-only grants", () => {
-    const v2 = relay("spatial_reference_render/v2");
-    const parsed = parseSpatialReferenceRelayDispatch({
-      ...v2,
-      motionReference: {
-        schemaVersion: 1,
-        fps: 12,
-        sourceDurationMs: 83,
-        encodedDurationMs: 83,
-        evaluatorVersion: "frame-evaluator/v1",
-        frames: [
-          {
-            timeMs: 83,
-            snapshotDigest: "sha256:frame",
-            camera: v2.blueprint.camera,
-            nodes: [],
-          },
-        ],
-        referenceFrames: [
-          {
-            slot: "start_frame",
-            ordinal: 0,
-            sourceTimeMs: 0,
-            snapshotDigest: "sha256:start",
-            camera: v2.blueprint.camera,
-            nodes: [],
-          },
-          {
-            slot: "end_frame",
-            ordinal: 0,
-            sourceTimeMs: 83,
-            snapshotDigest: "sha256:end",
-            camera: v2.blueprint.camera,
-            nodes: [],
-          },
-          {
-            slot: "topdown_frame",
-            ordinal: 0,
-            snapshotDigest: "sha256:topdown",
-            camera: v2.blueprint.camera,
-            nodes: [],
-          },
-        ],
-      },
-      motionReferenceUploadGrant: {
-        grantToken: "output_motion",
-        purpose: "output_upload",
-        artifactId: "artifact_motion",
-      },
-      expectedOutputs: [
-        {
-          slot: "composition_frame",
-          ordinal: 0,
-          artifactId: "artifact_frame",
-          mimeType: "image/png",
-        },
-        {
-          slot: "motion_reference_video",
-          ordinal: 0,
-          artifactId: "artifact_motion",
-          mimeType: "video/mp4",
-        },
-        {
-          slot: "start_frame",
-          ordinal: 0,
-          sourceTimeMs: 0,
-          artifactId: "artifact_start",
-          mimeType: "image/png",
-        },
-        {
-          slot: "end_frame",
-          ordinal: 0,
-          sourceTimeMs: 83,
-          artifactId: "artifact_end",
-          mimeType: "image/png",
-        },
-        {
-          slot: "topdown_frame",
-          ordinal: 0,
-          artifactId: "artifact_topdown",
-          mimeType: "image/png",
-        },
-      ],
-      outputUploadGrants: [
-        {
-          grantToken: "output_frame",
-          purpose: "output_upload",
-          artifactId: "artifact_frame",
-          slot: "composition_frame",
-          ordinal: 0,
-          mimeType: "image/png",
-        },
-        {
-          grantToken: "output_motion",
-          purpose: "output_upload",
-          artifactId: "artifact_motion",
-          slot: "motion_reference_video",
-          ordinal: 0,
-          mimeType: "video/mp4",
-        },
-        {
-          grantToken: "output_start",
-          purpose: "output_upload",
-          artifactId: "artifact_start",
-          slot: "start_frame",
-          ordinal: 0,
-          sourceTimeMs: 0,
-          mimeType: "image/png",
-        },
-        {
-          grantToken: "output_end",
-          purpose: "output_upload",
-          artifactId: "artifact_end",
-          slot: "end_frame",
-          ordinal: 0,
-          sourceTimeMs: 83,
-          mimeType: "image/png",
-        },
-        {
-          grantToken: "output_topdown",
-          purpose: "output_upload",
-          artifactId: "artifact_topdown",
-          slot: "topdown_frame",
-          ordinal: 0,
-          mimeType: "image/png",
-        },
-      ],
-    });
-
-    expect(parsed).toMatchObject({
-      contractVersion: "spatial_reference_render/v2",
-      motionReference: {
-        fps: 12,
-        frames: [{ timeMs: 83 }],
-        referenceFrames: [
-          { slot: "start_frame", ordinal: 0, sourceTimeMs: 0 },
-          { slot: "end_frame", ordinal: 0, sourceTimeMs: 83 },
-          { slot: "topdown_frame", ordinal: 0 },
-        ],
-      },
-      motionReferenceUploadGrant: { artifactId: "artifact_motion" },
-    });
-    expect(parsed?.blueprint.camera).toEqual(v2.blueprint.camera);
-    expect(parsed?.motionReference?.frames[0]?.camera).toEqual(v2.blueprint.camera);
-    expect(parsed?.motionReference?.referenceFrames?.[0]?.camera).toEqual(v2.blueprint.camera);
-    expect(
-      parseSpatialReferenceRelayDispatch({
+  it.each([83, 30_000])(
+    "requires a complete frozen %ims v2 package while permitting sparse missing-only grants",
+    (durationMs) => {
+      const v2 = relay("spatial_reference_render/v2");
+      const parsed = parseSpatialReferenceRelayDispatch({
         ...v2,
         motionReference: {
           schemaVersion: 1,
           fps: 12,
-          sourceDurationMs: 83,
-          encodedDurationMs: 83,
+          sourceDurationMs: durationMs,
+          encodedDurationMs: Math.round((Math.ceil((durationMs * 12) / 1000) * 1000) / 12),
           evaluatorVersion: "frame-evaluator/v1",
-          frames: [
-            { timeMs: 83, snapshotDigest: "sha256:frame", camera: v2.blueprint.camera, nodes: [] },
+          frames: Array.from({ length: Math.ceil((durationMs * 12) / 1000) }, (_, index) => ({
+            timeMs:
+              index === Math.ceil((durationMs * 12) / 1000) - 1
+                ? durationMs
+                : Math.round((index * 1000) / 12),
+            snapshotDigest: "sha256:frame",
+            camera: v2.blueprint.camera,
+            nodes: [],
+          })),
+          referenceFrames: [
+            {
+              slot: "start_frame",
+              ordinal: 0,
+              sourceTimeMs: 0,
+              snapshotDigest: "sha256:start",
+              camera: v2.blueprint.camera,
+              nodes: [],
+            },
+            {
+              slot: "end_frame",
+              ordinal: 0,
+              sourceTimeMs: durationMs,
+              snapshotDigest: "sha256:end",
+              camera: v2.blueprint.camera,
+              nodes: [],
+            },
+            {
+              slot: "topdown_frame",
+              ordinal: 0,
+              snapshotDigest: "sha256:topdown",
+              camera: v2.blueprint.camera,
+              nodes: [],
+            },
           ],
-          referenceFrames: [],
         },
         motionReferenceUploadGrant: {
-          grantToken: "motion",
+          grantToken: "output_motion",
           purpose: "output_upload",
-          artifactId: "motion",
+          artifactId: "artifact_motion",
         },
-        outputUploadGrants: [],
-      }),
-    ).toBeNull();
-  });
+        expectedOutputs: [
+          {
+            slot: "composition_frame",
+            ordinal: 0,
+            artifactId: "artifact_frame",
+            mimeType: "image/png",
+          },
+          {
+            slot: "motion_reference_video",
+            ordinal: 0,
+            artifactId: "artifact_motion",
+            mimeType: "video/mp4",
+          },
+          {
+            slot: "start_frame",
+            ordinal: 0,
+            sourceTimeMs: 0,
+            artifactId: "artifact_start",
+            mimeType: "image/png",
+          },
+          {
+            slot: "end_frame",
+            ordinal: 0,
+            sourceTimeMs: durationMs,
+            artifactId: "artifact_end",
+            mimeType: "image/png",
+          },
+          {
+            slot: "topdown_frame",
+            ordinal: 0,
+            artifactId: "artifact_topdown",
+            mimeType: "image/png",
+          },
+        ],
+        outputUploadGrants: [
+          {
+            grantToken: "output_frame",
+            purpose: "output_upload",
+            artifactId: "artifact_frame",
+            slot: "composition_frame",
+            ordinal: 0,
+            mimeType: "image/png",
+          },
+          {
+            grantToken: "output_motion",
+            purpose: "output_upload",
+            artifactId: "artifact_motion",
+            slot: "motion_reference_video",
+            ordinal: 0,
+            mimeType: "video/mp4",
+          },
+          {
+            grantToken: "output_start",
+            purpose: "output_upload",
+            artifactId: "artifact_start",
+            slot: "start_frame",
+            ordinal: 0,
+            sourceTimeMs: 0,
+            mimeType: "image/png",
+          },
+          {
+            grantToken: "output_end",
+            purpose: "output_upload",
+            artifactId: "artifact_end",
+            slot: "end_frame",
+            ordinal: 0,
+            sourceTimeMs: durationMs,
+            mimeType: "image/png",
+          },
+          {
+            grantToken: "output_topdown",
+            purpose: "output_upload",
+            artifactId: "artifact_topdown",
+            slot: "topdown_frame",
+            ordinal: 0,
+            mimeType: "image/png",
+          },
+        ],
+      });
+
+      expect(parsed).toMatchObject({
+        contractVersion: "spatial_reference_render/v2",
+        motionReference: {
+          fps: 12,
+          referenceFrames: [
+            { slot: "start_frame", ordinal: 0, sourceTimeMs: 0 },
+            { slot: "end_frame", ordinal: 0, sourceTimeMs: durationMs },
+            { slot: "topdown_frame", ordinal: 0 },
+          ],
+        },
+        motionReferenceUploadGrant: { artifactId: "artifact_motion" },
+      });
+      expect(parsed?.motionReference?.frames).toHaveLength(Math.ceil((durationMs * 12) / 1000));
+      expect(parsed?.motionReference?.frames.at(-1)?.timeMs).toBe(durationMs);
+      expect(parsed?.blueprint.camera).toEqual(v2.blueprint.camera);
+      expect(parsed?.motionReference?.frames[0]?.camera).toEqual(v2.blueprint.camera);
+      expect(parsed?.motionReference?.referenceFrames?.[0]?.camera).toEqual(v2.blueprint.camera);
+      expect(
+        parseSpatialReferenceRelayDispatch({
+          ...v2,
+          motionReference: {
+            schemaVersion: 1,
+            fps: 12,
+            sourceDurationMs: 83,
+            encodedDurationMs: 83,
+            evaluatorVersion: "frame-evaluator/v1",
+            frames: [
+              {
+                timeMs: 83,
+                snapshotDigest: "sha256:frame",
+                camera: v2.blueprint.camera,
+                nodes: [],
+              },
+            ],
+            referenceFrames: [],
+          },
+          motionReferenceUploadGrant: {
+            grantToken: "motion",
+            purpose: "output_upload",
+            artifactId: "motion",
+          },
+          outputUploadGrants: [],
+        }),
+      ).toBeNull();
+    },
+  );
 
   it("accepts a fully finalized v2 package with no upload grant", () => {
     const v2 = relay("spatial_reference_render/v2");

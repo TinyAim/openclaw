@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess, type Serializable } from "node:child_process";
+import { spawn, type Serializable } from "node:child_process";
 /**
  * Private per-execution Guardian. It has no Control API token, upload grant,
  * or render geometry. Its reserved journal context permits only this
@@ -22,74 +22,20 @@ import {
   createSpatialReferenceJournal,
   type SpatialReferenceJournal,
 } from "./reference-journal.js";
+import {
+  childMessage,
+  isStart,
+  isWorkerReady,
+  observePosixScopeExtinction,
+  processGroupId,
+  observeGuardianOwnedWorkerSpawn,
+  type WorkerIdentity,
+} from "./spatial-guardian-process.js";
 import type {
   SpatialReferenceV2GuardianJournalContext,
   SpatialReferenceV2GuardianLaunchContext,
 } from "./v2-renderer.contract.js";
-
-type WorkerIdentity = { pid: number; startTime: number };
-
-const POSIX_SCOPE_POLL_MS = 50;
-const POSIX_SCOPE_TIMEOUT_MS = 10_000;
-
-function processGroupId(pid: number): number | undefined {
-  try {
-    const result = spawnSync("ps", ["-p", String(pid), "-o", "pgid="], {
-      encoding: "utf8",
-      timeout: 500,
-    });
-    const value = Number(result.stdout.trim());
-    return result.error || result.status !== 0 || !Number.isSafeInteger(value) || value < 1
-      ? undefined
-      : value;
-  } catch {
-    return undefined;
-  }
-}
-
-function processGroupMemberCount(pgid: number): number | undefined {
-  try {
-    const result = spawnSync("ps", ["-axo", "pid=,pgid="], {
-      encoding: "utf8",
-      timeout: 500,
-    });
-    if (result.error || result.status !== 0) return undefined;
-    let count = 0;
-    for (const line of result.stdout.split("\n")) {
-      const [pidText, pgidText] = line.trim().split(/\s+/u);
-      if (!Number.isSafeInteger(Number(pidText)) || Number(pgidText) !== pgid) continue;
-      count += 1;
-    }
-    return count;
-  } catch {
-    return undefined;
-  }
-}
-
-async function observePosixScopeExtinction(
-  worker: WorkerIdentity,
-  pgid: number,
-): Promise<
-  | {
-      protocol: "posix_group_observation_v1";
-      processGroupId: number;
-      rootState: "dead" | "reused";
-    }
-  | undefined
-> {
-  const deadline = Date.now() + POSIX_SCOPE_TIMEOUT_MS;
-  while (Date.now() <= deadline) {
-    const members = processGroupMemberCount(pgid);
-    const observedStart = getFileLockProcessStartTime(worker.pid);
-    const rootState =
-      observedStart === null ? "dead" : observedStart === worker.startTime ? undefined : "reused";
-    if (members === 0 && rootState) {
-      return { protocol: "posix_group_observation_v1", processGroupId: pgid, rootState };
-    }
-    await new Promise((resolve) => setTimeout(resolve, POSIX_SCOPE_POLL_MS));
-  }
-  return undefined;
-}
+import { validateSpatialReferenceV2NativeRssDiagnostic } from "./v2-resource-watch.js";
 
 type GuardianJournalControl = {
   type: "spatial-guardian-journal-context-v1";
@@ -190,15 +136,6 @@ async function waitForMessage<T>(predicate: (message: unknown) => message is T):
   });
 }
 
-function isStart(message: unknown): message is { type: "openclaw-worker-start-v1" } {
-  return Boolean(
-    message &&
-    typeof message === "object" &&
-    !Array.isArray(message) &&
-    (message as { type?: unknown }).type === "openclaw-worker-start-v1",
-  );
-}
-
 function isAuthorize(
   message: unknown,
   generation: string,
@@ -286,26 +223,6 @@ function matchesLaunchContext(
   );
 }
 
-function childMessage(child: ChildProcess, message: unknown): Promise<void> {
-  if (!child.connected) return Promise.reject(new Error("spatial_guardian_worker_ipc_closed"));
-  return new Promise((resolve, reject) => {
-    try {
-      child.send?.(message as Serializable, (error) => (error ? reject(error) : resolve()));
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
-
-function isWorkerReady(message: unknown): boolean {
-  return Boolean(
-    message &&
-    typeof message === "object" &&
-    !Array.isArray(message) &&
-    (message as { type?: unknown }).type === "openclaw-worker-ready-v1",
-  );
-}
-
 async function recordGuardianObservation(
   state: "never_spawned" | "unknown" | "extinct",
   reason?: "scope_observation_unknown" | "guardian_unavailable",
@@ -341,12 +258,15 @@ async function recordGuardianObservation(
   });
 }
 
+let guardianGeneration: string | undefined;
+
 async function run(): Promise<void> {
   const workerUrl = new URL(requiredArgument("--renderer-worker-url"));
   if (workerUrl.protocol !== "file:") throw new Error("spatial_guardian_worker_url_invalid");
   const requestPath = requiredArgument("--request");
   const manifestPath = requiredArgument("--manifest");
   const generation = requiredArgument("--generation");
+  guardianGeneration = generation;
   const launch = launchContextArgument();
   const reservation = launch.reservation;
   if (
@@ -428,6 +348,10 @@ async function run(): Promise<void> {
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     },
   );
+  const spawned =
+    process.platform === "win32"
+      ? Promise.resolve(undefined)
+      : observeGuardianOwnedWorkerSpawn(worker, true);
   const ready = new Promise<void>((resolve, reject) => {
     worker.once("error", reject);
     worker.on("message", (message) => {
@@ -448,16 +372,23 @@ async function run(): Promise<void> {
         !Array.isArray(message) &&
         (message as { type?: unknown }).type === "spatial-v2-failed"
       ) {
-        send(message);
+        const failure = message as Record<string, unknown>;
+        send({
+          type: "spatial-v2-failed",
+          code: failure.code,
+          generation,
+          nativeDiagnostic: validateSpatialReferenceV2NativeRssDiagnostic(failure.nativeDiagnostic),
+        });
       }
     });
     worker.once("exit", () => reject(new Error("spatial_guardian_worker_exited_before_ready")));
   });
+  const [spawnReceipt] = await Promise.all([spawned, ready]);
   if (!worker.pid || !worker.connected) throw new Error("spatial_guardian_worker_spawn_failed");
   const startTime = getFileLockProcessStartTime(worker.pid);
   if (startTime === null) throw new Error("spatial_guardian_worker_identity_unavailable");
   const identity: WorkerIdentity = { pid: worker.pid, startTime };
-  const pgid = process.platform === "win32" ? undefined : processGroupId(identity.pid);
+  const pgid = process.platform === "win32" ? undefined : processGroupId(spawnReceipt!);
   if (process.platform !== "win32" && pgid !== identity.pid) {
     throw new Error("spatial_guardian_posix_scope_unavailable");
   }
@@ -483,7 +414,6 @@ async function run(): Promise<void> {
   process.once("SIGTERM", cleanup);
   process.once("SIGINT", cleanup);
 
-  await ready;
   await durable.journal.recordWorkerPrepared({
     identity: context.journal.identity,
     owner: context.journal.owner,
@@ -571,6 +501,7 @@ void run().catch(async (error: unknown) => {
   }
   send({
     type: "spatial-guardian-failed-v1",
+    generation: guardianGeneration,
     code: error instanceof Error ? error.message.slice(0, 160) : "spatial_guardian_failed",
   });
   closePluginStateDatabase();
