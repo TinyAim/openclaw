@@ -1,6 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { spawnCommand } from "../../process/exec.js";
+import {
+  validateObserverExecDiagnostic,
+  type SpatialReferenceV2ObserverExecDiagnostic,
+} from "./v2-observer-exec-diagnostic.js";
+export type { SpatialReferenceV2ObserverExecDiagnostic } from "./v2-observer-exec-diagnostic.js";
 
 const RSS_POLL_MS = 100;
 type LinuxProcess = { pid: number; ppid: number; rssBytes: number };
@@ -132,53 +137,10 @@ export type SpatialReferenceV2NativeRssDiagnostic = {
   renderStage: string;
 };
 
-/** Private probe-start context and observations frozen at the exec promise settlement. */
-export type SpatialReferenceV2ObserverExecDiagnostic = {
-  source: "darwin_observer_exec/v1";
-  code: string;
-  elapsedMs: number;
-  closeObserved: boolean;
-  exitCode: number | null;
-  signal: string | null;
-  stdoutBytes: number | null;
-  stderrBytes: number | null;
-  nativeStage: string;
-  renderStage: string;
-  frameIndex: number | null;
-};
-
 export function validateSpatialReferenceV2ObserverExecDiagnostic(
   value: unknown,
 ): SpatialReferenceV2ObserverExecDiagnostic | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const row = value as SpatialReferenceV2ObserverExecDiagnostic;
-  const integer = (v: unknown, min = 0, max = Number.MAX_SAFE_INTEGER) =>
-    Number.isSafeInteger(v) && Number(v) >= min && Number(v) <= max;
-  if (
-    Object.keys(row).toSorted().join(",") !==
-      "closeObserved,code,elapsedMs,exitCode,frameIndex,nativeStage,renderStage,signal,source,stderrBytes,stdoutBytes" ||
-    row.source !== "darwin_observer_exec/v1" ||
-    !integer(row.elapsedMs) ||
-    typeof row.code !== "string" ||
-    !/^spatial_v2_rss_observation_[a-z_]{1,64}$/u.test(row.code) ||
-    typeof row.closeObserved !== "boolean" ||
-    !(row.exitCode === null || integer(row.exitCode, -2147483648, 2147483647)) ||
-    !(
-      row.signal === null ||
-      (typeof row.signal === "string" &&
-        /^SIG(?:ABRT|ALRM|BUS|CHLD|CONT|FPE|HUP|ILL|INT|KILL|PIPE|QUIT|SEGV|STOP|TERM|TRAP|TSTP|TTIN|TTOU|USR1|USR2)$/u.test(
-          row.signal,
-        ))
-    ) ||
-    (!row.closeObserved && (row.exitCode !== null || row.signal !== null)) ||
-    (row.exitCode !== null && row.signal !== null) ||
-    ![row.stdoutBytes, row.stderrBytes].every((v) => v === null || integer(v)) ||
-    !(row.nativeStage === "unknown" || nativeStages.includes(row.nativeStage)) ||
-    !(row.renderStage === "unknown" || renderStages.includes(row.renderStage)) ||
-    !(row.frameIndex === null || integer(row.frameIndex, 0, 359))
-  )
-    return undefined;
-  return { ...row };
+  return validateObserverExecDiagnostic(value, nativeStages, renderStages);
 }
 
 export function spatialReferenceV2ObserverExecErrorDiagnostic(
@@ -282,6 +244,14 @@ async function darwinDescendantRssBytes(
     signal: string | null = null;
   let stdoutBytes: number | null = null,
     stderrBytes: number | null = null;
+  let spawnReturnMs: number | null = null,
+    spawnObserved = false,
+    spawnObservedMs: number | null = null;
+  let exitObserved = false,
+    exitObservedMs: number | null = null;
+  let exitEventCode: number | null = null,
+    exitEventSignal: string | null = null;
+  const elapsed = () => Math.floor(performance.now() - startedAt);
   let detach = () => {};
   try {
     const child = spawnCommand([executablePath, "--observe-spatial-tree-rss", String(rootPid)], {
@@ -292,8 +262,19 @@ async function darwinDescendantRssBytes(
       maxBuffer: 4 * 1024 * 1024,
       forceKillAfterDelay: 100,
     });
+    spawnReturnMs = elapsed();
     observerPid = child.nodeChildProcess.pid;
     const process = child.nodeChildProcess;
+    const onSpawn = () => {
+      spawnObserved = true;
+      spawnObservedMs = elapsed();
+    };
+    const onExit = (code: number | null, value: NodeJS.Signals | null) => {
+      exitObserved = true;
+      exitObservedMs = elapsed();
+      exitEventCode = code;
+      exitEventSignal = value;
+    };
     const onClose = (code: number | null, value: NodeJS.Signals | null) => {
       closeObserved = true;
       exitCode = code;
@@ -305,7 +286,11 @@ async function darwinDescendantRssBytes(
     const countErr = (chunk: Buffer | string) => {
       stderrBytes = (stderrBytes ?? 0) + Buffer.byteLength(chunk);
     };
-    if (process.on) process.on("close", onClose);
+    if (process.on) {
+      process.on("spawn", onSpawn);
+      process.on("exit", onExit);
+      process.on("close", onClose);
+    }
     if (process.stdout) {
       stdoutBytes = 0;
       process.stdout.on("data", countOut);
@@ -315,6 +300,8 @@ async function darwinDescendantRssBytes(
       process.stderr.on("data", countErr);
     }
     detach = () => {
+      process.off?.("spawn", onSpawn);
+      process.off?.("exit", onExit);
       process.off?.("close", onClose);
       process.stdout?.off("data", countOut);
       process.stderr?.off("data", countErr);
@@ -345,6 +332,13 @@ async function darwinDescendantRssBytes(
           nativeStage: parseSpatialReferenceV2NativeRssDiagnostic(value.stderr)?.stage ?? "unknown",
           renderStage: context?.renderStage ?? "unknown",
           frameIndex: context?.frameIndex ?? null,
+          spawnReturnMs,
+          spawnObserved,
+          spawnObservedMs,
+          exitObserved,
+          exitObservedMs,
+          exitEventCode,
+          exitEventSignal,
         }),
       },
     });

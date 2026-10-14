@@ -138,11 +138,20 @@ describe("private observer exec failure evidence", () => {
           signal: closed ? "SIGKILL" : null,
           stdoutBytes: 6,
           stderrBytes: 18,
+          spawnReturnMs: 0,
+          spawnObserved: false,
+          spawnObservedMs: null,
+          exitObserved: false,
+          exitObservedMs: null,
+          exitEventCode: null,
+          exitEventSignal: null,
         });
         expect(abort).toHaveBeenCalledWith(error);
         expect(spatialReferenceV2NativeRssErrorDiagnostic(error)).toBeUndefined();
         expect(JSON.stringify(snapshot)).not.toMatch(/密钥|private|token|secret|777/);
         expect(nodeChild.listenerCount("close")).toBe(0);
+        expect(nodeChild.listenerCount("spawn")).toBe(0);
+        expect(nodeChild.listenerCount("exit")).toBe(0);
         expect(nodeChild.stdout.listenerCount("data")).toBe(0);
         expect(nodeChild.stderr.listenerCount("data")).toBe(0);
         nodeChild.emit("close", 0, null);
@@ -163,6 +172,119 @@ describe("private observer exec failure evidence", () => {
       }
     },
   );
+
+  it("keeps legacy evidence and strictly validates the complete lifecycle extension", () => {
+    expect(validateSpatialReferenceV2ObserverExecDiagnostic(detail)).toEqual(detail);
+    const extended = {
+      ...detail,
+      spawnReturnMs: 730,
+      spawnObserved: true,
+      spawnObservedMs: 731,
+      exitObserved: true,
+      exitObservedMs: 3000,
+      exitEventCode: null,
+      exitEventSignal: "SIGTERM",
+    };
+    expect(validateSpatialReferenceV2ObserverExecDiagnostic(extended)).toEqual(extended);
+    for (const bad of [
+      { ...detail, spawnReturnMs: 730 },
+      { ...extended, spawnReturnMs: -1 },
+      { ...extended, spawnObservedMs: 729 },
+      { ...extended, spawnObservedMs: 3006 },
+      { ...extended, spawnObserved: false },
+      { ...extended, exitObserved: false },
+      { ...extended, exitObservedMs: null },
+      { ...extended, exitObservedMs: 729 },
+      { ...extended, exitEventCode: 0 },
+      { ...extended, exitEventSignal: "secret" },
+      { ...extended, argv: "secret" },
+      { ...extended, exitObserved: "true" },
+    ])
+      expect(validateSpatialReferenceV2ObserverExecDiagnostic(bad)).toBeUndefined();
+    const absentExit = {
+      ...extended,
+      exitObserved: false,
+      exitObservedMs: null,
+      exitEventCode: null,
+      exitEventSignal: null,
+    };
+    expect(validateSpatialReferenceV2ObserverExecDiagnostic(absentExit)).toEqual(absentExit);
+  });
+
+  it("freezes pre-return latency and actual exit before close without changing timeout refusal", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const nodeChild = Object.assign(new EventEmitter(), {
+      pid: observerPid,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+    });
+    let reject!: (error: unknown) => void;
+    const command = Object.assign(
+      new Promise<{ stdout: string }>((_, no) => {
+        reject = no;
+      }),
+      {
+        nodeChildProcess: nodeChild,
+      },
+    ) as unknown as ReturnType<typeof spawnCommand>;
+    const now = vi.spyOn(performance, "now").mockReturnValue(10);
+    vi.mocked(spawnCommand)
+      .mockReturnValueOnce(child(Promise.resolve(output())))
+      .mockImplementation(() => {
+        now.mockReturnValue(740);
+        return command;
+      });
+    const abort = vi.fn();
+    const watcher = watch(abort);
+    try {
+      const result = watcher.sampleBoundary("post_first_webgl_frame").catch((error) => error);
+      await vi.waitFor(() => expect(nodeChild.listenerCount("exit")).toBe(1));
+      now.mockReturnValue(741);
+      nodeChild.emit("spawn");
+      now.mockReturnValue(770);
+      nodeChild.emit("exit", 0, null);
+      now.mockReturnValue(3015);
+      reject({ timedOut: true, exitCode: 999, stderr: "secret" });
+      const error = await result;
+      const snapshot = spatialReferenceV2ObserverExecErrorDiagnostic(error);
+      expect(error.message).toBe("spatial_v2_rss_observation_exec_timeout");
+      expect(snapshot).toMatchObject({
+        elapsedMs: 3005,
+        closeObserved: false,
+        exitCode: null,
+        signal: null,
+        spawnReturnMs: 730,
+        spawnObserved: true,
+        spawnObservedMs: 731,
+        exitObserved: true,
+        exitObservedMs: 760,
+        exitEventCode: 0,
+        exitEventSignal: null,
+        stdoutBytes: 0,
+        stderrBytes: 0,
+        nativeStage: "unknown",
+      });
+      expect(abort).toHaveBeenCalledWith(error);
+      expect(JSON.stringify(snapshot)).not.toMatch(/secret|999|argv|path/);
+      for (const event of ["spawn", "exit", "close"])
+        expect(nodeChild.listenerCount(event)).toBe(0);
+      nodeChild.emit("spawn");
+      nodeChild.emit("exit", null, "SIGKILL");
+      nodeChild.emit("close", null, "SIGKILL");
+      expect(spatialReferenceV2ObserverExecErrorDiagnostic(error)).toEqual(snapshot);
+      expect(spawnCommand).toHaveBeenLastCalledWith(
+        [path, "--observe-spatial-tree-rss", String(process.pid)],
+        expect.objectContaining({
+          timeout: 3000,
+          forceKillAfterDelay: 100,
+          maxBuffer: 4194304,
+          reject: true,
+        }),
+      );
+    } finally {
+      watcher.stop();
+    }
+  });
 
   it("keeps typed native evidence separate and unknown exec output unavailable", async () => {
     Object.defineProperty(process, "platform", { value: "darwin" });

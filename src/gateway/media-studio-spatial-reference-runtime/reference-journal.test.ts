@@ -199,9 +199,25 @@ async function armedFailureJournal() {
 }
 
 describe("private exact-scope observer failure journal", () => {
-  it.each(["extinct", "unknown"] as const)(
-    "persists %s evidence across reopen and generic exit checkpoint",
-    async (terminalState) => {
+  it.each(
+    (["extinct", "unknown"] as const).flatMap((terminalState) =>
+      [false, true].map((extended) => ({ terminalState, extended })),
+    ),
+  )(
+    "persists $terminalState evidence (lifecycle=$extended) across reopen and generic exit checkpoint",
+    async ({ terminalState, extended }) => {
+      const failureDetails = extended
+        ? {
+            ...observerFailureDetails,
+            spawnReturnMs: 730,
+            spawnObserved: true,
+            spawnObservedMs: 731,
+            exitObserved: true,
+            exitObservedMs: 3000,
+            exitEventCode: null,
+            exitEventSignal: "SIGTERM",
+          }
+        : observerFailureDetails;
       const { env, value, worker } = await armedFailureJournal();
       await value.recordScopeObservation({
         identity,
@@ -211,7 +227,7 @@ describe("private exact-scope observer failure journal", () => {
         observation: {
           state: terminalState,
           observedAtMs: 5,
-          worker: { ...worker, failureDetails: observerFailureDetails },
+          worker: { ...worker, failureDetails },
           ...(terminalState === "extinct"
             ? {
                 proof: {
@@ -229,7 +245,7 @@ describe("private exact-scope observer failure journal", () => {
       const reopened = journal(env);
       await expect(reopened.get(identity.key)).resolves.toMatchObject({
         phase: "claimed",
-        scopeRecovery: { state: terminalState, worker: { failureDetails: observerFailureDetails } },
+        scopeRecovery: { state: terminalState, worker: { failureDetails } },
       });
       await reopened.checkpoint({
         identity,
@@ -239,7 +255,7 @@ describe("private exact-scope observer failure journal", () => {
         worker: { ...worker, exited: { atMs: 6, reason: "completed" } },
       });
       const row = await reopened.get(identity.key);
-      expect(row?.scopeRecovery?.worker?.failureDetails).toEqual(observerFailureDetails);
+      expect(row?.scopeRecovery?.worker?.failureDetails).toEqual(failureDetails);
       expect(row?.callback).toBeUndefined();
       expect(row?.renderProof).toBeUndefined();
       expect(row?.prepared).toBeUndefined();
@@ -252,7 +268,7 @@ describe("private exact-scope observer failure journal", () => {
         );
         expect((await reopened.get(identity.key))?.callback).not.toHaveProperty("failureDetails");
         expect((await reopened.get(identity.key))?.scopeRecovery?.worker?.failureDetails).toEqual(
-          observerFailureDetails,
+          failureDetails,
         );
       }
     },
