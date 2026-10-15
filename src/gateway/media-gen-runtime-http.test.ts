@@ -5,6 +5,7 @@ import {
   MEDIA_GEN_RUNTIME_DISPATCH_PATH,
   type MediaGenRuntimeDispatch,
   type MediaGenRuntimeHttpExecutor,
+  type MediaGenRuntimeResult,
 } from "./media-gen-runtime-http.js";
 import {
   AUTH_TOKEN,
@@ -90,6 +91,51 @@ describe("media-generation runtime gateway registration", () => {
         runtimeJobId: "runtime-job-1",
       });
       expect(executor.dispatch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("preserves only valid failed-job replacement evidence at the HTTP boundary", async () => {
+    let extension: Record<string, unknown> = {};
+    const executor: MediaGenRuntimeHttpExecutor = {
+      // Deliberately inject untrusted runtime results through the actual sanitizer.
+      dispatch: (input) =>
+        ({
+          taskId: input.taskId,
+          workspaceId: input.workspaceId,
+          correlationId: input.correlationId,
+          status: "failed",
+          runtimeJobId: "original-job",
+          failureReason: "vendor_failed",
+          ...extension,
+        }) as MediaGenRuntimeResult,
+    };
+    await withServer({ executor }, async (url) => {
+      for (const retryDisposition of ["replacement_allowed", "reconcile_only"]) {
+        extension = { retryDisposition };
+        const response = await post(url, "Bearer test-token");
+        expect(await response.json()).toMatchObject({
+          status: "failed",
+          runtimeJobId: "original-job",
+          retryDisposition,
+        });
+      }
+      for (const invalid of [
+        { retryDisposition: "unknown" },
+        { retryDisposition: null },
+        { retryDisposition: true },
+        { retryDisposition: "replacement_allowed", runtimeJobId: " " },
+        { retryDisposition: "replacement_allowed", runtimeJobId: undefined },
+        { retryDisposition: "replacement_allowed", status: "processing" },
+        { retryDisposition: "replacement_allowed", status: "canceled" },
+        { retryDisposition: "replacement_allowed", status: "submission_unknown" },
+      ]) {
+        extension = invalid;
+        const response = await post(url, "Bearer test-token");
+        const result = await response.json();
+        expect(result).toMatchObject({ status: "failed", failureReason: "internal" });
+        expect(result).not.toHaveProperty("retryDisposition");
+        expect(result).not.toHaveProperty("runtimeJobId");
+      }
     });
   });
 

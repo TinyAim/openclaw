@@ -280,6 +280,91 @@ describe("OpenClaw executor reconcile honesty", () => {
     expect(v.poll).not.toHaveBeenCalled();
   });
 
+  it.each(["replacement_allowed", "reconcile_only", undefined] as const)(
+    "reports terminal disposition %s without creating a replacement",
+    async (retryDisposition) => {
+      const reconcile = vi.fn(async () => ({
+        state: "failed" as const,
+        vendorJobId: "seedance-job-1",
+        reason: "vendor_failed" as const,
+        message: "Original job failed.",
+        ...(retryDisposition ? { retryDisposition } : {}),
+      }));
+      const v = vendor({ reconcile });
+      const executor = createOpenClawMediaGenRuntimeExecutor({
+        bridge: bridge(),
+        vendors: [v.implementation],
+      });
+      await expect(
+        executor.dispatch(dispatch("reconcile", { runtimeJobId: "seedance-job-1" })),
+      ).resolves.toMatchObject({
+        status: "failed",
+        runtimeJobId: "seedance-job-1",
+        retryDisposition:
+          retryDisposition === "replacement_allowed" ? "replacement_allowed" : "reconcile_only",
+      });
+      expect(reconcile).toHaveBeenCalledWith("seedance-job-1");
+      expect(v.submit).not.toHaveBeenCalled();
+      expect(v.poll).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not authorize replacement from a different provider job", async () => {
+    const reconcile = vi.fn(async () => ({
+      state: "failed" as const,
+      vendorJobId: "other-job",
+      reason: "vendor_failed" as const,
+      message: "Other job failed.",
+      retryDisposition: "replacement_allowed" as const,
+    }));
+    const v = vendor({ reconcile });
+    const executor = createOpenClawMediaGenRuntimeExecutor({
+      bridge: bridge(),
+      vendors: [v.implementation],
+    });
+    const result = await executor.dispatch(
+      dispatch("reconcile", { runtimeJobId: "seedance-job-1" }),
+    );
+    expect(result).toMatchObject({ status: "submission_unknown", runtimeJobId: "seedance-job-1" });
+    expect(result.retryDisposition).toBeUndefined();
+    expect(v.submit).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "preserves the canceled original request digest (returned=%s)",
+    async (returned) => {
+      const providerRequestDigest = `sha256:${"d".repeat(64)}`;
+      const reconcile = vi.fn(async () => ({
+        state: "canceled" as const,
+        vendorJobId: "seedance-job-1",
+        ...(returned ? { providerRequestDigest } : {}),
+      }));
+      const v = vendor({ reconcile });
+      const submit = vi.fn(async () => ({
+        state: "processing" as const,
+        vendorJobId: "seedance-job-1",
+        providerRequestDigest,
+      }));
+      v.implementation.submit = submit;
+      const executor = createOpenClawMediaGenRuntimeExecutor({
+        bridge: bridge(),
+        vendors: [v.implementation],
+      });
+      if (!returned) {
+        await executor.dispatch(dispatch("submit"));
+      }
+      await expect(
+        executor.dispatch(dispatch("reconcile", { runtimeJobId: "seedance-job-1" })),
+      ).resolves.toMatchObject({
+        status: "canceled",
+        runtimeJobId: "seedance-job-1",
+        providerRequestDigest,
+        runtimeStopOutcome: { state: "confirmed", reasonCode: "runtime_confirmed" },
+      });
+      expect(submit).toHaveBeenCalledTimes(returned ? 0 : 1);
+    },
+  );
+
   it("recovers the tracked original receipt by taskId when runtimeJobId is absent", async () => {
     const reconcile = vi.fn(async () => ({
       state: "processing" as const,

@@ -131,6 +131,7 @@ export type MediaGenRuntimeResult = {
   correlationId: string;
   status: "processing" | "succeeded" | "failed" | "canceled" | "submission_unknown";
   runtimeStopOutcome?: MediaGenRuntimeStopOutcome;
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
   runtimeJobId?: string;
   providerRequestDigest?: string;
   providerObservation?: MediaGenProviderRuntimeObservation;
@@ -367,6 +368,11 @@ function normalizeResult(
         : "processing"
       : status;
   if (
+    (result.retryDisposition !== undefined &&
+      (status !== "failed" ||
+        !runtimeJobId ||
+        (result.retryDisposition !== "replacement_allowed" &&
+          result.retryDisposition !== "reconcile_only"))) ||
     !status ||
     !STATUSES.has(status) ||
     taskId !== dispatch.taskId ||
@@ -409,6 +415,7 @@ function normalizeResult(
     correlationId,
     status: status as MediaGenRuntimeResult["status"],
     runtimeStopOutcome,
+    retryDisposition: result.retryDisposition as MediaGenRuntimeResult["retryDisposition"],
     runtimeJobId: runtimeJobId ?? undefined,
     providerRequestDigest: providerRequestDigest ?? undefined,
     providerObservation: providerObservation ?? undefined,

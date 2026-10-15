@@ -100,6 +100,14 @@ export async function reconcileMediaGenRuntimeJob(
       tracked?.providerRequestDigest,
     );
   }
+  if ("vendorJobId" in job && job.vendorJobId !== undefined && job.vendorJobId !== runtimeJobId) {
+    return submissionUnknown(
+      dispatch,
+      "The provider returned a receipt for a different job; the original attempt remains unresolved.",
+      runtimeJobId,
+      tracked?.providerRequestDigest,
+    );
+  }
   const providerRequestDigest = job.providerRequestDigest ?? tracked?.providerRequestDigest;
   const acceptedSpatialInput = spatialAcceptance(job, tracked);
   input.remember({
@@ -143,13 +151,16 @@ export async function reconcileMediaGenRuntimeJob(
   }
   if (job.state === "canceled") {
     input.forget();
-    return canceled(
-      dispatch,
-      "The provider job was canceled.",
-      runtimeJobId,
-      { state: "confirmed", reasonCode: "runtime_confirmed" },
-      job.providerObservation,
-    );
+    return {
+      ...canceled(
+        dispatch,
+        "The provider job was canceled.",
+        runtimeJobId,
+        { state: "confirmed", reasonCode: "runtime_confirmed" },
+        job.providerObservation,
+      ),
+      ...(providerRequestDigest ? { providerRequestDigest } : {}),
+    };
   }
   if (job.state === "submission_unknown") {
     return {
@@ -177,5 +188,7 @@ export async function reconcileMediaGenRuntimeJob(
       job.providerObservation,
     ),
     runtimeJobId,
+    retryDisposition:
+      job.retryDisposition === "replacement_allowed" ? "replacement_allowed" : "reconcile_only",
   };
 }
