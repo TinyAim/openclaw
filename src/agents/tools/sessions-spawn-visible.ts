@@ -47,6 +47,12 @@ export const VISIBLE_SESSIONS_SPAWN_SCHEMA = {
         "Durable visible session: coding/multi-step/keepable results; works without UI; subagent only. Default run mode and empty attachment fields are accepted; no thread/thinking/lightContext or attachment staging.",
     }),
   ),
+  targetAgent: Type.Optional(
+    Type.String({
+      description:
+        "Optional target agent/role name or agentId when visible=true. Omit when the user did not specify an agent (defaults to the current session's agent and model); set when the user specifies an agent.",
+    }),
+  ),
   group: Type.Optional(
     Type.String({
       description:
@@ -103,8 +109,10 @@ export async function maybeSpawnVisibleSession(params: {
   const worktreeName = readToolStringParam(params.raw, "worktreeName");
   const worktreeBaseRef = readToolStringParam(params.raw, "worktreeBaseRef");
   const group = readToolStringParam(params.raw, "group");
+  const targetAgent = readToolStringParam(params.raw, "targetAgent");
   if (params.raw.visible !== true) {
     const visibleOnlyParams = [
+      ["targetAgent", targetAgent],
       ["group", group],
       ["worktree", worktree],
       ["worktreeName", worktreeName],
@@ -446,10 +454,12 @@ export async function maybeSpawnVisibleSession(params: {
       sessionKey: childSessionKey,
       fallbackAgentId: targetAgentId,
     });
+    const effectiveTargetAgent = targetAgent ?? params.requestedAgentId;
     return {
       status: "accepted",
       childSessionKey,
       ...(runId ? { runId } : {}),
+      ...(effectiveTargetAgent ? { targetAgent: effectiveTargetAgent } : {}),
       mode: "run",
       cleanup: "keep",
       ...(sessionUrl ? { sessionUrl } : {}),
