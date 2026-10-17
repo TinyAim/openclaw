@@ -118,6 +118,50 @@ export function parseSpatialReferenceComponentSpec(
 ): MediaSpatialComponentSpec | undefined {
   const r = obj(value);
   if (!r || r.schemaVersion !== 1) return undefined;
+  if (r.kind === "architecture") {
+    const size = vec(r.size, true);
+    if (!size) return undefined;
+    if (r.profile === "window_wall") {
+      if (
+        !only(r, [
+          "schemaVersion",
+          "kind",
+          "profile",
+          "size",
+          "openingWidthM",
+          "openingHeightM",
+          "sillHeightM",
+        ]) ||
+        !finite(r.openingWidthM, 0.05, size.x - 0.01) ||
+        !finite(r.openingHeightM, 0.05, size.y - 0.01) ||
+        !finite(r.sillHeightM, 0.005, size.y - r.openingHeightM - 0.005)
+      )
+        return undefined;
+      return {
+        schemaVersion: 1,
+        kind: "architecture",
+        profile: "window_wall",
+        size,
+        openingWidthM: r.openingWidthM,
+        openingHeightM: r.openingHeightM,
+        sillHeightM: r.sillHeightM,
+      };
+    }
+    if (
+      r.profile === "gable_roof" &&
+      only(r, ["schemaVersion", "kind", "profile", "size", "thicknessM"]) &&
+      finite(r.thicknessM, 0.005, Math.min(size.y - 0.005, size.z / 2))
+    ) {
+      return {
+        schemaVersion: 1,
+        kind: "architecture",
+        profile: "gable_roof",
+        size,
+        thicknessM: r.thicknessM,
+      };
+    }
+    return undefined;
+  }
   if (r.kind === "tree") {
     if (!only(r, ["schemaVersion", "kind", "trunk", "branches", "roots", "crowns"]))
       return undefined;
@@ -154,15 +198,13 @@ export function parseSpatialReferenceComponentSpec(
     )
       return undefined;
     const radiiM = [...r.radiiM] as number[];
-    const axis: Rod[] = path
-      .slice(1)
-      .map((p, i) => ({
-        partId: "axis",
-        start: path[i]!,
-        end: p,
-        startRadiusM: radiiM[i]!,
-        endRadiusM: radiiM[i + 1]!,
-      }));
+    const axis: Rod[] = path.slice(1).map((p, i) => ({
+      partId: "axis",
+      start: path[i]!,
+      end: p,
+      startRadiusM: radiiM[i]!,
+      endRadiusM: radiiM[i + 1]!,
+    }));
     if (path.slice(1, -1).some((_, i) => distance(path[i]!, path[i + 2]!) < 0.01)) return undefined;
     if (
       axis.some((x) => distance(x.start, x.end) < 0.01 || distance(x.start, x.end) > 100) ||

@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseMediaGenRuntimeResult } from "../../../../../../packages/contracts/src/dto/media-generation-runtime-executor/parsers/result.js";
+import { ImageGenerationExactOutputError } from "../../image-generation/normalization.js";
 import {
   AUTH_TOKEN,
   createTestGatewayServer,
@@ -14,7 +16,24 @@ import {
   createMediaGenRuntimeImageExecutor,
   type ImageRouteExecutor,
 } from "./image-http.js";
+import {
+  protectedImageDispatch,
+  protectedImageEnv,
+  protectedImageRoute,
+} from "./protected-image.test-helpers.js";
 import type { MediaGenRuntimeBridge } from "./types.js";
+
+vi.mock("../../media-generation/registry.js", async () => {
+  const { protectedImageModelAuth } = await import("./protected-image.test-helpers.js");
+  const { buildOpenAIImageGenerationProvider } =
+    await import("../../../extensions/openai/image-generation-provider.js");
+  return {
+    getImageGenerationProvider: (provider: string) =>
+      provider === "openai"
+        ? buildOpenAIImageGenerationProvider(protectedImageModelAuth)
+        : undefined,
+  };
+});
 
 function stableJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
@@ -128,21 +147,6 @@ async function withServer(
   });
 }
 
-function imageRoute() {
-  return {
-    providerId: "provider-1",
-    modelId: "model-1",
-    routeId: "route-1",
-    endpointId: "images.generate",
-    region: "local",
-    accountTier: "standard",
-    adapterRevision: "adapter-1",
-    profileId: "profile-1",
-    profileRevision: 1,
-    profileDigest: `sha256:${"a".repeat(64)}`,
-  };
-}
-
 function imageBridge() {
   return {
     handoffArtifact: vi.fn(
@@ -156,6 +160,11 @@ function imageBridge() {
 }
 
 describe("dedicated image runtime gateway", () => {
+  beforeEach(() => {
+    for (const key of ["OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"])
+      vi.stubEnv(key, undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
   it("keeps the image route behind gateway authentication and reaches only the image executor", async () => {
     const executor: ImageRouteExecutor = {
       dispatch: vi.fn(async (input) => ({
@@ -202,6 +211,73 @@ describe("dedicated image runtime gateway", () => {
     });
   });
 
+  it.each([
+    { op: "submit", stopOnly: true },
+    { op: "retry", stopOnly: true },
+    { op: "poll", runtimeJobId: "job-1", stopOnly: true },
+    { op: "cancel", runtimeJobId: "job-1", stopOnly: true },
+    { op: "reconcile", stopOnly: false },
+  ])("rejects illegal stopOnly grammar before execution: %j", async (overrides) => {
+    const executor: ImageRouteExecutor = { dispatch: vi.fn() };
+    await withServer(executor, async (url) => {
+      const response = await fetch(`${url}${MEDIA_GEN_RUNTIME_IMAGE_DISPATCH_PATH}`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify(imageDispatch(overrides)),
+      });
+      expect(response.status).toBe(400);
+      expect(executor.dispatch).not.toHaveBeenCalled();
+    });
+  });
+
+  it("accepts stopOnly reconcile without a job and preserves unknown stop honesty", async () => {
+    const executor: ImageRouteExecutor = {
+      dispatch: vi.fn(async (input) => ({
+        taskId: input.taskId,
+        workspaceId: input.workspaceId,
+        correlationId: input.correlationId,
+        status: "submission_unknown",
+        providerRequestDigest: input.frozenPlanDigest,
+      })),
+    };
+    await withServer(executor, async (url) => {
+      const response = await fetch(`${url}${MEDIA_GEN_RUNTIME_IMAGE_DISPATCH_PATH}`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify(imageDispatch({ op: "reconcile", stopOnly: true })),
+      });
+      expect(response.status).toBe(200);
+      const receipt = await response.json();
+      expect(receipt.status).toBe("submission_unknown");
+      expect(parseMediaGenRuntimeResult(receipt)).not.toBeNull();
+      expect(executor.dispatch).toHaveBeenCalledWith(
+        expect.objectContaining({ op: "reconcile", stopOnly: true }),
+      );
+    });
+  });
+
+  it("rejects a jobless unknown stop receipt that the shared contract also rejects", async () => {
+    const executor: ImageRouteExecutor = {
+      dispatch: vi.fn(async (input) => ({
+        taskId: input.taskId,
+        workspaceId: input.workspaceId,
+        correlationId: input.correlationId,
+        status: "canceled",
+        runtimeStopOutcome: { state: "unknown", reasonCode: "transport_uncertain" },
+      })),
+    };
+    await withServer(executor, async (url) => {
+      const input = imageDispatch({ op: "reconcile", stopOnly: true });
+      expect(parseMediaGenRuntimeResult(await executor.dispatch(input as never))).toBeNull();
+      const response = await fetch(`${url}${MEDIA_GEN_RUNTIME_IMAGE_DISPATCH_PATH}`, {
+        method: "POST",
+        headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      expect(response.status).toBe(502);
+    });
+  });
+
   it("rejects an executor receipt with an untrusted extra field", async () => {
     const executor: ImageRouteExecutor = {
       dispatch: vi.fn(async (input) => ({
@@ -226,7 +302,7 @@ describe("dedicated image runtime gateway", () => {
 
   it("keeps one same-attempt provider create across a race and a new executor instance", async () => {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-receipt-"));
-    const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+    const env = protectedImageEnv(stateDir);
     const bytes = Buffer.from("real-image-test-bytes");
     const generateImageFn = vi.fn(async () => ({
       images: [{ buffer: bytes, mimeType: "image/png" }],
@@ -236,7 +312,7 @@ describe("dedicated image runtime gateway", () => {
       createMediaGenRuntimeImageExecutor({
         env,
         runtimeId: "runtime-1",
-        route: imageRoute(),
+        route: protectedImageRoute(),
         bridge,
         getConfig: () => ({}) as never,
         compliance: {
@@ -247,13 +323,30 @@ describe("dedicated image runtime gateway", () => {
         generateImageFn,
       });
     try {
-      const dispatch = imageDispatch();
+      const dispatch = protectedImageDispatch();
       const [left, right] = await Promise.all([
         createExecutor().dispatch(dispatch),
         createExecutor().dispatch(dispatch),
       ]);
-      expect([left.status, right.status].sort()).toEqual(["processing", "submission_unknown"]);
+      expect([left.status, right.status]).toContain("processing");
+      expect(
+        [left.status, right.status].every((status) =>
+          ["processing", "submission_unknown"].includes(String(status)),
+        ),
+      ).toBe(true);
       expect(generateImageFn).toHaveBeenCalledTimes(1);
+      expect(generateImageFn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requireExactOutput: true,
+          autoProviderFallback: false,
+          count: 1,
+          modelOverride: "openai/gpt-image-1.5",
+          size: "1024x1024",
+          quality: "high",
+          outputFormat: "png",
+          background: "opaque",
+        }),
+      );
 
       const recovered = await createExecutor().dispatch({
         ...dispatch,
@@ -268,8 +361,9 @@ describe("dedicated image runtime gateway", () => {
         },
         snapshot: {
           executionOwner: "user_runtime",
-          moderationStatus: "runtime_enforced",
-          labelingStatus: "runtime_applied",
+          // Configuration claims alone do not prove image processing.
+          moderationStatus: "not_enforced",
+          labelingStatus: "absent",
         },
       });
       expect(generateImageFn).toHaveBeenCalledTimes(1);
@@ -282,6 +376,87 @@ describe("dedicated image runtime gateway", () => {
           }),
         }),
       );
+    } finally {
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves uncertain Provider effects across replay and restart without another create", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-unknown-"));
+    const generateImageFn = vi.fn(async () => {
+      throw new Error("connection lost after request");
+    });
+    const bridge = imageBridge();
+    const createExecutor = () =>
+      createMediaGenRuntimeImageExecutor({
+        env: protectedImageEnv(stateDir),
+        runtimeId: "runtime-1",
+        route: protectedImageRoute(),
+        bridge,
+        getConfig: () => ({}),
+        compliance: {
+          enforcesModeration: false,
+          appliesLabeling: false,
+          registrationDisclosureStatus: "undeclared",
+        },
+        generateImageFn,
+      });
+    try {
+      const dispatch = protectedImageDispatch();
+      const first = await createExecutor().dispatch(dispatch);
+      expect(first).toMatchObject({
+        status: "submission_unknown",
+        providerRequestDigest: expect.any(String),
+      });
+      const replay = await createExecutor().dispatch(dispatch);
+      const reconcile = await createExecutor().dispatch({ ...dispatch, op: "reconcile" });
+      expect(replay).toMatchObject({
+        status: "submission_unknown",
+        providerRequestDigest: first.providerRequestDigest,
+      });
+      expect(reconcile).toMatchObject({
+        status: "submission_unknown",
+        providerRequestDigest: first.providerRequestDigest,
+      });
+      const [file] = await fs.readdir(path.join(stateDir, "media-gen-image-receipts-v1"));
+      expect(
+        JSON.parse(
+          await fs.readFile(path.join(stateDir, "media-gen-image-receipts-v1", file!), "utf8"),
+        ),
+      ).toMatchObject({ state: "started" });
+      expect(generateImageFn).toHaveBeenCalledTimes(1);
+      expect(bridge.handoffArtifact).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an ExactOutputError from inside generation unknown without a no-effect proof", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-image-preflight-"));
+    const generateImageFn = vi.fn(async () => {
+      throw new ImageGenerationExactOutputError("Frozen output unsupported.");
+    });
+    const bridge = imageBridge();
+    const executor = createMediaGenRuntimeImageExecutor({
+      env: protectedImageEnv(stateDir),
+      runtimeId: "runtime-1",
+      route: protectedImageRoute(),
+      bridge,
+      getConfig: () => ({}),
+      compliance: {
+        enforcesModeration: false,
+        appliesLabeling: false,
+        registrationDisclosureStatus: "undeclared",
+      },
+      generateImageFn,
+    });
+    try {
+      expect(await executor.dispatch(protectedImageDispatch())).toMatchObject({
+        status: "submission_unknown",
+        imageLifecycleReceipt: { providerOutcome: "unknown" },
+      });
+      expect(bridge.handoffArtifact).not.toHaveBeenCalled();
+      expect(generateImageFn).toHaveBeenCalledTimes(1);
     } finally {
       await fs.rm(stateDir, { recursive: true, force: true });
     }

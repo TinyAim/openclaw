@@ -124,7 +124,12 @@ export async function runConfigPatch(opts: {
   }
 }
 
-export async function runConfigGet(opts: { path: string; json?: boolean; runtime?: RuntimeEnv }) {
+export async function runConfigGet(opts: {
+  path: string;
+  json?: boolean;
+  authored?: boolean;
+  runtime?: RuntimeEnv;
+}) {
   const runtime = opts.runtime ?? defaultRuntime;
   try {
     const parsedPath = parseConfigSetPath(opts.path);
@@ -138,7 +143,10 @@ export async function runConfigGet(opts: { path: string; json?: boolean; runtime
       pluginMetadataSnapshot.manifestRegistry,
       snapshot.sourceConfig,
     );
-    const res = getAtPath(redactConfigObject(snapshot.config, uiHints), parsedPath);
+    // Conditional writes compare snapshot.resolved. Opt-in authored reads must
+    // retain omitted fields rather than persisting runtime-injected defaults.
+    const visibleConfig = opts.authored === true ? snapshot.resolved : snapshot.config;
+    const res = getAtPath(redactConfigObject(visibleConfig, uiHints), parsedPath);
     if (!res.found) {
       const message = isConfigSchemaPath(schema, parsedPath)
         ? `Config path is valid but unset: ${opts.path}. The runtime default applies until you set an authored value with ${formatCliCommand(`openclaw config set ${quoteCliArg(opts.path)} <value>`)}.`
@@ -338,8 +346,9 @@ export function registerConfigCli(program: Command) {
     .description("Get a config value by dot path")
     .argument("<path>", "Config path (dot or bracket notation)")
     .option("--json", "Output JSON", false)
+    .option("--authored", "Read authored values without runtime defaults (still redacted)", false)
     .action(async (path: string, opts) => {
-      await runConfigGet({ path, json: Boolean(opts.json) });
+      await runConfigGet({ path, json: Boolean(opts.json), authored: Boolean(opts.authored) });
     });
 
   setCommandJsonMode(cmd.command("set"), "parse-only", ({ argv }) => isConfigSetJsonParseOnly(argv))

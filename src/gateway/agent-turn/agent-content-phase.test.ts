@@ -6,13 +6,69 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import * as attachments from "../chat-attachments.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { prepareAgentContentPhase } from "./agent-content-phase.js";
 import type { AgentTurnContext } from "./types.js";
 
 let state: OpenClawTestState | undefined;
 afterEach(async () => {
+  vi.restoreAllMocks();
   await state?.cleanup();
+});
+
+it.each([
+  [
+    "known image admission",
+    new attachments.UnsupportedAttachmentError("text-only-image", "private attachment path"),
+    true,
+  ],
+  [
+    "different unsupported attachment",
+    new attachments.UnsupportedAttachmentError("empty-payload", "private attachment path"),
+    false,
+  ],
+  [
+    "message-only lookalike",
+    Object.assign(new Error("active model does not accept image inputs"), {
+      name: "UnsupportedAttachmentError",
+      reason: "text-only-image",
+    }),
+    false,
+  ],
+] as const)("emits no-submit details only for %s", async (_name, error, expected) => {
+  vi.spyOn(attachments, "parseMessageWithAttachments").mockRejectedValueOnce(error);
+  const respond = vi.fn();
+  const result = await prepareAgentContentPhase({
+    request: { message: "read image", idempotencyKey: "original-run" },
+    cfg: {},
+    isRawModelRun: true,
+    respond,
+    knownAgents: [],
+    normalizedAttachments: [
+      { type: "image", mimeType: "image/png", fileName: "image.png", content: "aW1hZ2U=" },
+    ],
+    context: {
+      logGateway: { error: vi.fn(), warn: vi.fn() },
+      loadGatewayModelCatalog: vi.fn(async () => []),
+    } as unknown as AgentTurnContext,
+  });
+  // Undefined content stops agent-turn-service before native/provider submit.
+  expect(result).toBeUndefined();
+  expect(respond).toHaveBeenCalledOnce();
+  const response = respond.mock.calls[0]!;
+  expect(response[0]).toBe(false);
+  expect(response[2]).toMatchObject({ code: "INVALID_REQUEST" });
+  expect(response[2].details).toEqual(
+    expected
+      ? {
+          reasonCode: "attachment_image_input_unsupported",
+          phase: "attachment_admission",
+          providerEffects: "none",
+          clientRunId: "original-run",
+        }
+      : undefined,
+  );
 });
 
 it.each(["main", "work"])(

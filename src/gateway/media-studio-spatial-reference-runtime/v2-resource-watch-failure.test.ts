@@ -436,6 +436,53 @@ describe("Darwin armed tree RSS observer fail-closed diagnostics", () => {
       watcher.stop();
     }
   });
+
+  it("retains the exact over-cap sample after cleanup without changing cap equality", async () => {
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const controller = new AbortController();
+    vi.mocked(spawnCommand).mockImplementation(() =>
+      child(Promise.resolve(output({ ...sample, rssBytes: 1_000_000 }))),
+    );
+    const watcher = createSpatialReferenceV2RssWatch({
+      rootPid: process.pid,
+      resourceObserverExecutablePath: path,
+      signal: controller.signal,
+      abort: (error) => controller.abort(error),
+      maxTreeRssBytes: 1_000_000,
+      observationContext: () => ({ renderStage: "frame_render", frameIndex: 42 }),
+    });
+    try {
+      await watcher.sampleBoundary("post_browser_launch");
+      expect(controller.signal.aborted).toBe(false);
+      vi.mocked(spawnCommand).mockImplementation(() =>
+        child(Promise.resolve(output({ ...sample, rssBytes: 1_000_001 }))),
+      );
+      const error = await watcher.sampleBoundary("post_host_load").catch((value) => value);
+      watcher.stop();
+      expect(error.message).toBe("spatial_v2_rss_limit_exceeded");
+      expect(error.cause?.failureDetails).toEqual({
+        source: "spatial_rss_limit/v1",
+        metric: "darwin_libproc_tree_rss_span_v1",
+        rootPid: process.pid,
+        observerPid,
+        nodeCount: 2,
+        verifiedSpanMs: 1,
+        capBytes: 1_000_000,
+        observedBytes: 1_000_001,
+        peakBytes: 1_000_001,
+        observedAtMs: expect.any(Number),
+        phase: "post_host_load",
+        renderStage: "frame_render",
+        frameIndex: 42,
+      });
+      expect(controller.signal.reason).toBe(error);
+      const calls = vi.mocked(spawnCommand).mock.calls.length;
+      await watcher.sampleBoundary("before_ffmpeg");
+      expect(spawnCommand).toHaveBeenCalledTimes(calls);
+    } finally {
+      watcher.stop();
+    }
+  });
 });
 
 describe("private native RSS diagnostic boundary", () => {

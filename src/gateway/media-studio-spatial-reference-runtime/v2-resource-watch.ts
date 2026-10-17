@@ -5,7 +5,14 @@ import {
   validateObserverExecDiagnostic,
   type SpatialReferenceV2ObserverExecDiagnostic,
 } from "./v2-observer-exec-diagnostic.js";
+import {
+  validateSpatialReferenceV2RssLimitDiagnostic,
+  type SpatialReferenceV2RssLimitDiagnostic,
+} from "./v2-rss-limit-diagnostic.js";
 export type { SpatialReferenceV2ObserverExecDiagnostic } from "./v2-observer-exec-diagnostic.js";
+export type SpatialReferenceV2FailureDetails =
+  | SpatialReferenceV2ObserverExecDiagnostic
+  | SpatialReferenceV2RssLimitDiagnostic;
 
 const RSS_POLL_MS = 100;
 type LinuxProcess = { pid: number; ppid: number; rssBytes: number };
@@ -153,6 +160,25 @@ export function spatialReferenceV2ObserverExecErrorDiagnostic(
   );
 }
 
+export function validateSpatialReferenceV2FailureDetails(
+  value: unknown,
+): SpatialReferenceV2FailureDetails | undefined {
+  return (
+    validateSpatialReferenceV2RssLimitDiagnostic(value) ??
+    validateSpatialReferenceV2ObserverExecDiagnostic(value)
+  );
+}
+
+export function spatialReferenceV2FailureDetailsFromError(
+  error: unknown,
+): SpatialReferenceV2FailureDetails | undefined {
+  return error instanceof Error && error.cause && typeof error.cause === "object"
+    ? validateSpatialReferenceV2FailureDetails(
+        (error.cause as { failureDetails?: unknown }).failureDetails,
+      )
+    : undefined;
+}
+
 /** Credential-free private IPC diagnostics only; reject rather than strip extra fields. */
 export function validateSpatialReferenceV2NativeRssDiagnostic(
   value: unknown,
@@ -232,7 +258,7 @@ async function darwinDescendantRssBytes(
   rootPid: number,
   executablePath?: string,
   context?: { renderStage: string; frameIndex: number | null },
-): Promise<number> {
+): Promise<{ rssBytes: number; observerPid: number; nodeCount: number; verifiedSpanMs: number }> {
   if (!executablePath || !path.isAbsolute(executablePath) || rootPid !== process.pid) {
     throw new Error("spatial_v2_rss_observation_parent_binding");
   }
@@ -373,7 +399,12 @@ async function darwinDescendantRssBytes(
   ) {
     throw new Error("spatial_v2_rss_observation_snapshot_invalid");
   }
-  return Number(sample.rssBytes);
+  return {
+    rssBytes: Number(sample.rssBytes),
+    observerPid: Number(sample.observerPid),
+    nodeCount: Number(sample.nodeCount),
+    verifiedSpanMs: Number(sample.verifiedSpanMs),
+  };
 }
 
 /** Verified tree observers: Linux procfs and Darwin armed, stable libproc measurement span. */
@@ -391,7 +422,7 @@ export async function readSpatialReferenceV2TreeRssBytes(
   }
   if (process.platform === "darwin") {
     try {
-      return await darwinDescendantRssBytes(rootPid, resourceObserverExecutablePath);
+      return (await darwinDescendantRssBytes(rootPid, resourceObserverExecutablePath)).rssBytes;
     } catch {
       return undefined;
     }
@@ -452,15 +483,17 @@ export function createSpatialReferenceV2RssWatch(params: {
       .then(async () => {
         if (stopped || params.signal.aborted) return;
         let rssBytes: number | undefined;
+        let nativeSample: Awaited<ReturnType<typeof darwinDescendantRssBytes>> | undefined;
+        const context = params.observationContext?.();
         try {
-          rssBytes =
-            process.platform === "darwin"
-              ? await darwinDescendantRssBytes(
-                  params.rootPid,
-                  params.resourceObserverExecutablePath,
-                  params.observationContext?.(),
-                )
-              : await readSpatialReferenceV2TreeRssBytes(params.rootPid);
+          if (process.platform === "darwin") {
+            nativeSample = await darwinDescendantRssBytes(
+              params.rootPid,
+              params.resourceObserverExecutablePath,
+              context,
+            );
+            rssBytes = nativeSample.rssBytes;
+          } else rssBytes = await readSpatialReferenceV2TreeRssBytes(params.rootPid);
         } catch (error) {
           params.abort(
             error instanceof Error ? error : new Error("spatial_v2_rss_observation_unavailable"),
@@ -476,7 +509,24 @@ export function createSpatialReferenceV2RssWatch(params: {
         samples.push(observation);
         peakBytes = Math.max(peakBytes, rssBytes);
         if (rssBytes > params.maxTreeRssBytes) {
-          const error = new Error("spatial_v2_rss_limit_exceeded");
+          const failureDetails = validateSpatialReferenceV2RssLimitDiagnostic({
+            source: "spatial_rss_limit/v1",
+            metric: nativeSample
+              ? "darwin_libproc_tree_rss_span_v1"
+              : "linux_proc_status_tree_rss_sum_v1",
+            rootPid: params.rootPid,
+            observerPid: nativeSample?.observerPid ?? null,
+            nodeCount: nativeSample?.nodeCount ?? null,
+            verifiedSpanMs: nativeSample?.verifiedSpanMs ?? null,
+            capBytes: params.maxTreeRssBytes,
+            observedBytes: rssBytes,
+            peakBytes,
+            observedAtMs: observation.observedAtMs,
+            phase,
+            renderStage: context?.renderStage ?? "unknown",
+            frameIndex: context?.frameIndex ?? null,
+          });
+          const error = new Error("spatial_v2_rss_limit_exceeded", { cause: { failureDetails } });
           params.abort(error);
           throw error;
         }

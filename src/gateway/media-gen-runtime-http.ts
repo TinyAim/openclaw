@@ -20,6 +20,7 @@ import {
   parseProviderObservation,
   type MediaGenProviderRuntimeObservation,
 } from "./media-gen-runtime/provider-observation.js";
+import type { MediaGenRuntimeImageLifecycleReceiptV1 } from "./media-gen-runtime/types.js";
 
 export const MEDIA_GEN_RUNTIME_DISPATCH_PATH = "/v1/runtime/media-gen/dispatch";
 
@@ -130,6 +131,7 @@ export type MediaGenRuntimeResult = {
   workspaceId: string;
   correlationId: string;
   status: "processing" | "succeeded" | "failed" | "canceled" | "submission_unknown";
+  imageLifecycleReceipt?: MediaGenRuntimeImageLifecycleReceiptV1;
   runtimeStopOutcome?: MediaGenRuntimeStopOutcome;
   retryDisposition?: "replacement_allowed" | "reconcile_only";
   runtimeJobId?: string;

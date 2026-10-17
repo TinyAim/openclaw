@@ -6,6 +6,8 @@ import type {
   MediaGenRuntimeSpatialInputEnvelope,
 } from "../media-gen-runtime-http.js";
 import type { MediaGenRuntimeFrozenPlanV2 } from "./frozen-plan.js";
+import type { ImageExecutionEvidence } from "./image-registration.js";
+import type { ImageCapabilityBinding } from "./image-route-config.js";
 import type { MediaGenProviderRuntimeObservation } from "./provider-observation.js";
 
 export type MediaGenFailureReason = NonNullable<MediaGenRuntimeResult["failureReason"]>;
@@ -203,6 +205,20 @@ export type MediaGenRuntimeArtifactRef = {
   mimeType: string;
 };
 
+/** Vendored mirror of the closed Control API Image attempt readback contract. */
+export type MediaGenRuntimeImageLifecycleReceiptV1 = {
+  schemaVersion: 1;
+  executionAttempt: number;
+  frozenPlanDigest: string;
+  /** Immutable original submit/retry correlation, never the current read correlation. */
+  submissionCorrelationId: string;
+  observedAt: string;
+  /** Durable original journal revision; reads never advance it. */
+  sequence: number;
+  providerOutcome: "unknown" | "processing" | "succeeded" | "failed" | "canceled" | "not_submitted";
+  retryDisposition?: "replacement_allowed" | "reconcile_only";
+};
+
 /**
  * Shared identity for the Artifact callback.  Image dispatches deliberately do
  * not fabricate a legacy video `mode` just to settle their bytes.
@@ -226,6 +242,8 @@ export type MediaGenRuntimeBridge = {
     supportsMultiReference?: boolean;
     capabilityRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
     modelServingClaims?: readonly MediaGenRuntimeModelServingClaim[];
+    imageCapabilityBindings?: readonly ImageCapabilityBinding[];
+    imageExecutionEvidence?: readonly ImageExecutionEvidence[];
   }): Promise<void>;
   resolveArtifactReference(input: {
     dispatch: MediaGenRuntimeDispatch;
@@ -240,6 +258,17 @@ export type MediaGenRuntimeBridge = {
     bytes: Buffer;
     sha256: string;
   }): Promise<MediaGenRuntimeArtifactRef>;
+  /** Read the exact original Image handoff after an uncertain POST; never creates. */
+  readImageArtifactHandoff?(input: {
+    dispatch: MediaGenRuntimeArtifactHandoffIdentity & {
+      executionAttempt: number;
+      frozenPlanDigest: string;
+    };
+    runtimeJobId: string;
+    output: MediaGenRuntimeVendorOutput;
+    sha256: string;
+    submissionCorrelationId: string;
+  }): Promise<{ state: "pending" } | { state: "committed"; artifact: MediaGenRuntimeArtifactRef }>;
 };
 
 export class MediaGenRuntimeConfigError extends Error {

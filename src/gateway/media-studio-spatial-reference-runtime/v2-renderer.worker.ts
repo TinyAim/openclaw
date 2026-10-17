@@ -4,7 +4,7 @@
  * bounded local result manifest for the supervised parent to read.
  */
 import { createHash } from "node:crypto";
-import { readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { chromium, type BrowserContext, type Page, type Route } from "playwright-core";
@@ -28,8 +28,9 @@ import {
 import {
   createSpatialReferenceV2RssWatch,
   spatialReferenceV2NativeRssErrorDiagnostic,
-  spatialReferenceV2ObserverExecErrorDiagnostic,
+  spatialReferenceV2FailureDetailsFromError,
 } from "./v2-resource-watch.js";
+import { startSpatialReferenceV2TempWatch } from "./v2-temp-watch.js";
 
 type BrowserRenderHost = {
   render(snapshot: unknown): Promise<string> | string;
@@ -55,53 +56,6 @@ type WorkerManifestOutput = {
 };
 
 type WorkerManifest = { outputs: WorkerManifestOutput[] };
-
-async function workDirBytes(directory: string): Promise<number> {
-  let total = 0;
-  const entries = await readdir(directory, { withFileTypes: true });
-  for (const entry of entries) {
-    const item = path.join(directory, entry.name);
-    if (entry.isDirectory()) {
-      total += await workDirBytes(item);
-      continue;
-    }
-    if (entry.isFile()) {
-      total += (await stat(item)).size;
-    }
-  }
-  return total;
-}
-
-function startTempWatch(params: {
-  workDir: string;
-  signal: AbortSignal;
-  abort: (reason: Error) => void;
-}): () => void {
-  let stopped = false;
-  let sampling = false;
-  const sample = async () => {
-    if (stopped || sampling || params.signal.aborted) {
-      return;
-    }
-    sampling = true;
-    try {
-      if ((await workDirBytes(params.workDir)) > SPATIAL_V2_MAX_TEMP_BYTES) {
-        params.abort(new Error("spatial_v2_temp_limit_exceeded"));
-      }
-    } catch {
-      params.abort(new Error("spatial_v2_temp_observation_unavailable"));
-    } finally {
-      sampling = false;
-    }
-  };
-  const timer = setInterval(() => void sample(), 100);
-  timer.unref?.();
-  void sample();
-  return () => {
-    stopped = true;
-    clearInterval(timer);
-  };
-}
 
 function requireArgument(name: string): string {
   const index = process.argv.indexOf(name);
@@ -394,7 +348,7 @@ async function run(): Promise<void> {
     pollMs: request.resourceProfile.pollMs,
     observationContext: () => ({ renderStage: failureStage, frameIndex }),
   });
-  const stopTempWatch = startTempWatch({
+  const stopTempWatch = startSpatialReferenceV2TempWatch({
     workDir: request.workDir,
     signal: controller.signal,
     abort,
@@ -626,7 +580,7 @@ async function run(): Promise<void> {
             controller.signal.aborted ? controller.signal.reason : error,
             failureStage,
           ),
-          failureDetails: spatialReferenceV2ObserverExecErrorDiagnostic(
+          failureDetails: spatialReferenceV2FailureDetailsFromError(
             controller.signal.aborted ? controller.signal.reason : error,
           ),
         },
@@ -658,7 +612,7 @@ void run().catch((error: unknown) => {
     type: "spatial-v2-failed",
     code: workerFailureCode(error, "worker"),
     nativeDiagnostic: spatialReferenceV2NativeRssErrorDiagnostic(error),
-    failureDetails: spatialReferenceV2ObserverExecErrorDiagnostic(error),
+    failureDetails: spatialReferenceV2FailureDetailsFromError(error),
   });
   process.exitCode = 1;
 });

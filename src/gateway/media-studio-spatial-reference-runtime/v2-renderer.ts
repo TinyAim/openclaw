@@ -42,6 +42,8 @@ import {
 import {
   supportsSpatialReferenceV2ResourceLimits,
   validateSpatialReferenceV2NativeRssDiagnostic,
+  validateSpatialReferenceV2FailureDetails,
+  type SpatialReferenceV2FailureDetails,
   type SpatialReferenceV2NativeRssDiagnostic,
 } from "./v2-resource-watch.js";
 
@@ -399,6 +401,7 @@ async function runSupervisedWorker(params: {
   let scopeCleanupClosed = false;
   let workerFailureCode: string | undefined;
   let workerFailureDiagnostic: SpatialReferenceV2NativeRssDiagnostic | undefined;
+  let workerFailureDetails: SpatialReferenceV2FailureDetails | undefined;
   const guardianProtocol = createSpatialReferenceV2GuardianProtocol(generation);
   const rejectGuardianCheckpoints = (code: string): void => {
     workerFailureCode ??= code;
@@ -479,6 +482,12 @@ async function runSupervisedWorker(params: {
         }
         if (!protocol || protocol.kind === "failure") {
           if (protocol?.kind === "failure") {
+            const details = validateSpatialReferenceV2FailureDetails(event.failureDetails);
+            if (
+              details &&
+              (details.source !== "spatial_rss_limit/v1" || details.rootPid === identity?.pid)
+            )
+              workerFailureDetails ??= details;
             workerFailureDiagnostic = validateSpatialReferenceV2NativeRssDiagnostic(
               event.nativeDiagnostic,
             );
@@ -743,7 +752,9 @@ async function runSupervisedWorker(params: {
     const exit = await guardianExit;
     if (workerFailureCode || exit.reason !== "exit" || exit.exitCode !== 0)
       throw new Error(workerFailureCode ?? "spatial_v2_worker_failed", {
-        cause: workerFailureDiagnostic,
+        cause: workerFailureDetails
+          ? { failureDetails: workerFailureDetails, nativeDiagnostic: workerFailureDiagnostic }
+          : workerFailureDiagnostic,
       });
     if (invalidToolchainProof) throw invalidToolchainProof;
     if (params.config.collectToolchainProof && !receivedToolchainProof) {

@@ -32,6 +32,8 @@ export type GenerateImageParams = {
   background?: ImageGenerationBackground;
   inputImages?: ImageGenerationSourceImage[];
   autoProviderFallback?: boolean;
+  /** Frozen product plans reject normalized or ignored output options before Provider I/O. */
+  requireExactOutput?: boolean;
   /** Optional per-request provider timeout in milliseconds. */
   timeoutMs?: number;
   providerOptions?: ImageGenerationProviderOptions;

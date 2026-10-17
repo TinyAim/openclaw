@@ -331,7 +331,7 @@ export async function maybeSpawnVisibleSession(params: {
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
         model: resolvedModel,
-        task: params.task,
+        ...(params.task ? { task: params.task } : {}),
         parentSessionKey: requesterKey,
         // Declared spawn lineage: without it the child persists as a depth-0 root
         // and could spawn past maxSpawnDepth.
@@ -389,47 +389,50 @@ export async function maybeSpawnVisibleSession(params: {
           ? "Session changed; newer session kept."
           : "Session cleanup unconfirmed. Inspect the child session before retrying.";
     };
-    if (response.runStarted !== true || !runId) {
-      return {
-        status: "error",
-        error: `${runError}. ${await cleanupCreatedSession()}`,
-        childSessionKey,
-      };
-    }
-    try {
-      (params.options?.registerRun ?? registerSubagentRun)({
-        runId,
-        requesterTurnRunId: params.options?.requesterTurnRunId,
-        childSessionKey,
-        controllerSessionKey: ownership.controllerSessionKey,
-        requesterSessionKey: ownership.completionRequesterSessionKey,
-        requesterOrigin: normalizeDeliveryContext({
-          channel: params.options?.agentChannel,
-          accountId: params.options?.agentAccountId,
-          to:
-            params.options?.currentMessagingTarget ??
-            params.options?.currentChannelId ??
-            params.options?.agentTo,
-          threadId: params.options?.currentThreadTs ?? params.options?.agentThreadId,
-        }),
-        requesterDisplayKey: ownership.completionRequesterDisplayKey,
-        task: params.task,
-        taskName: params.taskName,
-        agentId: targetAgentId,
-        requesterAgentId,
-        cleanup: "keep",
-        label: params.label || undefined,
-        runTimeoutSeconds,
-        expectsCompletionMessage: params.expectsCompletionMessage,
-        spawnMode: "run",
-      });
-    } catch (error) {
-      return {
-        status: "error",
-        error: `Visible run registration failed: ${summarizeSessionsSpawnError(error)}. ${await cleanupCreatedSession()}`,
-        childSessionKey,
-        runId,
-      };
+    const hasInitialTask = Boolean(params.task?.trim());
+    if (hasInitialTask) {
+      if (response.runStarted !== true || !runId) {
+        return {
+          status: "error",
+          error: `${runError}. ${await cleanupCreatedSession()}`,
+          childSessionKey,
+        };
+      }
+      try {
+        (params.options?.registerRun ?? registerSubagentRun)({
+          runId,
+          requesterTurnRunId: params.options?.requesterTurnRunId,
+          childSessionKey,
+          controllerSessionKey: ownership.controllerSessionKey,
+          requesterSessionKey: ownership.completionRequesterSessionKey,
+          requesterOrigin: normalizeDeliveryContext({
+            channel: params.options?.agentChannel,
+            accountId: params.options?.agentAccountId,
+            to:
+              params.options?.currentMessagingTarget ??
+              params.options?.currentChannelId ??
+              params.options?.agentTo,
+            threadId: params.options?.currentThreadTs ?? params.options?.agentThreadId,
+          }),
+          requesterDisplayKey: ownership.completionRequesterDisplayKey,
+          task: params.task,
+          taskName: params.taskName,
+          agentId: targetAgentId,
+          requesterAgentId,
+          cleanup: "keep",
+          label: params.label || undefined,
+          runTimeoutSeconds,
+          expectsCompletionMessage: params.expectsCompletionMessage,
+          spawnMode: "run",
+        });
+      } catch (error) {
+        return {
+          status: "error",
+          error: `Visible run registration failed: ${summarizeSessionsSpawnError(error)}. ${await cleanupCreatedSession()}`,
+          childSessionKey,
+          runId,
+        };
+      }
     }
     recordSessionParticipantBestEffort({
       promptedAt,
@@ -446,7 +449,7 @@ export async function maybeSpawnVisibleSession(params: {
     return {
       status: "accepted",
       childSessionKey,
-      runId,
+      ...(runId ? { runId } : {}),
       mode: "run",
       cleanup: "keep",
       ...(sessionUrl ? { sessionUrl } : {}),

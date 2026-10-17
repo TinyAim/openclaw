@@ -1,6 +1,6 @@
 import type { SpatialReferenceRelayDispatchAck } from "../media-studio-spatial-reference-render-http.js";
 import type { SpatialReferenceTerminalCallback } from "./reference-callback.js";
-import type { SpatialReferenceV2ObserverExecDiagnostic } from "./v2-resource-watch.js";
+import type { SpatialReferenceV2FailureDetails } from "./v2-resource-watch.js";
 
 export const SPATIAL_REFERENCE_JOURNAL_SCHEMA_VERSION = 4;
 export type SpatialReferenceJournalSchemaVersion =
@@ -132,7 +132,7 @@ export type SpatialReferenceJournalScopeRecovery = {
   firstObservedAtMs: number;
   worker?: Pick<SpatialReferenceJournalWorker, "pid" | "startTime" | "scopeId" | "runId"> & {
     /** Private bounded failure evidence; contributes no authority to extinction or recovery. */
-    failureDetails?: SpatialReferenceV2ObserverExecDiagnostic;
+    failureDetails?: SpatialReferenceV2FailureDetails;
   };
   proof?:
     | {

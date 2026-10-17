@@ -67,6 +67,24 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
   it.each([
     ["success", undefined],
     ["bounded failure", observerFailureDetails],
+    [
+      "bounded rss failure",
+      {
+        source: "spatial_rss_limit/v1",
+        metric: "darwin_libproc_tree_rss_span_v1",
+        rootPid: 50,
+        observerPid: 51,
+        nodeCount: 3,
+        verifiedSpanMs: 1,
+        capBytes: 2147483648,
+        observedBytes: 2147483649,
+        peakBytes: 2147483649,
+        observedAtMs: 5,
+        phase: "periodic",
+        renderStage: "frame_render",
+        frameIndex: 42,
+      },
+    ],
     ["invalid failure metadata", { ...observerFailureDetails, privatePath: "/secret/path" }],
   ] as const)(
     "requires durable parent acknowledgements and retains private evidence: %s",
@@ -83,8 +101,11 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
             "const outputs = [];",
             `
         if (request.failureDetails) {
-          process.send?.({ type: "spatial-v2-failed", code: request.failureDetails.code,
-            failureDetails: request.failureDetails }, () => {
+          const details = { ...request.failureDetails };
+          if (details.source === "spatial_rss_limit/v1") details.rootPid = process.pid;
+          process.send?.({ type: "spatial-v2-failed",
+            code: details.source === "spatial_rss_limit/v1" ? "spatial_v2_rss_limit_exceeded" : details.code,
+            failureDetails: details }, () => {
               process.exitCode = 1; process.disconnect?.();
             });
           return;
@@ -292,6 +313,12 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           ),
         );
         await expect(run.wait()).resolves.toMatchObject({ reason: "exit", exitCode: 0 });
+        const expectedFailureDetails =
+          mode === "bounded rss failure"
+            ? { ...failureDetails, rootPid: (await journal.get(identity.key))?.worker?.pid }
+            : mode === "bounded failure"
+              ? observerFailureDetails
+              : undefined;
         if (!failureDetails) {
           expect(JSON.parse(await readFile(manifestPath, "utf8"))).toEqual({
             outputs: [{ slot: "end_frame", ordinal: 0, file: "guardian-end_frame-0.png" }],
@@ -303,11 +330,14 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           );
           expect(message).toMatchObject({
             type: "spatial-v2-failed",
-            code: observerFailureDetails.code,
+            code:
+              mode === "bounded rss failure"
+                ? "spatial_v2_rss_limit_exceeded"
+                : observerFailureDetails.code,
             generation,
           });
           expect((message as { failureDetails?: unknown }).failureDetails).toEqual(
-            mode === "bounded failure" ? observerFailureDetails : undefined,
+            expectedFailureDetails,
           );
           expect(JSON.stringify(message)).not.toContain("/secret/path");
         }
@@ -337,16 +367,14 @@ describe.skipIf(process.platform === "win32")("spatial guardian private launch",
           },
         });
         const row = await journal.get(identity.key);
-        expect(row?.scopeRecovery?.worker?.failureDetails).toEqual(
-          mode === "bounded failure" ? observerFailureDetails : undefined,
-        );
+        expect(row?.scopeRecovery?.worker?.failureDetails).toEqual(expectedFailureDetails);
         closePluginStateDatabase();
         const reopened = createSpatialReferenceJournal({
           env: { OPENCLAW_STATE_DIR: directory },
           namespace: "guardian-integration-journal",
         });
         expect((await reopened.get(identity.key))?.scopeRecovery?.worker?.failureDetails).toEqual(
-          mode === "bounded failure" ? observerFailureDetails : undefined,
+          expectedFailureDetails,
         );
       } finally {
         await rm(directory, { recursive: true, force: true });

@@ -71,7 +71,7 @@ import {
   recomposePreparedCallback,
   sameAck,
 } from "./reference-journal-validation.js";
-import { validateSpatialReferenceV2ObserverExecDiagnostic } from "./v2-resource-watch.js";
+import { validateSpatialReferenceV2FailureDetails } from "./v2-resource-watch.js";
 
 export type {
   SpatialReferenceExclusiveAdmissionClaimInput,
@@ -1167,7 +1167,9 @@ export function createSpatialReferenceJournalStore(params: {
       if (failureDetails !== undefined) {
         const worker = input.observation.worker!;
         if (
-          !validateSpatialReferenceV2ObserverExecDiagnostic(failureDetails) ||
+          !validateSpatialReferenceV2FailureDetails(failureDetails) ||
+          (failureDetails.source === "spatial_rss_limit/v1" &&
+            failureDetails.rootPid !== worker.pid) ||
           !current.worker ||
           worker.pid !== current.worker.pid ||
           worker.startTime !== current.worker.startTime ||

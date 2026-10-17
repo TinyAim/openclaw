@@ -7,11 +7,8 @@ import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import { createGoogleCloudAccessTokenProvider } from "./google-cloud-auth.js";
 import { createH3BaseSglangVendors } from "./h3-base-sglang-factory.js";
 import { createHailuoH3RuntimeVendor } from "./hailuo-h3-vendor.js";
-import {
-  createMediaGenRuntimeImageExecutor,
-  type MediaGenRuntimeImageRoute,
-  type ImageRouteExecutor,
-} from "./image-http.js";
+import { createMediaGenRuntimeImageExecutor, type ImageRouteExecutor } from "./image-http.js";
+import { parseImageRoute } from "./image-route-config.js";
 import { createKlingRuntimeVendor } from "./kling-vendor.js";
 import { createLumaRuntimeVendor } from "./luma-vendor.js";
 import {
@@ -83,41 +80,6 @@ function envBool(env: MediaGenRuntimeEnv, key: string): boolean {
 function envNumber(env: MediaGenRuntimeEnv, key: string, fallback: number): number {
   const parsed = Number(env[key]);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function parseImageRoute(env: MediaGenRuntimeEnv): MediaGenRuntimeImageRoute | null | undefined {
-  if (!envBool(env, "OPENCLAW_MEDIA_GEN_IMAGE_EXECUTOR_ENABLED")) return undefined;
-  const raw = envString(env, "OPENCLAW_MEDIA_GEN_IMAGE_ROUTE_JSON");
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as Record<string, unknown>;
-    const allowed = new Set([
-      "providerId",
-      "modelId",
-      "routeId",
-      "endpointId",
-      "region",
-      "accountTier",
-      "adapterRevision",
-      "profileId",
-      "profileRevision",
-      "profileDigest",
-    ]);
-    const required = [...allowed].filter((key) => key !== "profileRevision");
-    if (
-      Object.keys(value).some((key) => !allowed.has(key)) ||
-      required.some((key) => typeof value[key] !== "string" || !(value[key] as string).trim())
-    )
-      return null;
-    if (
-      !Number.isSafeInteger(value.profileRevision) ||
-      !/^sha256:[a-f0-9]{64}$/u.test(value.profileDigest as string)
-    )
-      return null;
-    return value as unknown as MediaGenRuntimeImageRoute;
-  } catch {
-    return null;
-  }
 }
 
 function maybeKlingVendor(
@@ -296,6 +258,14 @@ export function createOpenClawMediaGenRuntimeFromEnv(
   if (!bridge) {
     return { enabled: false, reason: "control-api URL, runtime id, or runtime token is missing" };
   }
+  const runtimeId = envString(env, "OPENCLAW_MEDIA_GEN_RUNTIME_ID", "MEDIAGEN_RUNTIME_ID");
+  const imageRoute = parseImageRoute(env);
+  if (imageRoute === null) {
+    return { enabled: false, reason: "OPENCLAW_MEDIA_GEN_IMAGE_ROUTE_JSON is invalid" };
+  }
+  // A configured image route can still read its original durable attempts after
+  // credential withdrawal. Snapshot/new-submit independently require the exact
+  // protected slot; constructing this reader never grants new image spend.
   const h3Base = createH3BaseSglangVendors(env, options.fetchImpl);
   if (h3Base.error) {
     return { enabled: false, reason: h3Base.error };
@@ -312,7 +282,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     maybeVeoVendor(env, options.fetchImpl),
     ...h3Base.vendors,
   ].filter((vendor): vendor is MediaGenRuntimeVendor => Boolean(vendor));
-  if (vendors.length === 0) {
+  if (vendors.length === 0 && !imageRoute) {
     return { enabled: false, reason: "no media-generation vendor credential is configured" };
   }
   const moderation = createWebhookModeration({
@@ -325,7 +295,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     token: envString(env, "OPENCLAW_MEDIA_GEN_COMPLIANCE_WEBHOOK_TOKEN") || undefined,
     fetchImpl: options.fetchImpl,
   });
-  if (!moderation || !labeler) {
+  if (vendors.length > 0 && (!moderation || !labeler)) {
     return {
       enabled: false,
       reason:
@@ -342,11 +312,6 @@ export function createOpenClawMediaGenRuntimeFromEnv(
     ]),
   ];
   const workspaces = envList(env, "OPENCLAW_MEDIA_GEN_WORKSPACE_IDS");
-  const runtimeId = envString(env, "OPENCLAW_MEDIA_GEN_RUNTIME_ID", "MEDIAGEN_RUNTIME_ID");
-  const imageRoute = parseImageRoute(env);
-  if (imageRoute === null) {
-    return { enabled: false, reason: "OPENCLAW_MEDIA_GEN_IMAGE_ROUTE_JSON is invalid" };
-  }
   const runtimeReferenceMapEnvKey = env.OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON?.trim()
     ? "OPENCLAW_MEDIA_GEN_RUNTIME_REFERENCE_MAP_JSON"
     : "OPENCLAW_SEEDANCE_RUNTIME_REFERENCE_MAP_JSON";
@@ -489,10 +454,15 @@ export function createOpenClawMediaGenRuntimeFromEnv(
         },
       })
     : undefined;
-  const supportedPresetIds = [...new Set(vendors.map((vendor) => vendor.presetId))];
+  const supportedPresetIds = [
+    ...new Set([
+      ...vendors.map((vendor) => vendor.presetId),
+      ...(imageRoute?.configuration ? [imageRoute.configuration.binding.presetId] : []),
+    ]),
+  ];
   const heartbeatMs = envNumber(env, "OPENCLAW_MEDIA_GEN_REGISTER_INTERVAL_MS", 60_000);
-  const enforcesModeration = Boolean(moderation);
-  const appliesLabeling = Boolean(labeler);
+  const enforcesModeration = vendors.length > 0 && Boolean(moderation);
+  const appliesLabeling = vendors.length > 0 && Boolean(labeler);
   const filterCapabilityRouteClaims = (claims: MediaGenRuntimeCapabilityRouteClaim[]) =>
     claims
       // Seedance's exact routes promise validated Artifact output. Do not make
@@ -597,16 +567,29 @@ export function createOpenClawMediaGenRuntimeFromEnv(
                 ),
             );
             for (const workspaceId of workspaces) {
-              const registerSnapshot = () =>
-                bridge.register({
+              const registerSnapshot = async (withoutPrivateRoutes = false) => {
+                const imageSnapshot = (await imageExecutor?.registrationSnapshot?.(
+                  workspaceId,
+                )) ?? {
+                  imageCapabilityBindings: [],
+                  imageExecutionEvidence: [],
+                };
+                if (stopped) return;
+                await bridge.register({
                   workspaceId,
                   supportedPresetIds,
                   enforcesModeration,
                   appliesLabeling,
-                  supportsMultiReference: snapshot.supportsMultiReference,
-                  capabilityRouteClaims: snapshot.capabilityRouteClaims,
+                  supportsMultiReference: withoutPrivateRoutes
+                    ? supportsMultiReference
+                    : snapshot.supportsMultiReference,
+                  capabilityRouteClaims: withoutPrivateRoutes
+                    ? capabilityRouteClaims
+                    : snapshot.capabilityRouteClaims,
                   modelServingClaims: snapshot.modelServingClaims,
+                  ...imageSnapshot,
                 });
+              };
               void registerSnapshot()
                 .then(() =>
                   options.log?.info?.(
@@ -621,15 +604,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
                   // private route is deliberately omitted on this retry.
                   if (hasDynamicPrivateClaims && !stopped) {
                     try {
-                      await bridge.register({
-                        workspaceId,
-                        supportedPresetIds,
-                        enforcesModeration,
-                        appliesLabeling,
-                        supportsMultiReference,
-                        capabilityRouteClaims,
-                        modelServingClaims: snapshot.modelServingClaims,
-                      });
+                      await registerSnapshot(true);
                       options.log?.warn?.(
                         `media-gen runtime heartbeat registered without quarantined private routes workspace=${workspaceId} runtime=${bridge.runtimeId}`,
                       );

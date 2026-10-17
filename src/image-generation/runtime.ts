@@ -17,7 +17,11 @@ import {
 } from "../media-generation/runtime-shared.js";
 import { getProviderEnvVars } from "../secrets/provider-env-vars.js";
 import { resolveImageGenerationMaxInputImages } from "./capabilities.js";
-import { resolveImageGenerationOverrides } from "./normalization.js";
+import {
+  assertExactImageGenerationOverrides,
+  ImageGenerationExactOutputError,
+  resolveImageGenerationOverrides,
+} from "./normalization.js";
 import type { GenerateImageParams, GenerateImageRuntimeResult } from "./runtime-types.js";
 import type { ImageGenerationResult } from "./types.js";
 
@@ -66,15 +70,25 @@ export async function generateImage(
   const requestedTimeoutMs =
     params.timeoutMs ??
     resolveAgentModelTimeoutMsValue(params.cfg.agents?.defaults?.mediaModels?.image);
-  const candidates = resolveCapabilityModelCandidates({
-    cfg: params.cfg,
-    modelConfig: params.cfg.agents?.defaults?.mediaModels?.image,
-    modelOverride: params.modelOverride,
-    parseModelRef: parseImageGenerationModelRef,
-    agentDir: params.agentDir,
-    listProviders,
-    autoProviderFallback: params.autoProviderFallback,
-  });
+  const exactCandidate = params.requireExactOutput
+    ? parseImageGenerationModelRef(params.modelOverride)
+    : undefined;
+  if (params.requireExactOutput && !exactCandidate) {
+    throw new ImageGenerationExactOutputError(
+      "Frozen image output requires one explicit Provider/model route.",
+    );
+  }
+  const candidates = exactCandidate
+    ? [exactCandidate]
+    : resolveCapabilityModelCandidates({
+        cfg: params.cfg,
+        modelConfig: params.cfg.agents?.defaults?.mediaModels?.image,
+        modelOverride: params.modelOverride,
+        parseModelRef: parseImageGenerationModelRef,
+        agentDir: params.agentDir,
+        listProviders,
+        autoProviderFallback: params.autoProviderFallback,
+      });
   if (candidates.length === 0) {
     throw new Error(buildNoImageGenerationModelConfiguredMessage(params.cfg, deps));
   }
@@ -82,7 +96,15 @@ export async function generateImage(
   return runMediaGenerationCandidates({
     candidates,
     capability: "image",
-    getProvider: (providerId) => getProvider(providerId, params.cfg),
+    getProvider: (providerId) => {
+      const provider = getProvider(providerId, params.cfg);
+      if (params.requireExactOutput && !provider) {
+        throw new ImageGenerationExactOutputError(
+          "The frozen image Provider route is not registered; no Provider request was sent.",
+        );
+      }
+      return provider;
+    },
     includeSkipFailureDetails: true,
     onMissingProvider: (attempt) => {
       logger.warn(
@@ -113,30 +135,34 @@ export async function generateImage(
         return referenceImageError;
       }
 
+      const modelResolutions =
+        provider.capabilities.geometry?.resolutionsByModel?.[candidate.model];
+      const modeCapabilities = params.inputImages?.length
+        ? provider.capabilities.edit
+        : provider.capabilities.generate;
+      const inferredResolution =
+        modeCapabilities.supportsResolution === false || modelResolutions?.length === 0
+          ? undefined
+          : params.inferredResolution;
+      const sanitized = resolveImageGenerationOverrides({
+        provider,
+        model: candidate.model,
+        size: params.size,
+        aspectRatio: params.aspectRatio,
+        resolution: params.resolution ?? inferredResolution,
+        quality: params.quality,
+        outputFormat: params.outputFormat,
+        background: params.background,
+        inputImages: params.inputImages,
+      });
+      if (params.requireExactOutput) {
+        assertExactImageGenerationOverrides(params, sanitized);
+      }
+
       return async (attempts): Promise<GenerateImageRuntimeResult> => {
         const timeoutMs = resolveMediaProviderRequestTimeoutMs({
           timeoutMs: requestedTimeoutMs,
           providerDefaultTimeoutMs: provider.defaultTimeoutMs,
-        });
-        const modelResolutions =
-          provider.capabilities.geometry?.resolutionsByModel?.[candidate.model];
-        const modeCapabilities = params.inputImages?.length
-          ? provider.capabilities.edit
-          : provider.capabilities.generate;
-        const inferredResolution =
-          modeCapabilities.supportsResolution === false || modelResolutions?.length === 0
-            ? undefined
-            : params.inferredResolution;
-        const sanitized = resolveImageGenerationOverrides({
-          provider,
-          model: candidate.model,
-          size: params.size,
-          aspectRatio: params.aspectRatio,
-          resolution: params.resolution ?? inferredResolution,
-          quality: params.quality,
-          outputFormat: params.outputFormat,
-          background: params.background,
-          inputImages: params.inputImages,
         });
         // Providers receive only supported overrides. Ignored/normalized values
         // are returned to callers so user-facing replies can explain adjustments.

@@ -147,6 +147,14 @@ export function createControlApiMediaGenBridge(
           ...(input.modelServingClaims && input.modelServingClaims.length > 0
             ? { modelServingClaims: input.modelServingClaims }
             : {}),
+          // Explicit empty lists withdraw an earlier image observation. Neither
+          // these claims nor the bridge can supply server-received freshness.
+          ...(input.imageCapabilityBindings !== undefined
+            ? { imageCapabilityBindings: input.imageCapabilityBindings }
+            : {}),
+          ...(input.imageExecutionEvidence !== undefined
+            ? { imageExecutionEvidence: input.imageExecutionEvidence }
+            : {}),
         },
         "media-gen runtime register",
       );
@@ -227,6 +235,52 @@ export function createControlApiMediaGenBridge(
         throw new Error("media-gen artifact handoff returned no artifact");
       }
       return data.artifact;
+    },
+    async readImageArtifactHandoff(input) {
+      const url = new URL(
+        buildHandoffUrl(
+          baseUrl,
+          options.runtimeId,
+          input.dispatch,
+          input.runtimeJobId,
+          input.output,
+          input.sha256,
+        ),
+      );
+      url.searchParams.set("submissionCorrelationId", input.submissionCorrelationId);
+      const response = await fetchImpl(url.toString(), {
+        method: "GET",
+        redirect: "error",
+        headers: { accept: "application/json", ...authHeaders },
+      });
+      const data = await readJson<{ state: unknown; artifact?: MediaGenRuntimeArtifactRef }>(
+        response,
+        "media-gen image artifact readback",
+      );
+      if (!data || typeof data !== "object" || Array.isArray(data))
+        throw new Error("invalid image artifact readback");
+      if (data.state === "pending" && Object.keys(data).length === 1) return { state: "pending" };
+      const artifact = data.artifact;
+      if (
+        data.state !== "committed" ||
+        Object.keys(data).some((key) => key !== "state" && key !== "artifact") ||
+        !artifact ||
+        typeof artifact !== "object" ||
+        Array.isArray(artifact) ||
+        Object.keys(artifact).some(
+          (key) => !["artifactId", "sha256", "durationSec", "resolution", "mimeType"].includes(key),
+        ) ||
+        typeof artifact.artifactId !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,299}$/u.test(artifact.artifactId) ||
+        artifact.sha256 !== input.sha256 ||
+        artifact.mimeType !== input.output.mimeType ||
+        !/^image\/(?:png|jpeg|webp)$/u.test(artifact.mimeType) ||
+        (artifact.resolution !== undefined &&
+          (typeof artifact.resolution !== "string" || !artifact.resolution)) ||
+        artifact.durationSec !== undefined
+      )
+        throw new Error("invalid image artifact readback identity");
+      return { state: "committed", artifact };
     },
   };
 }

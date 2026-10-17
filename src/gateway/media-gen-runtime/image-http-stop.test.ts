@@ -1,8 +1,7 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Isolate optional provider loading only. Executor, receipt store and handoff are real.
 vi.mock("../../image-generation/runtime.js", () => ({ generateImage: vi.fn() }));
 import {
@@ -14,111 +13,24 @@ import {
   createMediaGenRuntimeImageExecutor,
   MEDIA_GEN_RUNTIME_IMAGE_DISPATCH_PATH,
 } from "./image-http.js";
+import {
+  protectedImageDispatch,
+  protectedImageEnv,
+  protectedImageRoute,
+} from "./protected-image.test-helpers.js";
 import type { MediaGenRuntimeBridge } from "./types.js";
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
-    .join(",")}}`;
-}
 
-function imageDispatch(overrides: Record<string, unknown> = {}) {
-  const constraintPaths = [
-    "mediaClass",
-    "generationScenario",
-    "compiledPrompt",
-    "output.aspectRatio",
-    "output.resolution",
-    "output.format",
-    "output.alphaPolicy",
-    "output.qualityIntent",
-  ];
-  const plan = {
-    schemaVersion: 3,
-    previewId: "preview-1",
-    presetId: "image-route-1",
-    mediaClass: "image",
-    generationIntent: {
-      schemaVersion: 1,
-      identity: { projectId: "p-1" },
-      generationScenario: "text_to_image",
-      compiledPrompt: "a product still life",
-      references: [],
-      operations: [],
-      preserveConstraints: [],
-      compiledSourceDigests: { sourceArtifactDigests: [], sourceAssetRefDigests: [] },
-      output: {
-        aspectRatio: "1:1",
-        resolution: "1024x1024",
-        format: "png",
-        alphaPolicy: "forbid",
-        qualityIntent: "high",
-      },
-      policy: { authority: "server" },
-    },
-    generationIntentDigest: "image-intent-v1:test",
-    generationScenario: "text_to_image",
-    providerRouteRef: {
-      schemaVersion: 1,
-      routeId: "route-1",
-      providerId: "provider-1",
-      modelId: "model-1",
-      endpointId: "images.generate",
-      region: "local",
-      accountTier: "standard",
-    },
-    capabilityProfileRef: {
-      profileId: "profile-1",
-      revision: 1,
-      digest: `sha256:${"a".repeat(64)}`,
-    },
-    adapterRevision: "adapter-1",
-    runtimeRef: { runtimeId: "runtime-1", lastSeenAt: "2026-09-10T00:00:00.000Z" },
-    constraintPlan: constraintPaths.map((intentPath) => ({
-      intentPath,
-      required: true,
-      support: intentPath === "compiledPrompt" ? "prompt" : "native",
-    })),
-    inputFingerprint: "b".repeat(64),
-    intentFingerprint: "c".repeat(64),
-    resolvedPreservePlanDigest: `sha256:${"d".repeat(64)}`,
-    resolvedReferenceBindingDigest: `sha256:${"e".repeat(64)}`,
-    resolvedOutputSpecDigest: `sha256:${"f".repeat(64)}`,
-    adapterCompilationDigest: `sha256:${"0".repeat(64)}`,
-  };
+vi.mock("../../media-generation/registry.js", async () => {
+  const { protectedImageModelAuth } = await import("./protected-image.test-helpers.js");
+  const { buildOpenAIImageGenerationProvider } =
+    await import("../../../extensions/openai/image-generation-provider.js");
   return {
-    schemaVersion: 1,
-    op: "submit",
-    taskId: "task-1",
-    workspaceId: "workspace-1",
-    correlationId: "corr-1",
-    presetId: "image-route-1",
-    mediaClass: "image",
-    frozenImagePlan: plan,
-    frozenPlanDigest: `sha256:${createHash("sha256").update(stableJson(plan)).digest("hex")}`,
-    executionAttempt: 1,
-    ...overrides,
+    getImageGenerationProvider: (provider: string) =>
+      provider === "openai"
+        ? buildOpenAIImageGenerationProvider(protectedImageModelAuth)
+        : undefined,
   };
-}
-
-function imageRoute() {
-  return {
-    providerId: "provider-1",
-    modelId: "model-1",
-    routeId: "route-1",
-    endpointId: "images.generate",
-    region: "local",
-    accountTier: "standard",
-    adapterRevision: "adapter-1",
-    profileId: "profile-1",
-    profileRevision: 1,
-    profileDigest: `sha256:${"a".repeat(64)}`,
-  };
-}
-
+});
 function imageBridge() {
   return {
     handoffArtifact: vi.fn(
@@ -132,6 +44,11 @@ function imageBridge() {
 }
 
 describe("Host image stop-only and stop honesty", () => {
+  beforeEach(() => {
+    for (const key of ["OPENAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"])
+      vi.stubEnv(key, undefined);
+  });
+  afterEach(() => vi.unstubAllEnvs());
   async function harness() {
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "wisclaw-host-image-stop-"));
     const bridge = imageBridge();
@@ -150,9 +67,9 @@ describe("Host image stop-only and stop honesty", () => {
       return generation;
     });
     const executor = createMediaGenRuntimeImageExecutor({
-      env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
+      env: protectedImageEnv(stateDir),
       runtimeId: "runtime-1",
-      route: imageRoute(),
+      route: protectedImageRoute(),
       bridge,
       getConfig: () => ({}) as never,
       compliance: {
@@ -162,7 +79,7 @@ describe("Host image stop-only and stop honesty", () => {
       },
       generateImageFn: generateImageFn as never,
     });
-    const input = imageDispatch() as Parameters<typeof executor.dispatch>[0];
+    const input = protectedImageDispatch();
     const submission = executor.dispatch(input);
     await started;
     const [receiptFile] = await fs.readdir(path.join(stateDir, "media-gen-image-receipts-v1"));
@@ -230,7 +147,16 @@ describe("Host image stop-only and stop honesty", () => {
     try {
       // Previous gateway versions wrote this local state without stopping the
       // pending generation. Reopen its exact valid persisted receipt shape.
-      await fs.writeFile(h.receiptPath, JSON.stringify({ ...h.initial, state: "canceled" }));
+      const legacy = { ...h.initial, state: "canceled" };
+      for (const key of [
+        "submissionCorrelationId",
+        "sequence",
+        "observedAt",
+        "providerOutcome",
+        "providerDispatchStarted",
+      ])
+        delete legacy[key];
+      await fs.writeFile(h.receiptPath, JSON.stringify(legacy));
       const observed = await h.executor.dispatch({
         ...h.input,
         op: "poll",

@@ -39,4 +39,20 @@ export type MediaSpatialComponentSpec =
       radiiM: number[];
       branches: MediaSpatialComponentRod[];
     }
-  | { schemaVersion: 1; kind: "rock"; lobes: MediaSpatialComponentEllipsoid[] };
+  | { schemaVersion: 1; kind: "rock"; lobes: MediaSpatialComponentEllipsoid[] }
+  | {
+      schemaVersion: 1;
+      kind: "architecture";
+      profile: "window_wall";
+      size: MediaSpatialVec3;
+      openingWidthM: number;
+      openingHeightM: number;
+      sillHeightM: number;
+    }
+  | {
+      schemaVersion: 1;
+      kind: "architecture";
+      profile: "gable_roof";
+      size: MediaSpatialVec3;
+      thicknessM: number;
+    };

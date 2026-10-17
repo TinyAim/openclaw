@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import fs from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import path from "node:path";
-import { resolveStateDir } from "../../config/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  assertExactImageGenerationOverrides,
+  resolveImageGenerationOverrides,
+} from "../../image-generation/normalization.js";
 import { generateImage } from "../../image-generation/runtime.js";
 import {
   readJsonBodyOrError,
@@ -14,6 +15,25 @@ import {
 import { isRecord } from "../media-gen-runtime-dispatch.js";
 import { authorizeMediaGenRuntimeRequest } from "../media-gen-runtime-http.js";
 import type { MediaGenRuntimeHttpOptions } from "../media-gen-runtime-http.js";
+import {
+  createImageReceiptStore,
+  imageLifecycleReceipt,
+  parseImageLifecycleReceipt,
+  type ImageReceipt,
+} from "./image-receipt.js";
+import {
+  collectImageRegistrationSnapshot,
+  imagePlanMatchesProtectedBinding,
+  prepareProtectedImageExecution,
+  type ImageRegistrationSnapshot,
+} from "./image-registration.js";
+import {
+  imageDigest as digest,
+  imageCredentialBindingDigest,
+  readProtectedImageCredential,
+  type MediaGenRuntimeImageRoute,
+} from "./image-route-config.js";
+export type { MediaGenRuntimeImageRoute } from "./image-route-config.js";
 import type {
   MediaGenRuntimeArtifactHandoffIdentity,
   MediaGenRuntimeArtifactRef,
@@ -41,19 +61,7 @@ type ImageDispatch = {
   frozenPlanDigest: string;
   executionAttempt: number;
   runtimeJobId?: string;
-};
-
-export type MediaGenRuntimeImageRoute = {
-  providerId: string;
-  modelId: string;
-  routeId: string;
-  endpointId: string;
-  region: string;
-  accountTier: string;
-  adapterRevision: string;
-  profileId: string;
-  profileRevision: number;
-  profileDigest: string;
+  stopOnly?: true;
 };
 
 export type MediaGenRuntimeImageCompliance = {
@@ -62,160 +70,13 @@ export type MediaGenRuntimeImageCompliance = {
   registrationDisclosureStatus: "undeclared" | "operator_self_declared";
 };
 
-type ImageReceipt = {
-  schemaVersion: 1;
-  runtimeId: string;
-  taskId: string;
-  workspaceId: string;
-  presetId: string;
-  executionAttempt: number;
-  frozenPlanDigest: string;
-  runtimeJobId: string;
-  state: "started" | "succeeded" | "failed" | "canceled";
-  bytesBase64?: string;
-  mimeType?: string;
-  sha256?: string;
-  artifact?: MediaGenRuntimeArtifactRef;
-  snapshot?: {
-    executionOwner: "user_runtime";
-    moderationStatus: "not_enforced" | "runtime_enforced";
-    labelingStatus: "absent" | "runtime_applied";
-    registrationDisclosureStatus: "undeclared" | "operator_self_declared";
-    capturedAt: string;
-  };
-  failureMessage?: string;
-};
-
-function parseImageReceipt(raw: unknown): ImageReceipt | undefined {
-  if (!isRecord(raw)) return undefined;
-  const keys = new Set([
-    "schemaVersion",
-    "runtimeId",
-    "taskId",
-    "workspaceId",
-    "presetId",
-    "executionAttempt",
-    "frozenPlanDigest",
-    "runtimeJobId",
-    "state",
-    "bytesBase64",
-    "mimeType",
-    "sha256",
-    "artifact",
-    "snapshot",
-    "failureMessage",
-  ]);
-  if (Object.keys(raw).some((key) => !keys.has(key))) return undefined;
-  if (
-    raw.schemaVersion !== 1 ||
-    token(raw.runtimeId) === undefined ||
-    token(raw.taskId) === undefined ||
-    token(raw.workspaceId) === undefined ||
-    token(raw.presetId) === undefined ||
-    typeof raw.executionAttempt !== "number" ||
-    !Number.isSafeInteger(raw.executionAttempt) ||
-    raw.executionAttempt < 1 ||
-    !SHA256.test(String(raw.frozenPlanDigest)) ||
-    token(raw.runtimeJobId) === undefined ||
-    !["started", "succeeded", "failed", "canceled"].includes(String(raw.state))
-  )
-    return undefined;
-  if (
-    raw.bytesBase64 !== undefined &&
-    (typeof raw.bytesBase64 !== "string" ||
-      raw.bytesBase64.length === 0 ||
-      !/^[A-Za-z0-9+/]+={0,2}$/u.test(raw.bytesBase64))
-  )
-    return undefined;
-  if (
-    raw.mimeType !== undefined &&
-    (typeof raw.mimeType !== "string" || !/^image\/(?:png|jpeg|webp)$/u.test(raw.mimeType))
-  )
-    return undefined;
-  if (
-    raw.sha256 !== undefined &&
-    (typeof raw.sha256 !== "string" || !/^[a-f0-9]{64}$/u.test(raw.sha256))
-  )
-    return undefined;
-  if (raw.artifact !== undefined) {
-    if (!isRecord(raw.artifact)) return undefined;
-    const artifactKeys = new Set(["artifactId", "sha256", "durationSec", "resolution", "mimeType"]);
-    if (
-      Object.keys(raw.artifact).some((key) => !artifactKeys.has(key)) ||
-      token(raw.artifact.artifactId) === undefined ||
-      typeof raw.artifact.mimeType !== "string" ||
-      !/^image\/(?:png|jpeg|webp)$/u.test(raw.artifact.mimeType) ||
-      typeof raw.artifact.sha256 !== "string" ||
-      !/^[a-f0-9]{64}$/u.test(raw.artifact.sha256) ||
-      raw.artifact.sha256 !== raw.sha256
-    )
-      return undefined;
-  }
-  if (raw.snapshot !== undefined) {
-    if (
-      !isRecord(raw.snapshot) ||
-      Object.keys(raw.snapshot).some(
-        (key) =>
-          !new Set([
-            "executionOwner",
-            "moderationStatus",
-            "labelingStatus",
-            "registrationDisclosureStatus",
-            "capturedAt",
-          ]).has(key),
-      ) ||
-      raw.snapshot.executionOwner !== "user_runtime" ||
-      (raw.snapshot.moderationStatus !== "not_enforced" &&
-        raw.snapshot.moderationStatus !== "runtime_enforced") ||
-      (raw.snapshot.labelingStatus !== "absent" &&
-        raw.snapshot.labelingStatus !== "runtime_applied") ||
-      (raw.snapshot.registrationDisclosureStatus !== "undeclared" &&
-        raw.snapshot.registrationDisclosureStatus !== "operator_self_declared") ||
-      typeof raw.snapshot.capturedAt !== "string" ||
-      Number.isNaN(Date.parse(raw.snapshot.capturedAt))
-    )
-      return undefined;
-  }
-  if (
-    raw.state === "succeeded" &&
-    (typeof raw.bytesBase64 !== "string" ||
-      typeof raw.mimeType !== "string" ||
-      typeof raw.sha256 !== "string" ||
-      !raw.snapshot ||
-      createHash("sha256").update(Buffer.from(raw.bytesBase64, "base64")).digest("hex") !==
-        raw.sha256)
-  )
-    return undefined;
-  if (
-    raw.failureMessage !== undefined &&
-    (typeof raw.failureMessage !== "string" ||
-      raw.failureMessage.length === 0 ||
-      raw.failureMessage.length > 2000)
-  )
-    return undefined;
-  return raw as unknown as ImageReceipt;
-}
-
 export type ImageRouteExecutor = {
   dispatch(input: ImageDispatch): Promise<Record<string, unknown>>;
+  registrationSnapshot?(workspaceId: string): Promise<ImageRegistrationSnapshot>;
 };
 
-function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  const object = value as Record<string, unknown>;
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
-    .join(",")}}`;
-}
-
-function digest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
-}
-
 function token(value: unknown): string | undefined {
-  return typeof value === "string" && SAFE_TOKEN.test(value.trim()) ? value : undefined;
+  return typeof value === "string" && SAFE_TOKEN.test(value) ? value : undefined;
 }
 
 function parsePlan(value: unknown): Record<string, unknown> | undefined {
@@ -411,6 +272,7 @@ function parseDispatch(value: unknown): ImageDispatch | undefined {
     "frozenPlanDigest",
     "executionAttempt",
     "runtimeJobId",
+    "stopOnly",
   ]);
   if (Object.keys(value).some((key) => !keys.has(key))) return undefined;
   const schemaVersion = value.schemaVersion === 2 ? 2 : value.schemaVersion === 1 ? 1 : undefined;
@@ -443,6 +305,8 @@ function parseDispatch(value: unknown): ImageDispatch | undefined {
     (value.runtimeJobId !== undefined && !runtimeJobId)
   )
     return undefined;
+  if (value.stopOnly !== undefined && (value.stopOnly !== true || op !== "reconcile"))
+    return undefined;
   if ((op === "poll" || op === "cancel") && !runtimeJobId) return undefined;
   if ((op === "submit" || op === "retry") && runtimeJobId !== undefined) return undefined;
   return {
@@ -457,6 +321,7 @@ function parseDispatch(value: unknown): ImageDispatch | undefined {
     frozenPlanDigest: value.frozenPlanDigest,
     executionAttempt: value.executionAttempt,
     ...(runtimeJobId ? { runtimeJobId } : {}),
+    ...(value.stopOnly === true ? { stopOnly: true } : {}),
   };
 }
 
@@ -512,6 +377,7 @@ function normalizeImageResult(
     "failureReason",
     "failureMessage",
     "runtimeStopOutcome",
+    "imageLifecycleReceipt",
     "snapshot",
   ]);
   if (Object.keys(raw).some((key) => !allowed.has(key))) return undefined;
@@ -521,6 +387,23 @@ function normalizeImageResult(
     raw.correlationId !== input.correlationId ||
     typeof raw.status !== "string" ||
     !RESULT_STATUSES.has(raw.status)
+  )
+    return undefined;
+  const lifecycle =
+    raw.imageLifecycleReceipt === undefined
+      ? undefined
+      : parseImageLifecycleReceipt(raw.imageLifecycleReceipt);
+  if (
+    raw.imageLifecycleReceipt !== undefined &&
+    (!lifecycle ||
+      lifecycle.executionAttempt !== input.executionAttempt ||
+      lifecycle.frozenPlanDigest !== input.frozenPlanDigest ||
+      (raw.status === "processing" &&
+        !["processing", "succeeded"].includes(lifecycle.providerOutcome)) ||
+      (raw.status === "succeeded" && lifecycle.providerOutcome !== "succeeded") ||
+      (raw.status === "failed" &&
+        !["failed", "not_submitted"].includes(lifecycle.providerOutcome)) ||
+      (raw.status === "submission_unknown" && lifecycle.providerOutcome !== "unknown"))
   )
     return undefined;
   const runtimeJobId = raw.runtimeJobId === undefined ? undefined : token(raw.runtimeJobId);
@@ -619,7 +502,11 @@ function normalizeImageResult(
       typeof state !== "string" ||
       typeof reasonCode !== "string" ||
       !STOP_OUTCOMES.has(`${state}:${reasonCode}`) ||
-      raw.status !== "canceled"
+      raw.status !== "canceled" ||
+      (state !== "not_requested" && !runtimeJobId) ||
+      (state === "confirmed" &&
+        lifecycle &&
+        !["succeeded", "failed", "canceled", "not_submitted"].includes(lifecycle.providerOutcome))
     )
       return undefined;
   }
@@ -640,6 +527,7 @@ function normalizeImageResult(
     ...(failureMessage ? { failureMessage } : {}),
     ...(raw.runtimeStopOutcome !== undefined ? { runtimeStopOutcome: raw.runtimeStopOutcome } : {}),
     ...(snapshot ? { snapshot } : {}),
+    ...(lifecycle ? { imageLifecycleReceipt: lifecycle } : {}),
   };
 }
 
@@ -660,12 +548,24 @@ function outputSpec(plan: Record<string, unknown>):
   >;
   const quality =
     output.qualityIntent === "draft" ? "low" : output.qualityIntent === "high" ? "high" : "medium";
+  if (
+    plan.schemaVersion === 4 &&
+    ((output.transparentPixelRequirement === "require" && output.alphaPolicy === "forbid") ||
+      (output.transparentPixelRequirement === "require" &&
+        output.backgroundSemanticRequirement === "opaque"))
+  )
+    return undefined;
   const background =
-    output.alphaPolicy === "require"
+    output.transparentPixelRequirement === "require"
       ? "transparent"
-      : output.alphaPolicy === "forbid"
+      : output.transparentPixelRequirement === "forbid" ||
+          output.backgroundSemanticRequirement === "opaque"
         ? "opaque"
-        : "auto";
+        : output.alphaPolicy === "require"
+          ? "transparent"
+          : output.alphaPolicy === "forbid"
+            ? "opaque"
+            : "auto";
   const format = output.format;
   if (format !== "png" && format !== "jpeg" && format !== "webp") return undefined;
   if (plan.schemaVersion === 4) {
@@ -710,82 +610,6 @@ function routeMatches(plan: Record<string, unknown>, route: MediaGenRuntimeImage
   );
 }
 
-function receiptKey(
-  input: Pick<ImageDispatch, "workspaceId" | "taskId" | "executionAttempt" | "frozenPlanDigest">,
-): string {
-  return createHash("sha256")
-    .update(
-      `${input.workspaceId}\u0000${input.taskId}\u0000${input.executionAttempt}\u0000${input.frozenPlanDigest}`,
-    )
-    .digest("hex");
-}
-
-function createReceiptStore(options: { env: NodeJS.ProcessEnv; runtimeId: string }) {
-  const dir = path.join(resolveStateDir(options.env), "media-gen-image-receipts-v1");
-  const fileFor = (
-    input: Pick<ImageDispatch, "workspaceId" | "taskId" | "executionAttempt" | "frozenPlanDigest">,
-  ) => path.join(dir, `${receiptKey(input)}.json`);
-  async function read(
-    input: Pick<ImageDispatch, "workspaceId" | "taskId" | "executionAttempt" | "frozenPlanDigest">,
-  ): Promise<ImageReceipt | undefined> {
-    try {
-      const parsed = parseImageReceipt(JSON.parse(await fs.readFile(fileFor(input), "utf8")));
-      return parsed &&
-        parsed.runtimeId === options.runtimeId &&
-        parsed.workspaceId === input.workspaceId &&
-        parsed.taskId === input.taskId &&
-        parsed.executionAttempt === input.executionAttempt &&
-        parsed.frozenPlanDigest === input.frozenPlanDigest
-        ? parsed
-        : undefined;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-      throw new Error("media_image_runtime_receipt_corrupt");
-    }
-  }
-  async function write(record: ImageReceipt, exclusive = false): Promise<boolean> {
-    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
-    const target = fileFor(record);
-    const temp = `${target}.${process.pid}.${randomUUID()}.tmp`;
-    if (exclusive) {
-      try {
-        const handle = await fs.open(target, "wx", 0o600);
-        try {
-          await handle.writeFile(JSON.stringify(record));
-          await handle.sync();
-        } finally {
-          await handle.close();
-        }
-        return true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
-        throw error;
-      }
-    }
-    try {
-      const handle = await fs.open(temp, "w", 0o600);
-      try {
-        await handle.writeFile(JSON.stringify(record));
-        await handle.sync();
-      } finally {
-        await handle.close();
-      }
-      await fs.rename(temp, target);
-      const dirHandle = await fs.open(dir, "r");
-      try {
-        await dirHandle.sync();
-      } finally {
-        await dirHandle.close();
-      }
-    } catch (error) {
-      await fs.rm(temp, { force: true }).catch(() => undefined);
-      throw error;
-    }
-    return true;
-  }
-  return { read, write };
-}
-
 export function createMediaGenRuntimeImageExecutor(options: {
   env?: NodeJS.ProcessEnv;
   runtimeId: string;
@@ -796,82 +620,225 @@ export function createMediaGenRuntimeImageExecutor(options: {
   /** Test seam; production always uses the OpenClaw image provider runtime. */
   generateImageFn?: typeof generateImage;
 }): ImageRouteExecutor {
-  const store = createReceiptStore({
-    env: options.env ?? process.env,
-    runtimeId: options.runtimeId,
-  });
-  const complianceSnapshot = () => ({
-    executionOwner: "user_runtime" as const,
-    moderationStatus: options.compliance.enforcesModeration
-      ? ("runtime_enforced" as const)
-      : ("not_enforced" as const),
-    labelingStatus: options.compliance.appliesLabeling
-      ? ("runtime_applied" as const)
-      : ("absent" as const),
-    registrationDisclosureStatus: options.compliance.registrationDisclosureStatus,
-    capturedAt: new Date().toISOString(),
-  });
-  const handoff = async (
-    input: ImageDispatch,
-    record: ImageReceipt,
-  ): Promise<MediaGenRuntimeArtifactRef> => {
-    if (!record.bytesBase64 || !record.mimeType || !record.sha256)
-      throw new Error("image receipt has no output bytes");
-    if (record.artifact) return record.artifact;
-    const identity: MediaGenRuntimeArtifactHandoffIdentity = {
-      taskId: input.taskId,
-      workspaceId: input.workspaceId,
-      presetId: input.presetId,
-      executionAttempt: input.executionAttempt,
-      frozenPlanDigest: input.frozenPlanDigest,
-    };
-    const output: MediaGenRuntimeVendorOutput = {
-      mediaRef: `runtime-local://${record.runtimeJobId}`,
-      mimeType: record.mimeType,
-    };
-    const artifact = await options.bridge.handoffArtifact({
-      dispatch: identity,
-      runtimeJobId: record.runtimeJobId,
-      output,
-      bytes: Buffer.from(record.bytesBase64, "base64"),
-      sha256: record.sha256,
+  const env = options.env ?? process.env;
+  const store = createImageReceiptStore({ env, runtimeId: options.runtimeId });
+  const providerRequestDigest = (input: ImageDispatch) =>
+    digest({
+      input: input.frozenPlanDigest,
+      attempt: input.executionAttempt,
     });
-    if (
-      artifact.sha256 !== record.sha256 ||
-      artifact.mimeType !== record.mimeType ||
-      !token(artifact.artifactId)
-    ) {
-      throw new Error("image artifact handoff returned an invalid identity");
+  function unknown(input: ImageDispatch, record?: ImageReceipt) {
+    const lifecycle = record && imageLifecycleReceipt(record);
+    return result(input, "submission_unknown", {
+      ...(record ? { runtimeJobId: record.runtimeJobId } : {}),
+      providerRequestDigest: providerRequestDigest(input),
+      ...(lifecycle?.providerOutcome === "unknown" ? { imageLifecycleReceipt: lifecycle } : {}),
+    });
+  }
+  function stopped(input: ImageDispatch, record?: ImageReceipt) {
+    if (!record) return unknown(input);
+    const lifecycle = record && imageLifecycleReceipt(record);
+    const fenced = record?.stopRequested === true;
+    const terminal =
+      fenced &&
+      lifecycle &&
+      ["succeeded", "failed", "canceled", "not_submitted"].includes(lifecycle.providerOutcome);
+    return result(input, "canceled", {
+      ...(record ? { runtimeJobId: record.runtimeJobId } : {}),
+      runtimeStopOutcome: terminal
+        ? { state: "confirmed", reasonCode: "runtime_confirmed" }
+        : fenced && lifecycle && record?.providerDispatchStarted
+          ? { state: "not_supported", reasonCode: "adapter_not_supported" }
+          : { state: "unknown", reasonCode: "transport_uncertain" },
+      ...(lifecycle ? { imageLifecycleReceipt: lifecycle } : {}),
+    });
+  }
+  function observe(
+    input: ImageDispatch,
+    record?: ImageReceipt,
+    consumeArtifact = false,
+  ): Record<string, unknown> {
+    if (record?.stopRequested || record?.state === "canceled") return stopped(input, record);
+    const lifecycle = record && imageLifecycleReceipt(record);
+    // Old rows cannot invent the immutable submit correlation or no-effect proof.
+    if (!record || !lifecycle) return unknown(input, record);
+    const identity = { runtimeJobId: record.runtimeJobId, imageLifecycleReceipt: lifecycle };
+    if (record.state === "succeeded") {
+      return consumeArtifact && record.artifact
+        ? result(input, "succeeded", {
+            ...identity,
+            artifact: record.artifact,
+            snapshot: record.snapshot,
+          })
+        : result(input, "processing", identity);
     }
-    await store.write({ ...record, artifact });
-    return artifact;
-  };
-  return {
+    if (record.state === "failed")
+      return result(input, "failed", {
+        ...identity,
+        failureReason:
+          record.providerOutcome === "not_submitted" ? "vendor_rejected" : "vendor_failed",
+        failureMessage: record.failureMessage ?? "image generation failed",
+      });
+    return unknown(input, record);
+  }
+  async function noEffect(input: ImageDispatch, message: string) {
+    const record = await store.update(input, (current) =>
+      current.state !== "started"
+        ? current
+        : {
+            ...current,
+            state: "failed",
+            providerOutcome: "not_submitted",
+            retryDisposition: current.stopRequested ? "reconcile_only" : "replacement_allowed",
+            failureMessage: message,
+          },
+    );
+    return observe(input, record);
+  }
+  async function handoff(input: ImageDispatch): Promise<Record<string, unknown>> {
+    // Claim the original handoff durably, then release the journal lock before
+    // network I/O so stop can persist while the remote owner is unresponsive.
+    const claim = await store.transact(input, async (record, commit) => {
+      if (
+        !record ||
+        record.stopRequested ||
+        !imageLifecycleReceipt(record) ||
+        record.state !== "succeeded" ||
+        record.artifact
+      )
+        return { record, post: false };
+      return {
+        record: record.handoffStarted ? record : await commit({ ...record, handoffStarted: true }),
+        post: !record.handoffStarted,
+      };
+    });
+    // Re-read after the claim's awaited release. A stop that already persisted
+    // must prevent new handoff I/O, including a readback from a stale sample.
+    const pending = await store.read(input);
+    if (
+      !pending ||
+      pending.stopRequested ||
+      !imageLifecycleReceipt(pending) ||
+      pending.state !== "succeeded" ||
+      pending.artifact ||
+      !claim.record ||
+      !pending.handoffStarted
+    )
+      return observe(input, pending, true);
+    try {
+      const identity: MediaGenRuntimeArtifactHandoffIdentity & {
+        executionAttempt: number;
+        frozenPlanDigest: string;
+      } = {
+        taskId: input.taskId,
+        workspaceId: input.workspaceId,
+        presetId: input.presetId,
+        executionAttempt: input.executionAttempt,
+        frozenPlanDigest: input.frozenPlanDigest,
+      };
+      const output: MediaGenRuntimeVendorOutput = {
+        mediaRef: `runtime-local://${pending.runtimeJobId}`,
+        mimeType: pending.mimeType!,
+      };
+      let artifact: MediaGenRuntimeArtifactRef;
+      if (!claim.post) {
+        if (!options.bridge.readImageArtifactHandoff)
+          return observe(input, await store.read(input), true);
+        const readback = await options.bridge.readImageArtifactHandoff({
+          dispatch: identity,
+          runtimeJobId: pending.runtimeJobId,
+          output,
+          sha256: pending.sha256!,
+          submissionCorrelationId: pending.submissionCorrelationId!,
+        });
+        if (readback.state !== "committed") return observe(input, await store.read(input), true);
+        artifact = readback.artifact;
+      } else {
+        artifact = await options.bridge.handoffArtifact({
+          dispatch: identity,
+          runtimeJobId: pending.runtimeJobId,
+          output,
+          bytes: Buffer.from(pending.bytesBase64!, "base64"),
+          sha256: pending.sha256!,
+        });
+      }
+      if (
+        artifact.sha256 !== pending.sha256 ||
+        artifact.mimeType !== pending.mimeType ||
+        !token(artifact.artifactId)
+      ) {
+        throw new Error("image artifact handoff returned an invalid identity");
+      }
+      // Merge into the current journal, never the pre-I/O sample. A durable
+      // stop wins over either a late POST ACK or a committed GET readback.
+      const settled = await store.update(input, (current) =>
+        current.stopRequested || current.artifact ? current : { ...current, artifact },
+      );
+      return observe(input, settled, true);
+    } catch {
+      // Provider success is durable; Artifact commit remains unproven. No new
+      // provider job, fabricated Artifact or blind handoff replay is allowed.
+      return observe(input, await store.read(input), true);
+    }
+  }
+  const executor: ImageRouteExecutor = {
+    registrationSnapshot: (workspaceId) =>
+      collectImageRegistrationSnapshot(
+        {
+          env,
+          runtimeId: options.runtimeId,
+          route: options.route,
+          getConfig: options.getConfig,
+          lifecycleSource: {
+            dispatcherRevision: 2,
+            terminalReceiptParser: parseImageLifecycleReceipt,
+            receiptStore: store,
+            stopOnly: true,
+          },
+        },
+        workspaceId,
+      ),
     async dispatch(input) {
-      if (!routeMatches(input.frozenImagePlan, options.route))
+      // Keep direct native callers under the same stop-only grammar as HTTP.
+      if (
+        (input.stopOnly !== undefined && (input.stopOnly !== true || input.op !== "reconcile")) ||
+        ((input.op === "poll" || input.op === "cancel") && !input.runtimeJobId)
+      ) {
         return result(input, "failed", {
           failureReason: "vendor_rejected",
-          failureMessage: "frozen image route is not registered on this runtime",
+          failureMessage: "exact image observation or stop grammar is invalid",
         });
-      const existing = await store.read(input);
-      if (input.op === "submit" || input.op === "retry") {
-        if (existing) {
-          if (existing.state === "succeeded")
-            return result(input, "processing", { runtimeJobId: existing.runtimeJobId });
-          if (existing.state === "failed")
-            return result(input, "failed", {
-              runtimeJobId: existing.runtimeJobId,
-              failureReason: "vendor_failed",
-              failureMessage: existing.failureMessage ?? "image generation failed",
-            });
-          return result(input, "submission_unknown", {
-            providerRequestDigest: digest({
-              input: input.frozenPlanDigest,
-              attempt: input.executionAttempt,
-            }),
+      }
+      const isStop = input.op === "cancel" || input.stopOnly === true;
+      let observedRecord: ImageReceipt | undefined;
+      try {
+        let existing = await store.read(input);
+        observedRecord = existing;
+        if (
+          existing &&
+          input.runtimeJobId !== undefined &&
+          existing.runtimeJobId !== input.runtimeJobId
+        ) {
+          return result(input, "failed", {
+            failureReason: "vendor_rejected",
+            failureMessage: "exact image runtime receipt not found",
           });
         }
-        const started: ImageReceipt = {
+        if (isStop) {
+          if (!existing) return stopped(input);
+          existing = await store.update(input, (current) =>
+            current.stopRequested ? current : { ...current, stopRequested: true },
+          );
+          return stopped(input, existing);
+        }
+        if (input.op !== "submit" && input.op !== "retry") {
+          if (!existing) return unknown(input);
+          if (existing.state === "succeeded" && !existing.stopRequested)
+            return await handoff(input);
+          return observe(input, existing);
+        }
+        if (existing) return observe(input, existing);
+        const reservation = await store.reserve({
           schemaVersion: 1,
           runtimeId: options.runtimeId,
           taskId: input.taskId,
@@ -881,96 +848,152 @@ export function createMediaGenRuntimeImageExecutor(options: {
           frozenPlanDigest: input.frozenPlanDigest,
           runtimeJobId: `image:${randomUUID()}`,
           state: "started",
-        };
-        if (!(await store.write(started, true)))
-          return result(input, "submission_unknown", {
-            providerRequestDigest: digest({
-              input: input.frozenPlanDigest,
-              attempt: input.executionAttempt,
-            }),
-          });
+          submissionCorrelationId: input.correlationId,
+          observedAt: new Date().toISOString(),
+          sequence: 1,
+          providerOutcome: "unknown",
+        });
+        observedRecord = reservation.record;
+        if (!reservation.created) return observe(input, reservation.record);
+        const prepared = await prepareProtectedImageExecution({
+          env,
+          runtimeId: options.runtimeId,
+          route: options.route,
+          getConfig: options.getConfig,
+        }).catch(() => undefined);
+        if (
+          !prepared ||
+          !routeMatches(input.frozenImagePlan, options.route) ||
+          !imagePlanMatchesProtectedBinding({
+            plan: input.frozenImagePlan,
+            workspaceId: input.workspaceId,
+            runtimeId: options.runtimeId,
+            credential: prepared.credential,
+            binding: prepared.configuration.binding,
+            outputSupport: prepared.configuration.outputSupport,
+          })
+        )
+          return await noEffect(
+            input,
+            "exact protected image route, credential, or output binding is unavailable",
+          );
+        const spec = outputSpec(input.frozenImagePlan);
+        if (!spec) return await noEffect(input, "Image output mapping is unavailable.");
         try {
-          const spec = outputSpec(input.frozenImagePlan);
-          if (!spec) throw new Error("image output mapping is unavailable");
+          assertExactImageGenerationOverrides(
+            spec,
+            resolveImageGenerationOverrides({
+              ...spec,
+              provider: prepared.provider,
+              model: options.route.modelId,
+            }),
+          );
+        } catch {
+          return await noEffect(
+            input,
+            "Frozen image output is unsupported before Provider dispatch.",
+          );
+        }
+        const current = await prepareProtectedImageExecution({
+          env,
+          runtimeId: options.runtimeId,
+          route: options.route,
+          getConfig: options.getConfig,
+        }).catch(() => undefined);
+        if (
+          !current ||
+          current.credential.apiKey !== prepared.credential.apiKey ||
+          imageCredentialBindingDigest(current.credential) !==
+            imageCredentialBindingDigest(prepared.credential)
+        ) {
+          return await noEffect(input, "Protected image binding changed before Provider dispatch.");
+        }
+        // This CAS is the cancellation/create linearization point. A stop that
+        // won the journal cannot dispatch. A crash after this mark stays unknown.
+        const claimed = await store.update(input, (record) =>
+          record.stopRequested || record.providerDispatchStarted
+            ? record
+            : { ...record, providerDispatchStarted: true },
+        );
+        observedRecord = claimed;
+        if (!claimed || claimed.stopRequested || !claimed.providerDispatchStarted) {
+          return await noEffect(input, "Image dispatch was stopped before Provider invocation.");
+        }
+        // CAS persistence yielded after auth preparation. Recheck the protected
+        // slot synchronously so there is no further await before the paid call.
+        const credential = readProtectedImageCredential(
+          env,
+          options.runtimeId,
+          current.configuration,
+        );
+        if (
+          !credential ||
+          credential.apiKey !== current.credential.apiKey ||
+          imageCredentialBindingDigest(credential) !==
+            imageCredentialBindingDigest(current.credential) ||
+          !imagePlanMatchesProtectedBinding({
+            plan: input.frozenImagePlan,
+            workspaceId: input.workspaceId,
+            runtimeId: options.runtimeId,
+            credential,
+            binding: current.configuration.binding,
+            outputSupport: current.configuration.outputSupport,
+          })
+        ) {
+          return await noEffect(
+            input,
+            "Protected image binding changed before Provider invocation.",
+          );
+        }
+        try {
           const generated = await (options.generateImageFn ?? generateImage)({
-            cfg: options.getConfig(),
+            cfg: current.cfg,
+            authStore: current.authStore,
             prompt: (input.frozenImagePlan.generationIntent as Record<string, unknown>)
               .compiledPrompt as string,
             modelOverride: `${options.route.providerId}/${options.route.modelId}`,
             autoProviderFallback: false,
+            requireExactOutput: true,
+            count: 1,
             ...spec,
           });
           const image = generated.images[0];
           if (!image) throw new Error("Image generation returned no image output.");
-          const completed: ImageReceipt = {
-            ...started,
-            state: "succeeded",
-            bytesBase64: image.buffer.toString("base64"),
-            mimeType: image.mimeType,
-            sha256: createHash("sha256").update(image.buffer).digest("hex"),
-            snapshot: complianceSnapshot(),
-          };
-          await store.write(completed);
-          return result(input, "processing", { runtimeJobId: started.runtimeJobId });
-        } catch (error) {
-          const failed: ImageReceipt = {
-            ...started,
-            state: "failed",
-            failureMessage: error instanceof Error ? error.message : "image generation failed",
-          };
-          await store.write(failed);
-          return result(input, "failed", {
-            runtimeJobId: started.runtimeJobId,
-            failureReason: "vendor_failed",
-            failureMessage: failed.failureMessage,
-          });
+          const completed = await store.update(input, (record) =>
+            record.state !== "started"
+              ? record
+              : {
+                  ...record,
+                  state: "succeeded",
+                  providerOutcome: "succeeded",
+                  bytesBase64: image.buffer.toString("base64"),
+                  mimeType: image.mimeType,
+                  sha256: createHash("sha256").update(image.buffer).digest("hex"),
+                  snapshot: {
+                    executionOwner: "user_runtime",
+                    moderationStatus: "not_enforced",
+                    labelingStatus: "absent",
+                    registrationDisclosureStatus: options.compliance.registrationDisclosureStatus,
+                    capturedAt: new Date().toISOString(),
+                  },
+                },
+          );
+          // Submit never performs Artifact I/O, even when bytes are already ready.
+          return observe(input, completed);
+        } catch {
+          // Even ExactOutputError may originate after Provider I/O. Only the
+          // explicit code paths above prove no invocation; preserve this attempt.
+          return observe(input, await store.read(input));
         }
+      } catch {
+        // Corrupt journals, lock ambiguity and durability failures cannot prove
+        // no effect or authorize a replacement. Never create from these paths.
+        if (isStop) return stopped(input, observedRecord);
+        return observe(input, observedRecord);
       }
-      if (!existing || (input.op !== "reconcile" && existing.runtimeJobId !== input.runtimeJobId))
-        return result(input, "failed", {
-          failureReason: "vendor_rejected",
-          failureMessage: "exact image runtime receipt not found",
-        });
-      if (input.op === "cancel") {
-        // Image generation has no abort/readback protocol. A local receipt
-        // mutation cannot prove that provider execution stopped. Preserve the
-        // attempt for reconciliation and never hand off bytes in a stop path.
-        return result(input, "canceled", {
-          runtimeJobId: existing.runtimeJobId,
-          runtimeStopOutcome:
-            existing.state === "succeeded"
-              ? { state: "confirmed", reasonCode: "runtime_confirmed" }
-              : { state: "not_supported", reasonCode: "adapter_not_supported" },
-        });
-      }
-      if (existing.state === "succeeded") {
-        const artifact = await handoff(input, existing);
-        return result(input, "succeeded", {
-          runtimeJobId: existing.runtimeJobId,
-          artifact,
-          snapshot: existing.snapshot,
-        });
-      }
-      if (existing.state === "failed")
-        return result(input, "failed", {
-          runtimeJobId: existing.runtimeJobId,
-          failureReason: "vendor_failed",
-          failureMessage: existing.failureMessage ?? "image generation failed",
-        });
-      if (existing.state === "canceled")
-        return result(input, "canceled", {
-          runtimeJobId: existing.runtimeJobId,
-          // Legacy canceled receipts only recorded local intent, never stop proof.
-          runtimeStopOutcome: { state: "unknown", reasonCode: "transport_uncertain" },
-        });
-      return result(input, "submission_unknown", {
-        providerRequestDigest: digest({
-          input: input.frozenPlanDigest,
-          attempt: input.executionAttempt,
-        }),
-      });
     },
   };
+  return executor;
 }
 
 export type MediaGenRuntimeImageHttpOptions = Omit<MediaGenRuntimeHttpOptions, "executor"> & {

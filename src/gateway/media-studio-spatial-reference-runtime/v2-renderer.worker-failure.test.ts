@@ -15,6 +15,10 @@ describe.skipIf(process.platform === "win32" || !supportsSpatialReferenceV2Resou
       ["spatial_guardian_worker_spawn_failed", undefined],
       ["spatial_v2_rss_observation_node_missing", "valid"],
       ["spatial_v2_rss_observation_node_missing", "invalid"],
+      ["spatial_v2_rss_limit_exceeded", "rss"],
+      ["spatial_v2_rss_limit_exceeded", "rss-late"],
+      ["spatial_v2_rss_limit_exceeded", "rss-invalid"],
+      ["spatial_v2_rss_limit_exceeded", "rss-identity"],
     ] as const)(
       "preserves %s when its Guardian exits cleanly after extinction",
       async (failureCode, diagnosticMode) => {
@@ -69,7 +73,18 @@ describe.skipIf(process.platform === "win32" || !supportsSpatialReferenceV2Resou
               lifecycleProven: true,
               renderStage: "motion_encode",
             });
-          else expect(error.cause).toBeUndefined();
+          else if (diagnosticMode === "rss" || diagnosticMode === "rss-late") {
+            expect(error.cause?.failureDetails).toMatchObject({
+              source: "spatial_rss_limit/v1",
+              rootPid: expect.any(Number),
+              capBytes: 2147483648,
+              observedBytes: 2147483649,
+              peakBytes: 2147483649,
+              observedAtMs: 5,
+              renderStage: "frame_render",
+              frameIndex: 42,
+            });
+          } else expect(error.cause).toBeUndefined();
         } finally {
           await owned.shutdown();
         }

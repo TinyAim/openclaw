@@ -31,6 +31,10 @@ export function spatialReferenceWorldGeometryWithinBudget(nodes: Node[]): boolea
       parts += c.lobes.length;
       vertices += c.lobes.length * 52;
       triangles += c.lobes.length * 100;
+    } else if (c?.kind === "architecture") {
+      parts += 4;
+      vertices += c.profile === "window_wall" ? 32 : 28;
+      triangles += c.profile === "window_wall" ? 48 : 40;
     } else if (n.terrainProfile) {
       parts++;
       vertices += n.terrainProfile.points.length * 4;

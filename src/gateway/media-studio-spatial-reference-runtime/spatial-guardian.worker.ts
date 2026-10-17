@@ -37,8 +37,8 @@ import type {
 } from "./v2-renderer.contract.js";
 import {
   validateSpatialReferenceV2NativeRssDiagnostic,
-  validateSpatialReferenceV2ObserverExecDiagnostic,
-  type SpatialReferenceV2ObserverExecDiagnostic,
+  validateSpatialReferenceV2FailureDetails,
+  type SpatialReferenceV2FailureDetails,
 } from "./v2-resource-watch.js";
 
 type GuardianJournalControl = {
@@ -264,7 +264,7 @@ async function recordGuardianObservation(
 }
 
 let guardianGeneration: string | undefined;
-let workerFailureDetails: SpatialReferenceV2ObserverExecDiagnostic | undefined;
+let workerFailureDetails: SpatialReferenceV2FailureDetails | undefined;
 
 async function run(): Promise<void> {
   const workerUrl = new URL(requiredArgument("--renderer-worker-url"));
@@ -380,9 +380,12 @@ async function run(): Promise<void> {
       ) {
         const failure = message as Record<string, unknown>;
         // Retain the first failure snapshot; a later message cannot rewrite its probe identity.
-        workerFailureDetails ??= validateSpatialReferenceV2ObserverExecDiagnostic(
-          failure.failureDetails,
-        );
+        const details = validateSpatialReferenceV2FailureDetails(failure.failureDetails);
+        if (
+          details &&
+          (details.source !== "spatial_rss_limit/v1" || details.rootPid === worker.pid)
+        )
+          workerFailureDetails ??= details;
         send({
           type: "spatial-v2-failed",
           code: failure.code,

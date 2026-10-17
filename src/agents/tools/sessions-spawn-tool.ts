@@ -165,7 +165,12 @@ function createSessionsSpawnToolSchema(params: {
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
-    task: Type.String(),
+    task: Type.Optional(
+      Type.String({
+        description:
+          "Task for the spawned session. Required for background subagents; optional when visible=true to create an empty standalone session.",
+      }),
+    ),
     taskName: Type.Optional(
       Type.String({
         description:
@@ -433,7 +438,8 @@ export function createSessionsSpawnTool(
             `sessions_spawn does not support "${unsupportedTimeoutParam}". Use "runTimeoutSeconds" for a per-run timeout.`,
           );
         }
-        const task = readToolStringParam(params, "task", { required: true });
+        const isVisible = params.visible === true;
+        const task = readToolStringParam(params, "task", { required: !isVisible }) ?? "";
         const runTimeoutSeconds = readNonNegativeIntegerParam(params, "runTimeoutSeconds");
         const taskNameResult = normalizeSubagentTaskName(params.taskName);
         if (taskNameResult.error) {

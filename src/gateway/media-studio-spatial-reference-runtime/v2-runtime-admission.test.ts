@@ -222,6 +222,45 @@ describe("Spatial v2 runtime qualification admission", () => {
     await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
   });
 
+  it("returns private RSS evidence after cleanup while failed qualification stays unavailable", async () => {
+    const journal = createSpatialReferenceJournal();
+    const failureDetails = {
+      source: "spatial_rss_limit/v1",
+      metric: "linux_proc_status_tree_rss_sum_v1",
+      rootPid: 50,
+      observerPid: null,
+      nodeCount: null,
+      verifiedSpanMs: null,
+      capBytes: 2147483648,
+      observedBytes: 2147483649,
+      peakBytes: 2147483649,
+      observedAtMs: 5,
+      phase: "before_ffmpeg",
+      renderStage: "motion_encode",
+      frameIndex: null,
+    };
+    const render = vi.fn(async () => {
+      throw new Error("spatial_v2_rss_limit_exceeded", { cause: { failureDetails } });
+    });
+    const result = await resolveSpatialReferenceV2RuntimeToolchain({
+      bundleDir,
+      chromiumExecutablePath: process.execPath,
+      resourceObserverExecutablePath,
+      journal,
+      runtimeId: "runtime-admission",
+      executionMode: "packaged",
+      readHostAvailableBytes: () => 4 * 1024 * 1024 * 1024,
+      testRenderQualification: render,
+    });
+    expect(result).toEqual({
+      reason: "v2 toolchain probe failed: spatial_v2_rss_limit_exceeded",
+      failureDetails,
+    });
+    expect(result).not.toHaveProperty("rendererBuildDigest");
+    expect(render).toHaveBeenCalledTimes(1);
+    await expect(journal.getRuntimeAdmission()).resolves.toMatchObject({ state: "released" });
+  });
+
   it("releases a real qualification from an exact guardian extinction observation", async () => {
     const journal = createSpatialReferenceJournal();
     let scopeEvidence: string | undefined;

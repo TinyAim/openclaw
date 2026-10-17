@@ -43,7 +43,11 @@ export const SPATIAL_REFERENCE_RENDER_CONTRACT_V2 = "spatial_reference_render/v2
 type ContractVersion =
   | typeof SPATIAL_REFERENCE_RENDER_CONTRACT_V1
   | typeof SPATIAL_REFERENCE_RENDER_CONTRACT_V2;
-const MAX_BODY_BYTES = 1024 * 1024;
+// A bounded 30-second/360-frame v2 package carries every moving node's exact
+// state(t). Keep this budget aligned with the exact staging relay location;
+// cancel and unrelated Gateway endpoints retain their existing limits.
+const MAX_RENDER_BODY_BYTES = 8 * 1024 * 1024;
+const MAX_CANCEL_BODY_BYTES = 1024 * 1024;
 
 type Vector3 = { x: number; y: number; z: number };
 type ArtifactGrant = {
@@ -405,7 +409,14 @@ export function parseSpatialReferenceRelayDispatch(
         return undefined;
       if (
         node?.componentSpec !== undefined &&
-        (!componentSpec || node.kind !== "prop_placeholder" || node.propType !== componentSpec.kind)
+        (!componentSpec ||
+          terrainProfile ||
+          terrainSurface ||
+          (componentSpec.kind === "architecture"
+            ? node.kind !== "primitive" ||
+              node.primitiveType !== "box" ||
+              node.propType !== undefined
+            : node.kind !== "prop_placeholder" || node.propType !== componentSpec.kind))
       )
         return undefined;
       if (["tree", "log", "rock"].includes(String(node?.propType ?? "")) && !componentSpec)
@@ -918,7 +929,14 @@ export async function handleMediaStudioSpatialReferenceRenderHttpRequest(
     sendGatewayAuthFailure(res, authResult);
     return true;
   }
-  const body = await readJsonBodyOrError(req, res, options.maxBodyBytes ?? MAX_BODY_BYTES);
+  const body = await readJsonBodyOrError(
+    req,
+    res,
+    options.maxBodyBytes ??
+      (path === MEDIA_STUDIO_SPATIAL_REFERENCE_RENDER_PATH
+        ? MAX_RENDER_BODY_BYTES
+        : MAX_CANCEL_BODY_BYTES),
+  );
   if (body === undefined) return true;
   if (path === MEDIA_STUDIO_SPATIAL_REFERENCE_CANCEL_PATH) {
     const raw = record(body);

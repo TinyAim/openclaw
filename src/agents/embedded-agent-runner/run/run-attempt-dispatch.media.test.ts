@@ -305,12 +305,11 @@ describe("plugin harness prompt media", () => {
       ]);
       expect(owned.failedMediaCount).toBe(0);
 
-      // The embedded path returns before the plugin-harness throw, so a refused
-      // sibling read shows up as a failure count rather than a rejection.
-      const sibling = await hydrate(siblingImagePath, "session-embedded-sibling-media");
-
-      expect(sibling.images).toEqual([]);
-      expect(sibling.failedMediaCount).toBe(1);
+      await expect(
+        hydrate(siblingImagePath, "session-embedded-sibling-media"),
+      ).rejects.toMatchObject({
+        code: "IMAGE_INPUT_UNAVAILABLE",
+      });
     } finally {
       envSnapshot.restore();
       await fs.rm(stateDir, { recursive: true, force: true });

@@ -8,6 +8,7 @@ import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession } from "../../agents/sandbox.js";
 import { slugifySessionKey } from "../../agents/sandbox/shared.js";
+import type { SandboxContext } from "../../agents/sandbox/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { root as fsRoot, FsSafeError, readLocalFileSafely } from "../../infra/fs-safe.js";
@@ -49,6 +50,8 @@ export async function stageSandboxMedia(params: {
   workspaceDir: string;
   remoteMediaMode?: "sandbox-or-cache" | "cache";
   abortSignal?: AbortSignal;
+  /** Reuse the admitted runner owner rather than resolving a replacement sandbox. */
+  preparedSandbox?: SandboxContext;
 }): Promise<StageSandboxMediaResult> {
   const { ctx, sessionCtx, cfg, sessionKey, workspaceDir, abortSignal } = params;
   abortSignal?.throwIfAborted();
@@ -62,14 +65,28 @@ export async function stageSandboxMedia(params: {
   }
 
   const forceRemoteCache = ctx.MediaRemoteHost && params.remoteMediaMode === "cache";
-  const sandbox = forceRemoteCache
-    ? null
-    : await ensureSandboxWorkspaceForSession({
-        config: cfg,
-        agentId: params.agentId,
-        sessionKey,
-        workspaceDir,
-      });
+  const prepared = params.preparedSandbox;
+  if (
+    prepared &&
+    (!prepared.enabled ||
+      prepared.sessionKey !== sessionKey ||
+      path.resolve(prepared.agentWorkspaceDir) !== path.resolve(workspaceDir) ||
+      ctx.MediaRemoteHost)
+  ) {
+    throw new Error(
+      "Prepared inbound media sandbox does not match the admitted session workspace.",
+    );
+  }
+  const sandbox =
+    prepared ??
+    (forceRemoteCache
+      ? null
+      : await ensureSandboxWorkspaceForSession({
+          config: cfg,
+          agentId: params.agentId,
+          sessionKey,
+          workspaceDir,
+        }));
 
   // For remote attachments without sandbox, use ~/.openclaw/media (not agent workspace for privacy).
   // Managed local inbound refs are already in OpenClaw's media store; when no sandbox is

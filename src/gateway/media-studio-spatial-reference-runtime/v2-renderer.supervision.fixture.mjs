@@ -82,16 +82,35 @@ async function run() {
   const failureCode = argument("--worker-failure-code");
   if (failureCode) {
     const diagnosticMode = argument("--native-diagnostic-mode");
-    const nativeDiagnostic = diagnosticMode
+    const nativeDiagnostic =
+      diagnosticMode && !diagnosticMode.startsWith("rss")
+        ? {
+            source: "darwin_native_rss/v1",
+            pid: 123,
+            errno: 3,
+            readBytes: 0,
+            stage: "task_rss",
+            lifecycleProven: true,
+            renderStage: "motion_encode",
+            ...(diagnosticMode === "invalid" ? { argv: ["must-not-forward"] } : {}),
+          }
+        : undefined;
+    const failureDetails = diagnosticMode?.startsWith("rss")
       ? {
-          source: "darwin_native_rss/v1",
-          pid: 123,
-          errno: 3,
-          readBytes: 0,
-          stage: "task_rss",
-          lifecycleProven: true,
-          renderStage: "motion_encode",
-          ...(diagnosticMode === "invalid" ? { argv: ["must-not-forward"] } : {}),
+          source: "spatial_rss_limit/v1",
+          metric: "darwin_libproc_tree_rss_span_v1",
+          rootPid: diagnosticMode === "rss-identity" ? process.pid + 1 : process.pid,
+          observerPid: process.pid + 2,
+          nodeCount: 3,
+          verifiedSpanMs: 1,
+          capBytes: 2147483648,
+          observedBytes: 2147483649,
+          peakBytes: 2147483649,
+          observedAtMs: 5,
+          phase: "periodic",
+          renderStage: "frame_render",
+          frameIndex: 42,
+          ...(diagnosticMode === "rss-invalid" ? { argv: ["must-not-forward"] } : {}),
         }
       : undefined;
     report({
@@ -101,7 +120,15 @@ async function run() {
       generation,
       code: failureCode,
       nativeDiagnostic,
+      failureDetails,
     });
+    if (diagnosticMode === "rss-late")
+      report({
+        type: "spatial-v2-failed",
+        generation,
+        code: failureCode,
+        failureDetails: { ...failureDetails, observedAtMs: 6 },
+      });
   }
   if (request && manifestPath && !failureCode) {
     const outputs = [];

@@ -31,6 +31,10 @@ import {
   createSpatialReferenceV2Renderer,
   SPATIAL_REFERENCE_V2_RENDERER_MODULE_URL,
 } from "./v2-renderer.js";
+import {
+  spatialReferenceV2FailureDetailsFromError,
+  type SpatialReferenceV2FailureDetails,
+} from "./v2-resource-watch.js";
 
 export type SpatialReferenceV2RuntimeToolchain = {
   referenceRenderHtmlPath: string;
@@ -274,7 +278,10 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
     lifecycle?: SpatialReferenceV2RenderLifecycle,
   ) => Promise<SpatialReferenceV2RenderResult>;
   executionMode?: "source" | "packaged";
-}): Promise<SpatialReferenceV2RuntimeToolchain | { reason: string }> {
+}): Promise<
+  | SpatialReferenceV2RuntimeToolchain
+  | { reason: string; failureDetails?: SpatialReferenceV2FailureDetails }
+> {
   if (!params.bundleDir || !params.chromiumExecutablePath) {
     return { reason: "v2 bundle directory or Chromium executable is missing" };
   }
@@ -301,7 +308,10 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
       spawned,
     });
   };
-  const qualify = async (): Promise<SpatialReferenceV2RuntimeToolchain | { reason: string }> => {
+  const qualify = async (): Promise<
+    | SpatialReferenceV2RuntimeToolchain
+    | { reason: string; failureDetails?: SpatialReferenceV2FailureDetails }
+  > => {
     try {
       const [manifestText, chromiumStat] = await Promise.all([
         readFile(manifestPath, "utf8"),
@@ -575,6 +585,9 @@ export async function resolveSpatialReferenceV2RuntimeToolchain(params: {
     } catch (error) {
       return {
         reason: `v2 toolchain probe failed: ${error instanceof Error ? error.message : String(error)}`,
+        ...(spatialReferenceV2FailureDetailsFromError(error)
+          ? { failureDetails: spatialReferenceV2FailureDetailsFromError(error) }
+          : {}),
       };
     }
   };
