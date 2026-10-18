@@ -554,9 +554,18 @@ describe.skipIf(!executable || !html)("Spatial isolated real Chromium/Babylon/FF
       const request = input(duration);
       if (duration === 30_000) {
         // Exercise the actual Runtime qualification dimensions at its duration
-        // ceiling rather than treating a small diagnostic video as that proof.
+        // ceiling, with enough geometry to expose browser/encoder RSS overlap.
         request.renderIntent.width = 1280;
         request.renderIntent.height = 720;
+        request.blueprint.nodes.push(
+          ...Array.from({ length: 28 }, (_, index) => ({
+            nodeId: `encoding-memory-sphere-${index}`,
+            kind: "primitive",
+            primitiveType: "sphere",
+            position: { x: (index % 7) - 3, y: 0.3, z: -3 - Math.floor(index / 7) },
+            scale: { x: 0.3, y: 0.3, z: 0.3 },
+          })),
+        );
       }
       const result = await renderWithDurableGuardian(request);
       expect(result.frameCount).toBe(Math.ceil((duration * 12) / 1000));

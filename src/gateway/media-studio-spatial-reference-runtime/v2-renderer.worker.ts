@@ -514,9 +514,12 @@ async function run(): Promise<void> {
         throw new Error("spatial_v2_temp_limit_exceeded");
       }
       failureStage = "motion_encode";
-      // Scene state never crosses frames; release the sequence's sole Engine
-      // before FFmpeg starts and before any successful result can be published.
+      // Every requested image is now on disk. Release the private browser process
+      // tree as well as its Engine before encoding: Chromium's resident allocation
+      // otherwise overlaps FFmpeg inside the same 2 GiB worker-tree budget.
       await disposeRenderHost();
+      closeBrowser();
+      await closing;
       await rssWatch.sampleBoundary("before_ffmpeg");
       if (controller.signal.aborted) throw controller.signal.reason;
       await runFfmpeg(
