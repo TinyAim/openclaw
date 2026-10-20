@@ -3,6 +3,7 @@ import {
   getPreparedModelRuntimeBorrowedSnapshot,
   getPreparedModelRuntimePluginGeneration,
 } from "../../agents/prepared-model-runtime-generation-scope.js";
+import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
 
 const dispatchAgentRunFromGateway = vi.hoisted(() => vi.fn());
@@ -142,6 +143,23 @@ describe("startAgentRunExecution Gateway ownership", () => {
     expect(execution.runtimeRelease).toHaveBeenCalledOnce();
     await completion;
   });
+
+  it.each([false, true])(
+    "applies trusted per-run fallback restriction=%s without a session lock",
+    async (restricted) => {
+      const execution = createExecution();
+      execution.params.client = createSyntheticPluginRuntimeClient(
+        restricted ? { disableModelFallbacks: true } : {},
+      );
+      const completion = startAgentRunExecution(execution.params);
+      await vi.waitFor(() => expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce());
+      const dispatch = dispatchAgentRunFromGateway.mock.calls[0]?.[0];
+      expect(dispatch?.ingressOpts.modelFallbacksOverride).toEqual(restricted ? [] : undefined);
+      expect(dispatch?.ingressOpts).not.toHaveProperty("modelSelectionLocked");
+      dispatch?.cleanupAbortController();
+      await completion;
+    },
+  );
 
   it("releases the admitted runtime once when aborted before dispatch", async () => {
     const execution = createExecution({ aborted: true });

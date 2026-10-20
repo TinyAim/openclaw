@@ -48,6 +48,7 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
         ).length;
       const profile = ensureProfileForEmail("authoring-binding@example.test");
       const client: GatewayClient = {
+        ...(closure === "removed" ? { internal: { disableModelFallbacks: true as const } } : {}),
         connId: "authoring-binding",
         authenticatedUserProfile: {
           profileId: profile.id,
@@ -123,6 +124,9 @@ it.each(["removed", "replaced", "aborted", "released", "terminal", "rotated", "q
           expect.anything(),
         );
         options = await entered.promise;
+        expect(options.replyOptions?.disableModelFallbacks).toBe(
+          closure === "removed" ? true : undefined,
+        );
         owned = observeDispatch.mock.calls.at(-1)?.[0];
         const prepared = options.replyOptions?.onSessionPrepared;
         const runStarted = options.replyOptions?.onAgentRunStart;

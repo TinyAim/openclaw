@@ -231,6 +231,8 @@ type OpenClawCodingToolsOptions = {
   /** Stable run identifier for this agent invocation. */
   runId?: string;
   requesterThinkingLevel?: ThinkLevel;
+  requesterUserLanguageReference?: string;
+  getRequesterUserLanguageReference?: () => string | undefined;
   /** Exact admitted run instance for lifecycle-bound subprocess capabilities. */
   operationalRunInstance?: OperationalRunInstanceRef;
   /** Device-scoped operator session allowed to review approvals initiated by this run. */
@@ -863,6 +865,8 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             runId: options?.runId,
             ...(options?.questionPrompt ? { questionPrompt: options.questionPrompt } : {}),
             requesterThinkingLevel: options?.requesterThinkingLevel,
+            requesterUserLanguageReference: options?.requesterUserLanguageReference,
+            getRequesterUserLanguageReference: options?.getRequesterUserLanguageReference,
             sessionPermissionPolicy,
             execSession: sessionPermissionPolicy
               ? { permissionMode: sessionPermissionPolicy.mode }

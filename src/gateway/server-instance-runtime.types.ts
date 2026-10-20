@@ -12,6 +12,7 @@ import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
 export type GatewayInstanceAgentDispatchOptions = {
   allowModelOverride?: boolean;
   allowSyntheticModelOverride?: boolean;
+  disableModelFallbacks?: true;
   allowSyntheticCronRunContinuation?: boolean;
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
   expectFinal?: boolean;

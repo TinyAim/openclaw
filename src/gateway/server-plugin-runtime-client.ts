@@ -25,6 +25,7 @@ export function createSyntheticPluginRuntimeClient(params?: {
     NonNullable<GatewayRequestOptions["client"]>["authenticatedUserProfile"]
   >;
   allowModelOverride?: boolean;
+  disableModelFallbacks?: true;
   agentToolCaller?: TrustedAgentToolCaller;
   agentRunTracking?: GatewayAgentRunTaskOwner;
   operatorRoleActor?: GatewayOperatorRoleActor;
@@ -67,6 +68,7 @@ export function createSyntheticPluginRuntimeClient(params?: {
       ...(params?.sessionCreation ? { sessionCreation: params.sessionCreation } : {}),
       ...(params?.agentToolCaller ? { agentToolCaller: params.agentToolCaller } : {}),
       allowModelOverride: params?.allowModelOverride === true,
+      ...(params?.disableModelFallbacks ? { disableModelFallbacks: true } : {}),
       ...(params?.agentRunTracking ? { agentRunTracking: params.agentRunTracking } : {}),
       ...(params?.cronRunContinuation === true ? { cronRunContinuation: true } : {}),
       ...(params?.runtimeContextFragments

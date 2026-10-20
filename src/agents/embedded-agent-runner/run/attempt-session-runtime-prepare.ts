@@ -108,6 +108,13 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   const { isOpenAIResponsesApi, preparedUserTurnMessage, sessionManager, transcriptPolicy } =
     preparedSessionManager;
 
+  toolBase.restoreRequesterUserLanguageReference(
+    sessionManager
+      .getBranch()
+      .slice(-128)
+      .flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
+  );
+
   const state: EmbeddedAttemptSessionRuntimeState = {
     currentTurnImageFailureCount: 0,
     prePromptMessageCount: 0,

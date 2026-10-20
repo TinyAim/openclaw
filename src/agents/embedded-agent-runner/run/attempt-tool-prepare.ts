@@ -350,6 +350,7 @@ export function prepareEmbeddedAttemptToolBase(params: {
   });
 
   return {
+    restoreRequesterUserLanguageReference: toolRunContext.restoreRequesterUserLanguageReference,
     get toolAbortSignal() {
       return toolAbortSignal;
     },

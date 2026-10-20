@@ -522,6 +522,48 @@ test("sessions.create commits the personal default before dispatching its initia
   });
 });
 
+test("sessions.create forwards a trusted initial-run restriction without persisting or accepting it on the wire", async () => {
+  await withOpenClawTestState({ layout: "state-only" }, async () => {
+    const { storePath, client, context } = await createPersonalAccountSessionFixture();
+    const key = "agent:main:dashboard:inherited-initial-run";
+    client.internal = { disableModelFallbacks: true };
+    const { chatHandlers } = await import("./server-methods/chat.js");
+    const chatSend = vi
+      .spyOn(chatHandlers, "chat.send")
+      .mockImplementation(({ client: initialClient, respond }) => {
+        expect(initialClient?.internal?.disableModelFallbacks).toBe(true);
+        respond(true, { runId: "inherited-initial-run", status: "started" });
+      });
+    try {
+      const created = await directSessionReq<{ runStarted: boolean }>(
+        "sessions.create",
+        { key, model: "openai/gpt-5.6-sol", task: "Inspect the task" },
+        { client, context },
+      );
+      expect(created.ok, JSON.stringify(created.error)).toBe(true);
+      expect(created.payload?.runStarted).toBe(true);
+      expect(chatSend).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ sessionKey: key, storePath })).not.toHaveProperty(
+        "disableModelFallbacks",
+      );
+      delete client.internal;
+      const spoof = await directSessionReq(
+        "sessions.create",
+        {
+          key: `${key}-spoof`,
+          task: "untrusted",
+          disableModelFallbacks: true,
+        },
+        { client, context },
+      );
+      expect(spoof.ok).toBe(false);
+      expect(chatSend).toHaveBeenCalledOnce();
+    } finally {
+      chatSend.mockRestore();
+    }
+  });
+});
+
 test("sessions.create does not donate a personal default to an unpinned adoption or fork", async () => {
   await withOpenClawTestState({ layout: "state-only" }, async () => {
     const { storePath, client, context } = await createPersonalAccountSessionFixture();

@@ -270,6 +270,7 @@ export async function resolveSubagentChildPlan(params: {
     requesterAgentConfig,
     targetAgentConfig,
     modelOverride: params.request.model,
+    requesterModelRef: params.ctx.requesterModelRef,
     thinkingOverrideRaw: params.request.thinking,
     callerThinkingRaw,
     fastMode: inheritedFastMode,
@@ -289,7 +290,10 @@ export async function resolveSubagentChildPlan(params: {
     targetAgentId: params.targetAgentId,
     targetAgentDir,
     workspaceDir: spawnedWorkspaceDir,
-    request: params.request,
+    request: {
+      ...params.request,
+      model: params.request.model?.trim() || params.ctx.requesterModelRef,
+    },
     resolvedModel,
   });
   if (modelError) {
@@ -304,8 +308,12 @@ export async function resolveSubagentChildPlan(params: {
   }
   const resolvedLaunchModel = splitModelRef(resolvedModel);
   const launchAuthorization: SubagentLaunchAuthorization | undefined =
-    params.request.model?.trim() && resolvedLaunchModel.model
+    (params.request.model?.trim() || params.ctx.requesterModelRef?.trim()) &&
+    resolvedLaunchModel.model
       ? {
+          ...(!params.request.model?.trim() && params.ctx.requesterModelRef?.trim()
+            ? { disableModelFallbacks: true as const }
+            : {}),
           modelOverride: {
             ...(resolvedLaunchModel.provider ? { provider: resolvedLaunchModel.provider } : {}),
             model: resolvedLaunchModel.model,

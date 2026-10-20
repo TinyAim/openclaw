@@ -13,6 +13,7 @@ import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import * as internalFacade from "./agent-turn/internal-facade.js";
 import { captureAgentTurnPrincipal } from "./agent-turn/principal.js";
 import { APPROVALS_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
@@ -48,6 +49,39 @@ function createRegistry(handlers: GatewayRequestHandlers) {
 }
 
 describe("createGatewayInstanceRuntime", () => {
+  it("preserves inherited fallback restriction in the queued recovery principal", async () => {
+    const originalFactory = internalFacade.createInternalAgentTurnFacade;
+    const principals: Parameters<typeof originalFactory>[0][] = [];
+    const factory = vi
+      .spyOn(internalFacade, "createInternalAgentTurnFacade")
+      .mockImplementation((options) => {
+        principals.push(options);
+        return originalFactory(options);
+      });
+    const context = createContext();
+    const runtime = createGatewayInstanceRuntime({
+      getContext: () => context,
+      getMethodRegistry: () => createRegistry({}),
+      isDispatchAvailable: () => true,
+    });
+    context.dedupe.set("agent:inherited-queued", {
+      ts: Date.now(),
+      ok: true,
+      payload: { runId: "inherited-queued", status: "ok" },
+    });
+    try {
+      await runtime.recovery.dispatchAgent(
+        { message: "inspect", idempotencyKey: "inherited-queued" },
+        undefined,
+        { allowModelOverride: true, disableModelFallbacks: true },
+      );
+      expect(principals.at(-1)?.client?.internal).toMatchObject({ disableModelFallbacks: true });
+    } finally {
+      runtime.close();
+      factory.mockRestore();
+    }
+  });
+
   it("uses the typed recovery path and fails closed when the owning instance closes", async () => {
     let available = false;
     const rawAgent = vi.fn<NonNullable<GatewayRequestHandlers["agent"]>>(({ respond }) => {

@@ -274,7 +274,13 @@ export function createSubagentRegistryRestorer(config: {
                 request.params as Parameters<typeof gatewayRuntime.dispatchAgent>[0],
                 request.timeoutMs,
                 launch.authorization
-                  ? { allowModelOverride: true, scopes: [ADMIN_SCOPE] }
+                  ? {
+                      allowModelOverride: true,
+                      ...(launch.authorization.disableModelFallbacks
+                        ? { disableModelFallbacks: true }
+                        : {}),
+                      scopes: [ADMIN_SCOPE],
+                    }
                   : undefined,
               );
               const gatewayRunId = readGatewayRunId(response) ?? runId;

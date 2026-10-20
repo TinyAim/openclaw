@@ -102,6 +102,31 @@ describe("trusted in-process Gateway session creation", () => {
     expect(mocks.callGatewayTool).not.toHaveBeenCalled();
   });
 
+  it("keeps visible initial-run fallback restrictions private and fails closed without its owner", async () => {
+    const creation = {
+      via: "spawn" as const,
+      actor: { type: "agent" as const, id: "main" },
+      requesterSessionKey: "agent:main:main",
+    };
+    const params = { agentId: "main", task: "Inspect this task" };
+    await callInProcessGatewayToolWithCreation("sessions.create", params, creation, {
+      disableModelFallbacks: true,
+    });
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      "sessions.create",
+      params,
+      expect.objectContaining({ disableModelFallbacks: true, sessionCreation: creation }),
+    );
+    expect(params).not.toHaveProperty("disableModelFallbacks");
+    mocks.hasContext = false;
+    await expect(
+      callInProcessGatewayToolWithCreation("sessions.create", params, creation, {
+        disableModelFallbacks: true,
+      }),
+    ).rejects.toThrow("inherited model fallback policy requires in-process Gateway dispatch");
+    expect(mocks.callGatewayTool).not.toHaveBeenCalled();
+  });
+
   it("carries visible-spawn policy through signed identity on fallback dispatch", async () => {
     mocks.hasContext = false;
     const inheritedToolPolicy = {

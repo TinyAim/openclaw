@@ -28,6 +28,8 @@ import { runWithGatewaySessionSpawnContext } from "./gateway-session-spawn-conte
 import { callGatewayTool } from "./gateway.js";
 
 type InProcessGatewayCallOptions = {
+  /** Restrict this trusted launch only; never serialize into public RPC params. */
+  disableModelFallbacks?: true;
   resolveGatewayContext?: GatewayContextResolver;
   sessionMutationCommitGuard?: () => void;
   signal?: AbortSignal;
@@ -301,6 +303,7 @@ async function callInProcessGatewayToolBound<T>(
           operatorRoleActor: { kind: "system" as const },
           syntheticScopes: scopes,
           ...(options.sessionCreation ? { sessionCreation: options.sessionCreation } : {}),
+          ...(options.disableModelFallbacks ? { disableModelFallbacks: true as const } : {}),
           ...(sessionMutationCommitGuard ? { sessionMutationCommitGuard } : {}),
           ...(options.signal ? { signal: options.signal } : {}),
           ...(options.timeoutMs !== undefined && options.timeoutMs !== null
@@ -313,6 +316,9 @@ async function callInProcessGatewayToolBound<T>(
   }
   if (boundGateway) {
     throw new Error(`Gateway instance unavailable for ${method}`);
+  }
+  if (options.disableModelFallbacks) {
+    throw new Error("inherited model fallback policy requires in-process Gateway dispatch");
   }
   return await runBoundInProcessGatewayCall(undefined, () => fallback(scopes), assertCallerCurrent);
 }
@@ -339,12 +345,7 @@ export async function callInProcessGatewayToolWithCreation<T = Record<string, un
   method: string,
   params: Record<string, unknown>,
   creation: TrustedSessionCreation,
-  options: {
-    resolveGatewayContext?: GatewayContextResolver;
-    sessionMutationCommitGuard?: () => void;
-    signal?: AbortSignal;
-    timeoutMs?: number | null;
-  } = {},
+  options: InProcessGatewayCallOptions = {},
 ): Promise<T> {
   return await callInProcessGatewayToolBound(
     method,

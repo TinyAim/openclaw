@@ -452,6 +452,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       provider,
       model,
       requestedRouteResolution,
+      ...(opts?.disableModelFallbacks ? { disableModelFallbacks: true as const } : {}),
       modelSelectionLocked: preparedSessionState.sessionEntry?.modelSelectionLocked === true,
       hasSessionModelOverride: runHasSessionModelOverride,
       modelOverrideSource: runModelOverrideSource,

@@ -156,6 +156,41 @@ describe("agent-runner-utils", () => {
     expect(resolved.fallbacksOverride).toEqual([]);
   });
 
+  it("restricts both fallback layers for the inherited run without affecting its next ordinary turn", async () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      source: "inherited",
+      models: ["other/model"],
+    });
+    const config = makeRun().config;
+    const restricted = makeRun({
+      config,
+      model: "gpt-4.1-mini",
+      disableModelFallbacks: true,
+      modelOverrideSource: "auto",
+    });
+    const ordinary = makeRun({ config, model: "gpt-4.1-mini", modelOverrideSource: "auto" });
+    const authProfile = resolveProviderScopedAuthProfile({
+      provider: "openai",
+      primaryProvider: "openai",
+    });
+    for (const run of [restricted, ordinary]) {
+      const expected = run.disableModelFallbacks ? [] : undefined;
+      expect(resolveModelFallbackOptions(run).fallbacksOverride).toEqual(expected);
+      const embedded = await buildEmbeddedRunBaseParams({
+        run,
+        provider: run.provider,
+        model: run.model,
+        runId: "visible-initial-run",
+        authProfile,
+      });
+      expect(embedded.modelFallbacksOverride).toEqual(expected);
+      expect(embedded.modelSelectionLocked).toBeUndefined();
+      expect(run.modelOverrideSource).toBe("auto");
+    }
+    expect(config).not.toHaveProperty("disableModelFallbacks");
+  });
+
   it("passes through missing agentId for helper-based fallback resolution", () => {
     hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
       kind: "active",

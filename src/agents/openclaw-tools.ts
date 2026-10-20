@@ -573,6 +573,12 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
             requesterTurnRunId: options?.runId,
             requesterThinkingLevel: options?.requesterThinkingLevel,
+            requesterModelRef:
+              options?.modelProvider?.trim() && options?.modelId?.trim()
+                ? `${options.modelProvider.trim()}/${options.modelId.trim()}`
+                : undefined,
+            requesterUserLanguageReference: options?.requesterUserLanguageReference,
+            getRequesterUserLanguageReference: options?.getRequesterUserLanguageReference,
             completionOwnerKey: options?.runSessionKey,
             agentChannel: options?.agentChannel,
             agentAccountId: options?.agentAccountId,

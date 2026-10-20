@@ -129,6 +129,28 @@ describe("typed in-process agent authorization", () => {
     waitForTurn.mockReset();
   });
 
+  it("keeps the fallback restriction in trusted client metadata", async () => {
+    const context = createContext();
+    const createFacade = vi.fn(context.createAgentTurnFacade!);
+    context.createAgentTurnFacade = createFacade;
+    startTurn.mockImplementation(async ({ io }) =>
+      io.emitAcceptance([true, { runId: "inherited", status: "accepted" }, undefined]),
+    );
+    await dispatchGatewayMethodInProcess(
+      "agent",
+      { message: "inspect", idempotencyKey: "inherited" },
+      {
+        forceSyntheticClient: true,
+        operatorRoleActor: { kind: "system" },
+        disableModelFallbacks: true,
+        resolveGatewayContext: () => context,
+      },
+    );
+    expect(createFacade.mock.calls[0]?.[0].client?.internal).toMatchObject({
+      disableModelFallbacks: true,
+    });
+  });
+
   it.each([
     ["agent", { message: "owned turn", idempotencyKey: "host-owned" }],
     ["agent.wait", { runId: "host-owned" }],

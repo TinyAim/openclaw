@@ -272,6 +272,7 @@ export async function spawnSubagentDirect(
       soleCollectorChild: soleImplicitMember,
       spawnMode,
       task,
+      requesterUserLanguageReference: ctx.requesterUserLanguageReference,
       requesterSessionKey,
       requesterOrigin: childSessionOrigin,
       childSessionKey,

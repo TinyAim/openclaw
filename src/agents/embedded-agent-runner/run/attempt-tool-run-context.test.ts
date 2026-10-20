@@ -32,6 +32,48 @@ describe("buildEmbeddedAttemptToolRunContext", () => {
     }
   });
 
+  it("freezes real user language separately from internal prompt context", () => {
+    const input = {
+      trigger: "user" as const,
+      transcriptPrompt: "请核实当前模型，保留精确模型名。",
+      prompt: "Server-only project context in English.",
+    };
+    const context = buildEmbeddedAttemptToolRunContext(input);
+    expect(context.requesterUserLanguageReference).toBe(input.transcriptPrompt);
+    input.transcriptPrompt = "Now use English.";
+    expect(context.requesterUserLanguageReference).toBe("请核实当前模型，保留精确模型名。");
+    expect(
+      buildEmbeddedAttemptToolRunContext({
+        ...input,
+        inputProvenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+      }).requesterUserLanguageReference,
+    ).toBeUndefined();
+  });
+
+  it("restores only prior native user evidence after an internal continuation", () => {
+    const context = buildEmbeddedAttemptToolRunContext({
+      trigger: "user",
+      prompt: "Continue the internal delegated task.",
+      inputProvenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    });
+    expect(context.getRequesterUserLanguageReference()).toBeUndefined();
+    context.restoreRequesterUserLanguageReference([
+      { role: "user", content: "请按当前需求核实模型。", provenance: { kind: "external_user" } },
+      { role: "assistant", content: "English model output is not user input." },
+      {
+        role: "user",
+        content: "The child finished.",
+        provenance: { kind: "inter_session", sourceTool: "subagent_announce" },
+      },
+    ]);
+    const frozenForChild = context.getRequesterUserLanguageReference();
+    expect(frozenForChild).toBe("请按当前需求核实模型。");
+    context.restoreRequesterUserLanguageReference([
+      { role: "user", content: "Now answer in English." },
+    ]);
+    expect(context.getRequesterUserLanguageReference()).toBe(frozenForChild);
+  });
+
   it("carries runtime toolsAllow into coding tool construction", () => {
     const context = buildEmbeddedAttemptToolRunContext({
       trigger: "manual",

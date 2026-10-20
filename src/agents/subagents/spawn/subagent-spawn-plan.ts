@@ -59,6 +59,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   requesterAgentConfig?: unknown;
   targetAgentConfig?: unknown;
   modelOverride?: string;
+  requesterModelRef?: string;
   thinkingOverrideRaw?: string;
   callerThinkingRaw?: string;
   fastMode?: FastMode;
@@ -66,7 +67,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   const rawResolvedModel = resolveSubagentSpawnModelSelection({
     cfg: params.cfg,
     agentId: params.targetAgentId,
-    modelOverride: params.modelOverride,
+    modelOverride: params.modelOverride?.trim() || params.requesterModelRef,
   });
   const { model: resolvedModel, profile: authProfileId } =
     splitTrailingAuthProfile(rawResolvedModel);
@@ -93,6 +94,7 @@ export function resolveSubagentModelAndThinkingPlan(params: {
   const hasConfiguredAutoModel =
     modelOverrideSource === "auto" &&
     Boolean(
+      params.requesterModelRef?.trim() ||
       resolveSubagentConfiguredModelSelection({
         cfg: params.cfg,
         agentId: params.targetAgentId,

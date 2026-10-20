@@ -71,6 +71,8 @@ export type GatewayClient = {
     /** Trusted built-in agent tool caller; never accepted from Gateway wire params. */
     agentToolCaller?: TrustedAgentToolCaller;
     allowModelOverride?: boolean;
+    /** Restrict-only in-process run policy; absent from public RPC input. */
+    disableModelFallbacks?: true;
     approvalRuntime?: boolean;
     cronRunContinuation?: boolean;
     agentRuntimeIdentity?: AgentRuntimeIdentity;

@@ -47,7 +47,9 @@ export function resolveModelFallbackOptions(
     agentId: run.agentId,
     sessionKey: run.runtimePolicySessionKey ?? run.sessionKey,
     modelFallbackAvailability,
-    fallbacksOverride: modelFallbackOverrideFromAvailability(modelFallbackAvailability),
+    fallbacksOverride: run.disableModelFallbacks
+      ? []
+      : modelFallbackOverrideFromAvailability(modelFallbackAvailability),
   };
 }
 
@@ -128,7 +130,9 @@ export async function buildEmbeddedRunBaseParams(params: {
     hasAutoFallbackProvenance: params.run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: params.run.modelSelectionLocked,
   });
-  const modelFallbacksOverride = modelFallbackOverrideFromAvailability(modelFallbackAvailability);
+  const modelFallbacksOverride = params.run.disableModelFallbacks
+    ? []
+    : modelFallbackOverrideFromAvailability(modelFallbackAvailability);
   const enforceFinalTag = resolveEnforceFinalTagWithResolver(
     params.run,
     params.provider,

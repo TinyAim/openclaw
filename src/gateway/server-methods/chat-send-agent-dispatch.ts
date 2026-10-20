@@ -335,6 +335,9 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
               onSessionMetadataChanges: (changes) =>
                 changes.forEach((change) => emitSessionsChanged(context, change)),
               replyOptions: {
+                ...(client?.internal?.disableModelFallbacks
+                  ? { disableModelFallbacks: true as const }
+                  : {}),
                 prepareAssistantTranscriptMessage: replyDispatch.prepareAssistantTranscriptMessage,
                 ...(admission.admittedSessionSettings
                   ? { admittedSessionSettings: admission.admittedSessionSettings }

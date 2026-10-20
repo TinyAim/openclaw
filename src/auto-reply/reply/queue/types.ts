@@ -216,6 +216,8 @@ export type FollowupRun = {
     provider: string;
     model: string;
     requestedRouteResolution?: ModelFallbackRouteResolution;
+    /** Host-owned restriction for this queued run; never a durable session preference. */
+    disableModelFallbacks?: true;
     /** Prevents the queued run from selecting configured fallback models. */
     modelSelectionLocked?: boolean;
     hasSessionModelOverride?: boolean;

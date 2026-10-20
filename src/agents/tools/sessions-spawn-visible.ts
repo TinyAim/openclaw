@@ -32,6 +32,7 @@ import { deleteSubagentSessionForCleanup } from "../subagents/registry/subagent-
 import { getSubagentDepthFromSessionStore } from "../subagents/spawn/subagent-depth.js";
 import { resolveSubagentSpawnOwnership } from "../subagents/spawn/subagent-spawn-ownership.js";
 import { resolveConfiguredSubagentRunTimeoutSeconds } from "../subagents/spawn/subagent-spawn-plan.js";
+import { buildSubagentSpawnEnvelope } from "../subagents/spawn/subagent-system-prompt.js";
 import { resolveSubagentTargetPolicy } from "../subagents/spawn/subagent-target-policy.js";
 import { normalizeToolModelOverride, readToolStringParam, ToolInputError } from "./common.js";
 import {
@@ -242,7 +243,9 @@ export async function maybeSpawnVisibleSession(params: {
     return { status: "forbidden", error: targetPolicy.error };
   }
   const resolvedModel =
-    modelOverride ?? resolveSubagentSpawnModelSelection({ cfg, agentId: targetAgentId });
+    modelOverride ??
+    params.options?.requesterModelRef?.trim() ??
+    resolveSubagentSpawnModelSelection({ cfg, agentId: targetAgentId });
   const runTimeoutSeconds = resolveConfiguredSubagentRunTimeoutSeconds({
     cfg,
     runTimeoutSeconds: params.runTimeoutSeconds,
@@ -310,10 +313,20 @@ export async function maybeSpawnVisibleSession(params: {
   params.options?.onSpawnEffectsStart?.();
   try {
     const gatewayCall = params.options?.callGateway ?? callInProcessGatewayTool;
-    const createGatewayCall: InProcessGatewayCaller =
-      params.options?.callGateway ??
-      ((method, requestParams) =>
-        callInProcessGatewayToolWithCreation(method, requestParams, {
+    const createGatewayCall: InProcessGatewayCaller = (method, requestParams) => {
+      const launchOptions =
+        params.task && !modelOverride && params.options?.requesterModelRef?.trim()
+          ? { disableModelFallbacks: true as const }
+          : undefined;
+      if (params.options?.callGateway) {
+        return launchOptions
+          ? params.options.callGateway(method, requestParams, launchOptions)
+          : params.options.callGateway(method, requestParams);
+      }
+      return callInProcessGatewayToolWithCreation(
+        method,
+        requestParams,
+        {
           via: "spawn",
           actor: { type: "agent", id: requesterAgentId },
           requesterSessionKey: requesterKey,
@@ -323,7 +336,10 @@ export async function maybeSpawnVisibleSession(params: {
             allow: [...(params.options?.inheritedToolAllowlist ?? [])],
             deny: [...(params.options?.inheritedToolDenylist ?? [])],
           },
-        }));
+        },
+        launchOptions,
+      );
+    };
     let response: {
       key?: string;
       sessionId?: string;
@@ -339,7 +355,18 @@ export async function maybeSpawnVisibleSession(params: {
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
         model: resolvedModel,
-        ...(params.task ? { task: params.task } : {}),
+        ...(params.task
+          ? {
+              task: buildSubagentSpawnEnvelope({
+                completionMode: params.expectsCompletionMessage ? "announce" : "quiet",
+                spawnMode: "session",
+                task: params.task,
+                requesterUserLanguageReference: params.options?.requesterUserLanguageReference,
+                childDepth: callerDepth + 1,
+                maxSpawnDepth: maxDepth,
+              }).message,
+            }
+          : {}),
         parentSessionKey: requesterKey,
         // Declared spawn lineage: without it the child persists as a depth-0 root
         // and could spawn past maxSpawnDepth.

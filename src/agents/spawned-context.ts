@@ -26,6 +26,12 @@ export type SpawnedToolContext = {
   workspaceDir?: string;
   /** Effective parent-turn level, including one-shot overrides, for child inheritance. */
   requesterThinkingLevel?: ThinkLevel;
+  /** Provider-qualified active attempt model; never reconstructed from mutable session defaults. */
+  requesterModelRef?: string;
+  /** Frozen real-user language/format evidence; never a delegated task or execution grant. */
+  requesterUserLanguageReference?: string;
+  /** Read the same attempt's native-history reference after its session is prepared. */
+  getRequesterUserLanguageReference?: () => string | undefined;
   sessionPermissionPolicy?: PreparedSessionPermissionPolicy;
   inheritedToolAllowlist?: string[];
   inheritedToolDenylist?: string[];

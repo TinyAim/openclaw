@@ -1,5 +1,7 @@
 /** Authorization captured when a trusted sessions_spawn request selects a model. */
 export type SubagentLaunchAuthorization = {
+  /** Restrict this inherited attempt only; never persist harness ownership. */
+  disableModelFallbacks?: true;
   modelOverride: {
     provider?: string;
     model: string;

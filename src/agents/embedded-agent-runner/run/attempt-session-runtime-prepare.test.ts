@@ -192,6 +192,7 @@ function createFixture() {
       sandboxSessionKey: "sandbox-1",
     },
     toolBase: {
+      restoreRequesterUserLanguageReference: vi.fn(),
       computerContextEpoch: { value: 0 },
       localModelLeanEnabled: false,
       codeModeControlsEnabledForRun: false,

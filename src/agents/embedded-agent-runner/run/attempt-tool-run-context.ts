@@ -4,6 +4,10 @@ import {
   freezeDiagnosticTraceContext,
   type DiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
+import {
+  resolveSubagentUserLanguageReference,
+  restoreSubagentUserLanguageReference,
+} from "../../subagents/spawn/subagent-user-language.js";
 import { mergeForcedEmbeddedAttemptToolsAllow } from "./attempt-tool-construction-plan.js";
 import type { EmbeddedRunTrigger, RunEmbeddedAgentParams } from "./params.js";
 
@@ -46,6 +50,11 @@ type AttemptToolRunFacts = Pick<
 export function buildEmbeddedAttemptToolRunContext(
   params: AttemptToolRunFacts & {
     thinkLevel?: ThinkLevel;
+    prompt?: string;
+    transcriptPrompt?: string;
+    inputProvenance?: RunEmbeddedAgentParams["inputProvenance"];
+    currentInboundEventKind?: RunEmbeddedAgentParams["currentInboundEventKind"];
+    internalEvents?: RunEmbeddedAgentParams["internalEvents"];
     trigger?: EmbeddedRunTrigger;
     jobId?: string;
     memoryFlushWritePath?: string;
@@ -60,6 +69,8 @@ export function buildEmbeddedAttemptToolRunContext(
   },
 ) {
   const { currentInboundAudio, replyOperation } = params;
+  let requesterUserLanguageReference = resolveSubagentUserLanguageReference(params);
+  const spawnedBy = params.spawnedBy;
   // Collector output is mandatory result transport, even on a narrowed tool surface.
   const runtimeToolAllowlist = mergeForcedEmbeddedAttemptToolsAllow(params.toolsAllow, {
     forceMessageTool: params.forceMessageTool,
@@ -97,6 +108,18 @@ export function buildEmbeddedAttemptToolRunContext(
     sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
     taskSuggestionDeliveryMode: params.taskSuggestionDeliveryMode,
     requesterThinkingLevel: params.thinkLevel,
+    requesterUserLanguageReference,
+    getRequesterUserLanguageReference: () => requesterUserLanguageReference,
+    restoreRequesterUserLanguageReference: (
+      messages: Parameters<typeof restoreSubagentUserLanguageReference>[0],
+    ) => {
+      if (params.trigger === "user" && params.currentInboundEventKind !== "room_event") {
+        requesterUserLanguageReference ??= restoreSubagentUserLanguageReference(
+          messages,
+          spawnedBy,
+        );
+      }
+    },
     trigger: params.trigger,
     jobId: params.jobId,
     memoryFlushWritePath: params.memoryFlushWritePath,

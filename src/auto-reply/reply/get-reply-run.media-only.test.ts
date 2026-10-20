@@ -510,6 +510,16 @@ function requireLastRunReplyAgentCall() {
 }
 
 describe("runPreparedReply media-only handling", () => {
+  it("carries the initial host restriction on its run and leaves the next ordinary turn unrestricted", async () => {
+    const initial = baseParams({ sessionEntry: { sessionId: "session-1", updatedAt: Date.now() } });
+    initial.opts = { ...initial.opts, disableModelFallbacks: true };
+    await runPreparedReply(initial);
+    expect(requireLastRunReplyAgentCall().followupRun.run.disableModelFallbacks).toBe(true);
+    expect(initial.sessionEntry).not.toHaveProperty("disableModelFallbacks");
+    const next = baseParams();
+    await runPreparedReply(next);
+    expect(requireLastRunReplyAgentCall().followupRun.run.disableModelFallbacks).toBeUndefined();
+  });
   beforeAll(async () => {
     // Preload the runtime seams directly so test setup does not need a synthetic
     // reply turn with registry and session side effects.

@@ -11,6 +11,8 @@ import {
 } from "./subagent-spawn.test-helpers.js";
 
 const callGatewayMock = vi.fn();
+const hasInProcessGatewayContextMock = vi.fn(() => false);
+const dispatchGatewayMethodInProcessMock = vi.fn();
 const updateSessionStoreMock = vi.fn();
 
 let resetSubagentRegistryForTests: typeof import("../registry/subagent-registry.test-helpers.js").resetSubagentRegistryForTests;
@@ -20,6 +22,8 @@ describe("spawnSubagentDirect runtime model persistence", () => {
   beforeAll(async () => {
     ({ resetSubagentRegistryForTests, spawnSubagentDirect } = await loadSubagentSpawnModuleForTest({
       callGatewayMock,
+      hasInProcessGatewayContextMock,
+      dispatchGatewayMethodInProcessMock,
       getRuntimeConfig: () => createSubagentSpawnTestConfig(os.tmpdir()),
       updateSessionStoreMock,
       workspaceDir: os.tmpdir(),
@@ -29,6 +33,10 @@ describe("spawnSubagentDirect runtime model persistence", () => {
   beforeEach(() => {
     resetSubagentRegistryForTests();
     callGatewayMock.mockReset();
+    hasInProcessGatewayContextMock.mockReturnValue(false);
+    dispatchGatewayMethodInProcessMock
+      .mockReset()
+      .mockImplementation(async (method, params) => callGatewayMock({ method, params }));
     updateSessionStoreMock.mockReset();
     setupAcceptedSubagentGatewayMock(callGatewayMock);
 
@@ -77,6 +85,7 @@ describe("spawnSubagentDirect runtime model persistence", () => {
       {
         agentSessionKey: "agent:main:main",
         agentChannel: "guildchat",
+        requesterModelRef: "openai/gpt-5.6-sol",
       },
     );
 
@@ -95,6 +104,40 @@ describe("spawnSubagentDirect runtime model persistence", () => {
     expect(operations.indexOf("gateway:agent")).toBeGreaterThan(
       operations.lastIndexOf("store:update"),
     );
+  });
+
+  it("inherits the active parent attempt instead of the global default", async () => {
+    hasInProcessGatewayContextMock.mockReturnValue(true);
+    let persistedStore: Record<string, Record<string, unknown>> | undefined;
+    installSessionStoreCaptureMock(updateSessionStoreMock, {
+      onStore: (store) => {
+        persistedStore = store;
+      },
+    });
+    const result = await spawnSubagentDirect(
+      { task: "test" },
+      {
+        agentSessionKey: "agent:main:main",
+        requesterModelRef: "openai/gpt-5.4",
+        requesterUserLanguageReference:
+          "请核实当前模型。Reply in English with a short explanation.",
+      },
+    );
+    expect(result).toMatchObject({ status: "accepted", resolvedModel: "openai/gpt-5.4" });
+    const childEntry = Object.values(persistedStore ?? {})[0];
+    expect(childEntry?.modelSelectionLocked).toBeUndefined();
+    expect(childEntry?.modelOverrideSource).toBe("auto");
+    expect(dispatchGatewayMethodInProcessMock).toHaveBeenCalledWith(
+      "agent",
+      expect.any(Object),
+      expect.objectContaining({ disableModelFallbacks: true }),
+    );
+    const launch = callGatewayMock.mock.calls.find(([request]) => request.method === "agent")?.[0];
+    expect(launch?.params?.extraSystemPrompt).toContain("follow_user");
+    expect(launch?.params?.message).toContain(
+      "请核实当前模型。Reply in English with a short explanation.",
+    );
+    expect(launch?.params?.message).toContain("[Subagent Task]\n\ntest");
   });
 
   it("persists an explicit auth profile separately from the child model id", async () => {

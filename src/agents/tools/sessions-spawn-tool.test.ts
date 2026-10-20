@@ -571,6 +571,74 @@ describe("sessions_spawn tool", () => {
     expect(hoisted.spawnSubagentDirectMock).not.toHaveBeenCalled();
   });
 
+  it.each([undefined, "openai/gpt-5.6-luna"])(
+    "uses the active parent model unless the child explicitly requests %s",
+    async (override) => {
+      const callGateway = vi.fn(async (_method: string, _params: Record<string, unknown>) => ({
+        key: "agent:main:dashboard:child",
+        sessionId: "child-session",
+        runStarted: true,
+        runId: "visible-run",
+      }));
+      const reference = "请核实当前模型，Reply in English with an explanation.";
+      const task = "Inspect the model and provide the result.";
+      const tool = createSessionsSpawnTool({
+        agentSessionKey: "agent:main:main",
+        requesterModelRef: "openai/gpt-5.4",
+        requesterUserLanguageReference: reference,
+        config: { agents: { defaults: { model: { primary: "openai/gpt-5.6-sol" } } } },
+        callGateway: callGateway as never,
+        countActiveRuns: () => 0,
+        registerRun: hoisted.registerSubagentRunMock,
+      });
+      await tool.execute("hidden", { task, ...(override ? { model: override } : {}) });
+      expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledWith(
+        expect.objectContaining({ task, model: override }),
+        expect.objectContaining({
+          requesterModelRef: "openai/gpt-5.4",
+          requesterUserLanguageReference: reference,
+        }),
+      );
+      await tool.execute("visible", {
+        visible: true,
+        task,
+        ...(override ? { model: override } : {}),
+      });
+      expect(callGateway.mock.calls[0]).toEqual([
+        "sessions.create",
+        expect.objectContaining({
+          model: override ?? "openai/gpt-5.4",
+          task: expect.stringContaining(reference),
+        }),
+        ...(override ? [] : [{ disableModelFallbacks: true }]),
+      ]);
+      const created = callGateway.mock.calls[0]?.[1];
+      expect(created?.task).toContain("follow_user");
+      expect(created?.task).toContain(`[Subagent Task]\n\n${task}`);
+      expect(hoisted.registerSubagentRunMock).toHaveBeenCalledWith(
+        expect.objectContaining({ task }),
+      );
+    },
+  );
+
+  it("keeps an empty visible creation free of per-run fallback restrictions", async () => {
+    const callGateway = vi.fn(async () => ({
+      key: "agent:main:dashboard:empty-child",
+      sessionId: "empty-child-session",
+    }));
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      requesterModelRef: "openai/gpt-5.4",
+      callGateway: callGateway as never,
+      countActiveRuns: () => 0,
+    });
+    await tool.execute("empty-visible", { visible: true, task: "" });
+    expect(callGateway.mock.calls[0]).toEqual([
+      "sessions.create",
+      expect.not.objectContaining({ task: expect.anything() }),
+    ]);
+  });
+
   it("advertises visible sessions with terse UI guidance", () => {
     const tool = createSessionsSpawnTool();
     const schema = tool.parameters as {
@@ -670,7 +738,7 @@ describe("sessions_spawn tool", () => {
         label: "Issue review",
         category: "P1 issues from beta feedback",
         model: "anthropic/claude-sonnet-4-6",
-        task: "inspect issue",
+        task: expect.stringContaining("[Subagent Task]\n\ninspect issue"),
         parentSessionKey: "agent:main:main",
         spawnDepth: 1,
         fork: true,
@@ -1658,7 +1726,7 @@ describe("sessions_spawn tool", () => {
         expect.objectContaining({
           parentSessionKey: childKey,
           spawnDepth: 2,
-          task: "inspect from the grandchild",
+          task: expect.stringContaining("[Subagent Task]\n\ninspect from the grandchild"),
         }),
       );
     });

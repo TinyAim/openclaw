@@ -89,6 +89,8 @@ export function runWithOperatorToolGatewayCleanupContext<T>(run: () => T): T {
 
 type DispatchGatewayMethodInProcessOptions = {
   allowSyntheticModelOverride?: boolean;
+  /** Host-only restriction for the already selected run route. */
+  disableModelFallbacks?: true;
   allowSyntheticCronRunContinuation?: boolean;
   agentToolCaller?: TrustedAgentToolCaller;
   agentRunTracking?: GatewayAgentRunTaskOwner;
@@ -221,6 +223,7 @@ function resolveInProcessGatewayDispatch(
       ? { authenticatedUserProfile: operatorAuthority.authenticatedUserProfile }
       : {}),
     allowModelOverride: options?.allowSyntheticModelOverride === true,
+    disableModelFallbacks: options?.disableModelFallbacks,
     agentToolCaller: options?.agentToolCaller,
     agentRunTracking: options?.agentRunTracking,
     ...(operatorRoleActor ? { operatorRoleActor } : {}),

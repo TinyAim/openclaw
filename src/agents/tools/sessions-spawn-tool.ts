@@ -479,6 +479,10 @@ export function createSessionsSpawnTool(
             ...roleContext,
           });
         }
+        // Snapshot only this admitted attempt's output preferences. Later turns
+        // cannot change the reference already dispatched into this child.
+        const requesterUserLanguageReference =
+          opts?.getRequesterUserLanguageReference?.() ?? opts?.requesterUserLanguageReference;
         const expectedParentSessionKey = opts?.agentSessionKey?.trim();
         if (opts?.expectedParentSessionId && !expectedParentSessionKey) {
           throw new Error("Exact parent session access requires a session key");
@@ -494,7 +498,7 @@ export function createSessionsSpawnTool(
             runTimeoutSeconds,
             sandbox,
             expectsCompletionMessage,
-            options: { ...opts, onSpawnEffectsStart },
+            options: { ...opts, requesterUserLanguageReference, onSpawnEffectsStart },
           });
         const visibleResult = opts?.expectedParentSessionId
           ? await runWithScopedSessionAccess({
@@ -664,6 +668,8 @@ export function createSessionsSpawnTool(
               agentSessionKey: opts?.agentSessionKey,
               requesterTurnRunId: opts?.requesterTurnRunId,
               requesterThinkingLevel: opts?.requesterThinkingLevel,
+              requesterModelRef: opts?.requesterModelRef,
+              requesterUserLanguageReference,
               completionOwnerKey: opts?.completionOwnerKey,
               agentChannel: opts?.agentChannel,
               agentAccountId: opts?.agentAccountId,

@@ -1724,7 +1724,10 @@ describe("subagent registry seam flow", () => {
       const queuedRunOverrides = {
         groupId: "logical-group",
         queuedLaunch: {
-          authorization: { modelOverride: { provider: "openai", model: "gpt-5.4" } },
+          authorization: {
+            modelOverride: { provider: "openai", model: "gpt-5.4" },
+            disableModelFallbacks: true as const,
+          },
           maxConcurrent: 2,
         },
       };
@@ -1796,6 +1799,11 @@ describe("subagent registry seam flow", () => {
           scopes: ["operator.admin"],
         });
       });
+      expect(mocks.dispatchRecoveryAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: "run-queued-one" }),
+        1_000,
+        expect.objectContaining({ disableModelFallbacks: true }),
+      );
       expect(mod.getSubagentRunByRunId("run-queued-one")?.execution?.status).toBe("running");
       const acceptedRun = mod.getSubagentRunByRunId("gateway-run-one");
       expect(acceptedRun).toMatchObject({
