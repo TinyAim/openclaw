@@ -65,8 +65,15 @@ describe("Spatial reference Runtime env factory", () => {
         deterministic: true,
         supportsCancel: false,
       },
+      spatialEnvironmentDepthMesh: {
+        contractVersion: "spatial_environment_depth_mesh/manual_v1",
+        algorithmId: "wisclaw.deterministic_layered_depth_mesh/v1",
+        representationKind: "depth_mesh",
+        geometryTruth: "generated_approximate",
+        navigationMode: "bounded_six_dof",
+        supportsCancel: false,
+      },
     });
-    expect(bodies[0]).not.toHaveProperty("spatialEnvironmentDepthMesh");
   });
 
   it("fails closed without explicit enable or machine credentials", async () => {

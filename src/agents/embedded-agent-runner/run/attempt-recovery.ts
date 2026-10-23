@@ -17,6 +17,7 @@ import { getEmbeddedSessionPromptState } from "../session-prompt-state.js";
 import type { EmbeddedAgentRunResult, TraceAttempt } from "../types.js";
 import type { createUsageAccumulator } from "../usage-accumulator.js";
 import type { normalizeEmbeddedRunAttempt } from "./attempt-normalization.js";
+import { UnreclaimablePromptBudgetError } from "./attempt-prompt-preflight.js";
 import { hasAsyncActivity, isCurrentAttemptReplaySafe } from "./attempt-terminal-evidence.js";
 import { buildEmbeddedRunBlockedResult } from "./blocked-run-result.js";
 import { resolveCodexAppServerRecoveryRetry } from "./codex-app-server-recovery.js";
@@ -168,6 +169,25 @@ export async function recoverEmbeddedRunAttempt(input: {
       lastRunPromptUsage: input.lastRunPromptUsage,
       currentAttemptAssistant,
     });
+
+  if (promptErrorSource === "precheck" && promptError instanceof UnreclaimablePromptBudgetError) {
+    // Replaying the same fixed input, compacting history, or switching models
+    // cannot satisfy this run's selected management budget. Require new input
+    // or a new budget rather than spending on a futile recovery attempt.
+    setTerminalLifecycleMeta({ replayInvalid: true, livenessState: "blocked" });
+    return {
+      action: "complete",
+      result: buildEmbeddedRunBlockedResult({
+        text: promptError.message,
+        errorKind: "context_overflow",
+        errorMessage: promptError.message,
+        durationMs: Date.now() - runInput.startedAtMs,
+        agentMeta: buildAttemptErrorMeta(),
+        attempt,
+        replayInvalid: true,
+      }),
+    };
+  }
 
   if (promptErrorSource === "hook:before_agent_run" && !terminalInterrupted) {
     const errorText = formatErrorMessage(promptError);

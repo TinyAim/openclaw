@@ -7,11 +7,13 @@ import { HumanMentionsSchema } from "./human-mentions.js";
 import { ChatAttachmentsSchema } from "./logs-chat.js";
 import { PluginJsonValueSchema } from "./plugins.js";
 import { NonEmptyString, SessionLabelString } from "./primitives.js";
+import { SessionsCompactParamsSchema } from "./sessions-compact.js";
 import { SessionsCreateParamsSchema } from "./sessions-create.js";
 import { SessionsRecoverParamsSchema, SessionsRecoverResultSchema } from "./sessions-recover.js";
 import { SessionOwnerSchema } from "./sessions-row.js";
 
 export { SessionsCreateParamsSchema };
+export { SessionsCompactParamsSchema };
 export * from "./sessions-title.js";
 export * from "./sessions-goal.js";
 export { SessionsListParamsSchema, type SessionsListParams } from "./sessions-list.js";
@@ -617,13 +619,6 @@ export const SessionsGroupsMutationResultSchema = closedObject({
   groups: Type.Array(SessionGroupSchema),
   sectionOrder: Type.Optional(Type.Array(SidebarSectionIdString)),
   updatedSessions: Type.Optional(Type.Integer({ minimum: 0 })),
-});
-
-/** Requests manual compaction for a session transcript. */
-export const SessionsCompactParamsSchema = closedObject({
-  key: NonEmptyString,
-  agentId: Type.Optional(NonEmptyString),
-  maxLines: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 /** Lists compaction checkpoints for one session. */

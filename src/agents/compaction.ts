@@ -64,6 +64,11 @@ const MERGE_SUMMARIES_INSTRUCTIONS = [
 const IDENTIFIER_PRESERVATION_INSTRUCTIONS =
   "Preserve all opaque identifiers exactly as written (no shortening or reconstruction), " +
   "including UUIDs, hashes, IDs, hostnames, IPs, ports, URLs, and file names.";
+const FACT_RELATIONSHIP_PRESERVATION_INSTRUCTIONS = [
+  "Preserve confirmed facts as complete relationships, including what each name or identifier refers to, its value, and any conditions, negations, or scope.",
+  "Keep earlier approved facts and constraints unless a later message explicitly revises them; do not reduce them to a list of identifiers.",
+  "If a relationship cannot be established from the source, state that it is unknown instead of guessing.",
+].join(" ");
 
 /** Optional instruction policy for preserving identifiers during compaction. */
 export type CompactionSummarizationInstructions = {
@@ -100,19 +105,20 @@ function resolveIdentifierPreservationInstructions(
     : IDENTIFIER_PRESERVATION_INSTRUCTIONS;
 }
 
-/** Combines identifier-preservation and caller-provided compaction instructions. */
+/** Combines fact, identifier, and caller-provided compaction instructions. */
 function buildCompactionSummarizationInstructions(
   customInstructions?: string,
   instructions?: CompactionSummarizationInstructions,
 ): string | undefined {
   const custom = customInstructions?.trim();
   const identifierPreservation = resolveIdentifierPreservationInstructions(instructions);
+  const preservation = [FACT_RELATIONSHIP_PRESERVATION_INSTRUCTIONS, identifierPreservation]
+    .filter(Boolean)
+    .join("\n\n");
   if (!custom) {
-    return identifierPreservation;
+    return preservation;
   }
-  return identifierPreservation
-    ? `${identifierPreservation}\n\nAdditional focus:\n${custom}`
-    : `Additional focus:\n${custom}`;
+  return `${preservation}\n\nAdditional focus:\n${custom}`;
 }
 
 async function summarizeChunks(params: CompactionSummaryParams): Promise<string> {

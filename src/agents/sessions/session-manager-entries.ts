@@ -229,7 +229,11 @@ export class SessionManagerEntries extends SessionManagerPersistence {
   ): string {
     const entry: CompactionEntry = {
       type: "compaction",
-      id: generateSessionEntryId(),
+      // Manual summary-only recovery uses its admitted item as a self boundary.
+      id:
+        metadata?.itemId && metadata.itemId === firstKeptEntryId
+          ? firstKeptEntryId
+          : generateSessionEntryId(),
       parentId: this.appendParentId,
       timestamp: new Date().toISOString(),
       summary,

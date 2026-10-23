@@ -54,6 +54,7 @@ import {
   resolveCompactionContextTokenBudget,
 } from "./compaction-runtime-context.js";
 import {
+  assertSummaryOnlyCompactionSupported,
   prepareCompactionHarnessAuth,
   projectCodexHostTranscriptBytePreflightConfig,
   resolveCompactionRuntimeSelection,
@@ -330,6 +331,11 @@ async function compactEmbeddedAgentSessionImpl(
     selectedHarnessRuntime: resolveSessionPinnedHarnessId(params.sessionEntry),
   };
   const runtimeSelection = resolveCompactionRuntimeSelection(requestedSelection);
+  assertSummaryOnlyCompactionSupported({
+    ...params,
+    harnessRuntime: runtimeSelection.selectedHarnessRuntime,
+    provider: runtimeSelection.provider,
+  });
   // Native control operations reuse the backend's existing authenticated session.
   // Run them before generic model preparation so subscription-only CLI sessions do
   // not incorrectly require an OpenClaw model API credential.
@@ -394,6 +400,13 @@ async function compactEmbeddedAgentSessionImpl(
       agentDir: preparedParams.agentDir,
       workspaceDir: resolvedWorkspaceDir,
     });
+    if (
+      preparedParams.historyMode === "summary_only" &&
+      resolveContextEngineOwnerPluginId(contextEngine)
+    ) {
+      await disposeContextEngine(contextEngine);
+      throw new Error("summary_only compaction is unsupported by a plugin-owned context engine.");
+    }
     let disposeContextEngineOnExit = true;
     try {
       assertQueuedCompactionPreparationActive(params, host);
@@ -511,6 +524,12 @@ async function compactResolvedContextEngine(
   });
   assertQueuedCompactionPreparationActive(params, host);
   const preparedHarnessRuntime = selectedPreparedHarness.id;
+  assertSummaryOnlyCompactionSupported({
+    ...params,
+    harnessRuntime: preparedHarnessRuntime,
+    provider: ceProvider,
+    contextEngineId: contextEngine.info.id,
+  });
   const transcriptBytePreflightAuthority =
     host.transcriptBytePreflightHarness === preparedHarnessRuntime
       ? resolveTranscriptBytePreflightAuthority(selectedPreparedHarness)

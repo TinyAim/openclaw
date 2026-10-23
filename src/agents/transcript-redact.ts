@@ -75,6 +75,7 @@ function isPlainTranscriptObject(value: object): value is Record<string, unknown
 
 type TranscriptValueLocation =
   | "root"
+  | "root-openclaw-metadata"
   | "assistant-content-array"
   | "assistant-content-block"
   | "nested-tool-details"
@@ -561,7 +562,11 @@ function redactTranscriptStructuredValue(
     // Correlation keys must match live events; nested payload lookalikes are still redacted.
     if (
       typeof item === "string" &&
-      ((location === "root" && source.role === "toolResult" && key === "toolCallId") ||
+      ((location === "root" &&
+        ((source.role === "toolResult" && key === "toolCallId") ||
+          ((source.role === "assistant" || source.role === "toolResult") && key === "runId"))) ||
+        (location === "root-openclaw-metadata" &&
+          (key === "runId" || key === "steerTargetRunId" || key === "idempotencyKey")) ||
         (location === "assistant-content-block" && source.type === "toolCall" && key === "id") ||
         (location === "nested-tool-details" &&
           (key === "toolCallId" ||
@@ -695,9 +700,11 @@ function redactTranscriptStructuredValue(
               key === "content" &&
               Array.isArray(item)
               ? "assistant-content-array"
-              : location === "root" && key === "details" && readNestedToolActivity(source)
-                ? "nested-tool-details"
-                : "nested",
+              : location === "root" && key === "__openclaw"
+                ? "root-openclaw-metadata"
+                : location === "root" && key === "details" && readNestedToolActivity(source)
+                  ? "nested-tool-details"
+                  : "nested",
             currentAssistantRoute,
             modelVisibleToolResult ||
               (location === "root" && source.role === "toolResult" && key === "content"),

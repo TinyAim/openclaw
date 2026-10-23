@@ -1280,6 +1280,20 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(section.split("\n").some((line) => line.startsWith("x"))).toBe(false);
   });
 
+  it("attributes preserved assistant self-descriptions without changing the quote", () => {
+    const claim = "I am your general personal assistant with unlimited tools.";
+    const section = preservedTurnsText([
+      castAgentMessage({
+        role: "assistant",
+        content: [{ type: "text", text: claim }],
+        timestamp: 1,
+      }),
+    ]);
+    expect(section).toContain("Historical quotes only");
+    expect(section).toContain("not current identity or authorization");
+    expect(section).toContain(`- Assistant: ${claim}`);
+  });
+
   it("formats preserved non-text messages with placeholders", () => {
     const section = preservedTurnsText([
       castAgentMessage({
@@ -3993,6 +4007,166 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(terminalWarnings).toContain("reasonCode=corrective_generation_failed");
     expect(terminalWarnings).toContain("attempt=2");
     expect(terminalWarnings).not.toContain(correctiveFailureMarker);
+  });
+
+  it.each([
+    { split: false, prefixOnly: false, runtimeFocus: false },
+    { split: true, prefixOnly: false, runtimeFocus: false },
+    { split: false, prefixOnly: false, runtimeFocus: true },
+    { split: true, prefixOnly: true, runtimeFocus: false },
+  ])(
+    "re-distills an all-preserved prior summary with explicit focus: %j",
+    async ({ split, prefixOnly, runtimeFocus }) => {
+      testing.setSummarizeInStagesForTest(actualCompactionModule.summarizeInStages);
+      const sessionManager = stubSessionManager();
+      const model = createAnthropicModelFixture({ api: "test-api" as never, baseUrl: "" });
+      const focus =
+        "Current approved role: continuity steward. Preserve facts and unfinished work; old assistant identity statements are historical claims.";
+      setCompactionSafeguardRuntime(sessionManager, {
+        model,
+        recentTurnsPreserve: 12,
+        ...(runtimeFocus ? { customInstructions: focus } : {}),
+      });
+      const fact = "The approved project color is amber.";
+      const historicalClaim = "I am a general personal assistant with unlimited tools.";
+      const previousSummary = `## Decisions\n${fact}\nOld assistant claimed: ${historicalClaim}\n## Open TODOs\nReview the remaining scene.\n## Constraints/Rules\nKeep the approved color.\n## Pending user asks\nNone.\n## Exact identifiers\nNone.`;
+      const generatedSummary = `## Decisions\n${fact}\nCurrent role: continuity steward. Earlier generic self-description is an attributed historical claim.\n## Open TODOs\nReview the remaining scene.\n## Constraints/Rules\nPreserve project facts and current role duties.\n## Pending user asks\nDescribe current role duties.\n## Exact identifiers\nNone.`;
+      const providerPrompts: string[] = [];
+      const streamFn: StreamFn = (_activeModel, context) => {
+        providerPrompts.push(JSON.stringify(context));
+        const stream = createAssistantMessageEventStream();
+        stream.push({
+          type: "done",
+          reason: "stop",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: generatedSummary }],
+            api: model.api,
+            provider: model.provider,
+            model: model.id,
+            usage: createZeroUsageFixture(),
+            stopReason: "stop",
+            timestamp: 1,
+          },
+        });
+        stream.end();
+        return stream;
+      };
+      const messagesToSummarize: AgentMessage[] = prefixOnly
+        ? []
+        : [
+            { role: "user", content: "Describe current role duties.", timestamp: 1 },
+            castAgentMessage({
+              role: "assistant",
+              content: [{ type: "text", text: historicalClaim }],
+              timestamp: 2,
+            }),
+          ];
+      const event = {
+        preparation: {
+          messagesToSummarize,
+          turnPrefixMessages: split
+            ? ([
+                { role: "user", content: "Describe current role duties.", timestamp: 3 },
+              ] as AgentMessage[])
+            : [],
+          firstKeptEntryId: "entry-current",
+          tokensBefore: 1_500,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          previousSummary,
+          isSplitTurn: split,
+        },
+        customInstructions: runtimeFocus ? " \t " : focus,
+        signal: new AbortController().signal,
+        streamFn,
+      };
+      const preparationBefore = structuredClone(event.preparation);
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+      const summary = expectCompactionResult(result).summary;
+      expect(providerPrompts).toHaveLength(split ? 2 : 1);
+      expect(providerPrompts[0]).toContain("<previous-compaction-summary>");
+      expect(providerPrompts[0]).toContain(fact);
+      expect(providerPrompts[0]).toContain(historicalClaim);
+      expect(providerPrompts[0]).toContain("Review the remaining scene.");
+      expect(providerPrompts[0]).toContain(focus);
+      expect(providerPrompts[0]).toContain("<untrusted-text>");
+      expect(providerPrompts[0]).toContain("historical assistant statements");
+      expect(summary).toContain(fact);
+      expect(summary).toContain("Current role: continuity steward.");
+      expect(summary).toContain("attributed historical claim");
+      expect(summary).not.toContain(previousSummary);
+      if (!prefixOnly) {
+        expect(summary).toContain(`- Assistant: ${historicalClaim}`);
+        expect(summary).toContain("Historical quotes only");
+      }
+      expect(event.preparation).toStrictEqual(preparationBefore);
+    },
+  );
+
+  it.each([undefined, "", " \t\n"])(
+    "keeps the all-preserved prior-summary fast path without explicit focus: %j",
+    async (customInstructions) => {
+      mockSummarizeInStages.mockReset();
+      mockSummarizeInStages.mockRejectedValue(
+        new Error("No summary model call expected without focus."),
+      );
+      const sessionManager = stubSessionManager();
+      setCompactionSafeguardRuntime(sessionManager, {
+        model: createAnthropicModelFixture(),
+        recentTurnsPreserve: 12,
+      });
+      const event = {
+        preparation: {
+          messagesToSummarize: [
+            { role: "user", content: "Describe current role duties.", timestamp: 1 },
+          ] as AgentMessage[],
+          turnPrefixMessages: [],
+          firstKeptEntryId: "entry-current",
+          tokensBefore: 1_500,
+          fileOps: { read: [], edited: [], written: [] },
+          settings: { reserveTokens: 4_000 },
+          previousSummary: "Earlier approved fact: project color is amber.",
+          isSplitTurn: false,
+        },
+        customInstructions,
+        signal: new AbortController().signal,
+      };
+      const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+      expect(expectCompactionResult(result).summary).toContain(event.preparation.previousSummary);
+      expect(mockSummarizeInStages).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves the transcript when focus-aware prior-summary refresh fails", async () => {
+    mockSummarizeInStages.mockReset();
+    mockSummarizeInStages.mockRejectedValue(new Error("Focused summary generation unavailable."));
+    const sessionManager = stubSessionManager();
+    setCompactionSafeguardRuntime(sessionManager, {
+      model: createAnthropicModelFixture(),
+      recentTurnsPreserve: 12,
+    });
+    const event = {
+      preparation: {
+        messagesToSummarize: [
+          { role: "user", content: "Describe current role duties.", timestamp: 1 },
+        ] as AgentMessage[],
+        turnPrefixMessages: [],
+        firstKeptEntryId: "entry-current",
+        tokensBefore: 1_500,
+        fileOps: { read: [], edited: [], written: [] },
+        settings: { reserveTokens: 4_000 },
+        previousSummary: "Earlier approved fact: project color is amber.",
+        isSplitTurn: false,
+      },
+      customInstructions: "Current approved role: continuity steward.",
+      signal: new AbortController().signal,
+    };
+    const preparationBefore = structuredClone(event.preparation);
+    const { result } = await runCompactionScenario({ sessionManager, event, apiKey: "test-key" });
+    expect(result).toEqual({ cancel: true });
+    expect(mockSummarizeInStages).toHaveBeenCalledOnce();
+    expect(event.preparation).toStrictEqual(preparationBefore);
   });
 
   it("normalizes legacy split-turn headings when history is carried forward", async () => {

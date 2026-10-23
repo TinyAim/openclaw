@@ -1,5 +1,6 @@
 /** Shared model, harness, and auth preparation for embedded compaction. */
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { getCompactionProvider } from "../../plugins/compaction-provider.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
@@ -32,6 +33,33 @@ import {
   resolveCompactionTargetRuntime,
   resolveEmbeddedCompactionTarget,
 } from "./compaction-runtime-context.js";
+
+/** Reject unsupported recovery owners before any summarizer or native CLI dispatch. */
+export function assertSummaryOnlyCompactionSupported(params: {
+  historyMode?: "preserve_recent" | "summary_only";
+  trigger?: string;
+  config?: OpenClawConfig;
+  harnessRuntime?: string;
+  provider?: string;
+  contextEngineId?: string;
+}): void {
+  if (params.historyMode !== "summary_only") {
+    return;
+  }
+  const contextEngine =
+    params.contextEngineId ?? params.config?.plugins?.slots?.contextEngine?.trim();
+  if (
+    params.trigger !== "manual" ||
+    (params.harnessRuntime && params.harnessRuntime !== "openclaw") ||
+    (contextEngine && contextEngine !== "legacy") ||
+    params.config?.agents?.defaults?.compaction?.provider ||
+    (params.provider && getCompactionProvider(params.provider))
+  ) {
+    throw new Error(
+      "summary_only compaction is unsupported by the selected runtime or compaction owner.",
+    );
+  }
+}
 
 export function projectCodexHostTranscriptBytePreflightConfig(
   config: OpenClawConfig | undefined,

@@ -44,6 +44,19 @@ type PreflightRecoveryBudgetSnapshot = Pick<
   "estimatedPromptTokens" | "promptBudgetBeforeReserve" | "overflowTokens"
 >;
 
+/** History compaction cannot reclaim the current fixed system and user input. */
+export class UnreclaimablePromptBudgetError extends Error {
+  constructor(estimatedFixedTokens: number, promptBudget: number) {
+    super(
+      `Estimated prompt management budget exceeded: fixed system and current input require ` +
+        `${estimatedFixedTokens} estimated tokens, above the ${promptBudget} token input budget. ` +
+        `Shorten the current input or system instructions, or raise the contextTokens management budget. ` +
+        `History compaction cannot reclaim this input; this estimate is not a provider token measurement.`,
+    );
+    this.name = "UnreclaimablePromptBudgetError";
+  }
+}
+
 // Carries the measured prompt budget into the outer recovery loop. The synthetic
 // precheck error is only a routing signal, so compaction engines need these
 // fields to compact against the prompt OpenClaw actually rendered.
@@ -222,6 +235,37 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
       return {
         ...input.state,
         promptError: error,
+        promptErrorSource: "precheck",
+        skipPromptSubmission: true,
+      };
+    }
+    // Check only the current rendered system and pending input. Raw/unwindowed
+    // history may be reducible and must not authorize this non-retryable block.
+    // Tool schemas are not supplied here; this is a known-input estimate, not
+    // an exact accounting of every provider-bound token.
+    const fixedPromptPressure = shouldPreemptivelyCompactBeforePrompt({
+      messages: [],
+      systemPrompt: input.systemPrompt,
+      prompt: input.promptForPrecheck,
+      contextTokenBudget: input.contextTokenBudget,
+      reserveTokens: input.reserveTokens,
+    });
+    if (fixedPromptPressure.route !== "fits") {
+      return {
+        ...input.state,
+        contextBudgetStatus: buildPrePromptContextBudgetStatus({
+          result: { ...fixedPromptPressure, shouldCompact: false },
+          provider: attempt.provider,
+          modelId: attempt.modelId,
+          messageCount: input.sessionMessageCount,
+          contextTokenBudget: input.contextTokenBudget,
+          reserveTokens: input.reserveTokens,
+          ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
+        }),
+        promptError: new UnreclaimablePromptBudgetError(
+          fixedPromptPressure.estimatedPromptTokens,
+          fixedPromptPressure.promptBudgetBeforeReserve,
+        ),
         promptErrorSource: "precheck",
         skipPromptSubmission: true,
       };

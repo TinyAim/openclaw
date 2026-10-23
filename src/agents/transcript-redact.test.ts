@@ -2178,6 +2178,26 @@ describe("redactTranscriptMessage", () => {
     expect(text).not.toContain("sk-abcdef1234567890xyz");
   });
 
+  it("preserves canonical __openclaw.runId correlation keys when agent ids end in 6+ digits", () => {
+    const runId =
+      "send_agent:hbcron-run-20261021:chat-4a12c51e0a000088bc55451cc5e1244d_38d01172-3ea0-49f2-8153-45820a0f3f2a";
+    const msg = castAgentMessage({
+      role: "assistant",
+      content: [{ type: "text", text: "CFG3_VERIFIED_20261021 sk-abcdef1234567890xyz" }],
+      __openclaw: {
+        runId,
+        steerTargetRunId: runId,
+        senderName: "sk-abcdef1234567890xyz",
+      },
+    });
+    const result = redactTranscriptMessage(msg, cfg("tools"));
+    expect(Reflect.get(result, "__openclaw")).toMatchObject({
+      runId,
+      steerTargetRunId: runId,
+    });
+    expect(JSON.stringify(result)).not.toContain("sk-abcdef1234567890xyz");
+  });
+
   it("passes through non-object and null blocks without throwing", () => {
     const msg = castAgentMessage({
       role: "assistant",

@@ -38,6 +38,7 @@ import type { CompactEmbeddedAgentSessionRuntimeParams } from "./compact.types.j
 import { createDirectCompactionDiagId } from "./compaction-diagnostics.js";
 import { resolveEmbeddedCompactionThinkingLevel } from "./compaction-runtime-context.js";
 import {
+  assertSummaryOnlyCompactionSupported,
   prepareCompactionHarnessAuth,
   resolveCompactionRuntimeSelection,
 } from "./compaction-runtime-preparation.js";
@@ -183,6 +184,12 @@ export async function prepareDirectCompactionAttempt(
     agentHarnessRuntimeOverride: selectedHarnessRuntimeOverride,
   });
   const preparedHarnessRuntime = selectedPreparedHarness.id;
+  assertSummaryOnlyCompactionSupported({
+    ...params,
+    trigger,
+    harnessRuntime: preparedHarnessRuntime,
+    provider,
+  });
   const resolvePreparedModel = ({
     config,
     authProfileId: profileId,

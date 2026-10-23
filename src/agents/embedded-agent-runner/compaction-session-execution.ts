@@ -2,10 +2,7 @@
  * Executes compaction while owning the transcript lock, session lifecycle,
  * hooks, checkpoint, and optional successor transcript rotation.
  */
-import {
-  preserveCompactionReplayWindow,
-  resolveCompactionReplayEligibility,
-} from "@openclaw/ai/transports";
+import { resolveCompactionReplayEligibility } from "@openclaw/ai/transports";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
 import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
@@ -54,6 +51,7 @@ import {
   summarizeCompactionMessages,
 } from "./compaction-diagnostics.js";
 import { dedupeDuplicateUserMessagesForCompaction } from "./compaction-duplicate-user-messages.js";
+import { limitCompactionHistory } from "./compaction-history.js";
 import {
   asCompactionHookRunner,
   buildBeforeCompactionHookMetrics,
@@ -68,7 +66,6 @@ import {
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
 import { buildEmbeddedExtensionFactories } from "./extensions.js";
-import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import { log } from "./logger.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
 import { sanitizeSessionHistory, validateReplayTurns } from "./replay-history.js";
@@ -169,6 +166,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             sessionFile: params.sessionFile,
             sessionTarget,
           });
+      if (params.historyMode === "summary_only" && !checkpointSnapshot) {
+        throw new Error(
+          "Summary-only recovery requires a retained persistent checkpoint before model dispatch.",
+        );
+      }
       compactionSessionManager = sessionManager;
       const recordUsage = accountingRecorder?.recordUsage
         ? (usage: UsageLike) => {
@@ -397,23 +399,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           // "Original" compaction metrics should describe the validated transcript that enters
           // limiting/compaction, not the raw on-disk session snapshot.
           const originalMessages = session.messages.slice();
-          const truncated = preserveCompactionReplayWindow(
-            originalMessages,
-            limitHistoryTurns(
-              session.messages,
-              getHistoryLimitFromSessionKey(params.sessionKey, params.config, {
-                accountId: params.agentAccountId,
-                peerId: params.conversationRoutePeerId,
-                chatType: params.chatType,
-              }),
-            ),
-            effectiveModel,
-            {
-              sessionId: params.sessionId,
-              authProfileId: runtimePlan.auth.forwardedAuthProfileId,
-              enabled: compactionReplayEnabled,
-            },
-          );
+          const truncated = limitCompactionHistory(originalMessages, params, effectiveModel, {
+            sessionId: params.sessionId,
+            authProfileId: runtimePlan.auth.forwardedAuthProfileId,
+            enabled: compactionReplayEnabled,
+          });
           // Re-run tool_use/tool_result pairing repair after truncation, since
           // limitHistoryTurns can orphan tool_result blocks by removing the
           // assistant message that contained the matching tool_use.
@@ -497,28 +487,29 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             });
             accountingRecorder?.recordCompaction?.(serverTokensAfter);
           };
-          const serverResult = params.transcriptBytePreflightAuthority
-            ? undefined
-            : await attemptServerEndpointCompaction({
-                trigger,
-                streamFn: session.agent.streamFn,
-                model: effectiveModel,
-                context: { systemPrompt: systemPromptText, messages: session.messages },
-                sessionManager,
-                extraParams: effectiveExtraParams,
-                customInstructions: params.customInstructions,
-                config: params.config,
-                onUsage: recordUsage,
-                onCompactionCommitted: recordServerCompaction,
-                assertActive,
-                requestOptions: {
-                  apiKey: transportApiKey,
-                  sessionId: params.sessionId,
-                  authProfileId: runtimePlan.auth.forwardedAuthProfileId,
-                  timeoutMs: compactionTimeoutMs,
-                  signal: params.abortSignal,
-                },
-              });
+          const serverResult =
+            params.transcriptBytePreflightAuthority || params.historyMode === "summary_only"
+              ? undefined
+              : await attemptServerEndpointCompaction({
+                  trigger,
+                  streamFn: session.agent.streamFn,
+                  model: effectiveModel,
+                  context: { systemPrompt: systemPromptText, messages: session.messages },
+                  sessionManager,
+                  extraParams: effectiveExtraParams,
+                  customInstructions: params.customInstructions,
+                  config: params.config,
+                  onUsage: recordUsage,
+                  onCompactionCommitted: recordServerCompaction,
+                  assertActive,
+                  requestOptions: {
+                    apiKey: transportApiKey,
+                    sessionId: params.sessionId,
+                    authProfileId: runtimePlan.auth.forwardedAuthProfileId,
+                    timeoutMs: compactionTimeoutMs,
+                    signal: params.abortSignal,
+                  },
+                });
           const activeSession = session;
           let clientResult: Awaited<ReturnType<typeof activeSession.compact>> | undefined;
           if (!serverResult) {
@@ -533,7 +524,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
                   if (trigger === "manual") {
                     return {
                       status: "completed" as const,
-                      result: await activeSession.compact(params.customInstructions),
+                      result: params.historyMode
+                        ? await activeSession.compact(params.customInstructions, {
+                            historyMode: params.historyMode,
+                          })
+                        : await activeSession.compact(params.customInstructions),
                     };
                   }
                   return activeSession[agentSessionAutomaticCompaction](
@@ -609,6 +604,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
               leafId: sessionManager.getLeafId?.() ?? undefined,
               createdAt: compactStartedAt,
             });
+          }
+          if (params.historyMode === "summary_only" && !checkpointSnapshotRetained) {
+            throw new Error(
+              "Summary-only checkpoint retention is unconfirmed; reconcile before retry.",
+            );
           }
           const postMetrics = diagEnabled
             ? summarizeCompactionMessages(session.messages)

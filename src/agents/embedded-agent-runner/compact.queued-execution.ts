@@ -369,6 +369,7 @@ export async function executeQueuedContextEngineCompaction(input: {
               params.trigger === "manual",
             runtimeContext: {
               ...runtimeContext,
+              ...(params.historyMode ? { historyMode: params.historyMode } : {}),
               forceReason:
                 params.forcePreflight === true || params.preflightRequired === true
                   ? "preflight_required"

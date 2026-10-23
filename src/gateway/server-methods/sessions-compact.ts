@@ -41,8 +41,10 @@ import { asWorkerInferenceControl } from "../worker-environments/inference-contr
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import {
+  confirmGatewaySessionCompactionHistoryMode,
   preflightGatewaySessionCompaction,
   runGatewaySessionCompaction,
+  SessionCompactionHistoryModeUnsupportedError,
 } from "./sessions-compaction-runner.js";
 import {
   emitSessionOperation,
@@ -209,6 +211,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                 sessionKey: target.canonicalKey,
                 sessionStoreKey: compactTarget.primaryKey,
                 storePath,
+                ...(p.historyMode ? { historyMode: p.historyMode } : {}),
               })
             )?.reason;
             if (compactionNoopReason) {
@@ -397,6 +400,10 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                 entry: latestEntry,
                 runId: operationId,
                 agentId: target.agentId,
+                ...(p.customInstructions !== undefined
+                  ? { customInstructions: p.customInstructions }
+                  : {}),
+                ...(p.historyMode ? { historyMode: p.historyMode } : {}),
                 sessionId,
                 sessionKey: target.canonicalKey,
                 sessionStoreKey: compactTarget.primaryKey,
@@ -472,6 +479,16 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               );
               return;
             }
+            result = await confirmGatewaySessionCompactionHistoryMode(
+              {
+                agentId: target.agentId,
+                sessionId,
+                sessionStoreKey: compactTarget.primaryKey,
+                storePath,
+                historyMode: p.historyMode,
+              },
+              result,
+            );
             recordSessionCompacted({
               sessionKey: target.canonicalKey,
               operationId,
@@ -489,6 +506,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               compacted: result.compacted,
               reason: result.reason,
               result: result.result,
+              ...(result.historyMode ? { historyMode: result.historyMode } : {}),
             },
             undefined,
           );
@@ -503,6 +521,16 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         },
       });
     } catch (err) {
+      if (err instanceof SessionCompactionHistoryModeUnsupportedError) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, err.message, {
+            details: { reason: "compaction-history-mode-unsupported" },
+          }),
+        );
+        return;
+      }
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(err)));
     }
   },

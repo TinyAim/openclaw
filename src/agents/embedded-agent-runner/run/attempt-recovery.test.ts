@@ -9,8 +9,10 @@ import {
   makeEmbeddedRunnerAttempt,
 } from "../../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { normalizeUsage } from "../../usage.js";
+import { classifyEmbeddedAgentRunResultForModelFallback } from "../result-fallback-classifier.js";
 import { createUsageAccumulator } from "../usage-accumulator.js";
 import { handleEmbeddedAssistantFailure } from "./assistant-failure.js";
+import { UnreclaimablePromptBudgetError } from "./attempt-prompt-preflight.js";
 import { recoverEmbeddedRunAttempt } from "./attempt-recovery.js";
 import { createEmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import { createEmbeddedRunFailoverRetryController } from "./failover-retry-controller.js";
@@ -486,7 +488,20 @@ describe("recoverEmbeddedRunAttempt", () => {
     expect(continueFromCurrentTranscript).not.toHaveBeenCalled();
   });
 
-  it("surfaces before_agent_run blocks with current carried usage", async () => {
+  it.each([
+    {
+      source: "hook:before_agent_run" as const,
+      error: new Error("Blocked by before-run policy."),
+      errorKind: "hook_block",
+      replayInvalid: false,
+    },
+    {
+      source: "precheck" as const,
+      error: new UnreclaimablePromptBudgetError(6_000, 3_000),
+      errorKind: "context_overflow",
+      replayInvalid: true,
+    },
+  ])("surfaces $source blocks without compaction, retry, or model fallback", async (scenario) => {
     const historicalAssistant = buildEmbeddedRunnerAssistant({
       usage: createMockUsage(128_814, 3_000),
     });
@@ -506,8 +521,8 @@ describe("recoverEmbeddedRunAttempt", () => {
       },
       terminal: {
         kind: "failed",
-        source: "hook:before_agent_run",
-        error: new Error("Blocked by before-run policy."),
+        source: scenario.source,
+        error: scenario.error,
       },
       lastAssistant: historicalAssistant,
       currentAttemptAssistant: undefined,
@@ -558,19 +573,19 @@ describe("recoverEmbeddedRunAttempt", () => {
     } as never);
 
     expect(setTerminalLifecycleMeta).toHaveBeenCalledWith({
-      replayInvalid: false,
+      replayInvalid: scenario.replayInvalid,
       livenessState: "blocked",
     });
     expect(recovery).toMatchObject({
       action: "complete",
       result: {
-        payloads: [{ text: "Blocked by before-run policy.", isError: true }],
+        payloads: [{ text: scenario.error.message, isError: true }],
         meta: {
-          finalAssistantVisibleText: "Blocked by before-run policy.",
-          finalAssistantRawText: "Blocked by before-run policy.",
+          finalAssistantVisibleText: scenario.error.message,
+          finalAssistantRawText: scenario.error.message,
           error: {
-            kind: "hook_block",
-            message: "Blocked by before-run policy.",
+            kind: scenario.errorKind,
+            message: scenario.error.message,
           },
           livenessState: "blocked",
           agentMeta: {
@@ -585,6 +600,15 @@ describe("recoverEmbeddedRunAttempt", () => {
         },
       },
     });
+    if (recovery.action === "complete") {
+      expect(
+        classifyEmbeddedAgentRunResultForModelFallback({
+          provider: "openai",
+          model: "gpt-5.6-luna",
+          result: recovery.result,
+        }),
+      ).toBeNull();
+    }
   });
 
   it("bypasses prompt failover for an operation-scoped compaction failure", async () => {

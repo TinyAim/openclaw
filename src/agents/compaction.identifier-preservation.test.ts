@@ -84,6 +84,12 @@ describe("compaction identifier-preservation instructions", () => {
     expect(firstSummaryInstructions()).toContain("UUIDs");
     expect(firstSummaryInstructions()).toContain("IPs");
     expect(firstSummaryInstructions()).toContain("ports");
+    expect(firstSummaryInstructions()).toContain(
+      "Preserve confirmed facts as complete relationships",
+    );
+    expect(firstSummaryInstructions()).toContain(
+      "its value, and any conditions, negations, or scope",
+    );
     expect(firstSummaryInstructions()).not.toContain("tokens");
     expect(firstSummaryInstructions()).not.toContain("API keys");
   });
@@ -113,6 +119,10 @@ describe("compaction identifier-preservation instructions", () => {
       expect(extractSummaryInstructions(call)).toContain(
         "Preserve all opaque identifiers exactly as written",
       );
+      expect(extractSummaryInstructions(call)).toContain(
+        "Keep earlier approved facts and constraints unless a later message explicitly revises them",
+      );
+      expect(extractSummaryInstructions(call)).toContain("unknown instead of guessing");
     }
 
     type SyntheticMergeMessage = { role: "user"; content: string; timestamp: number };
@@ -139,6 +149,23 @@ describe("compaction identifier-preservation instructions", () => {
     expect(instructions).toContain("Prioritize customer-visible regressions.");
     expect((instructions.match(/Additional focus:/g) ?? []).length).toBe(1);
   });
+
+  it("preserves fact relationships throughout staged summaries when identifier policy is off", async () => {
+    await runSummary(4, {
+      maxChunkTokens: 1000,
+      parts: 2,
+      minMessagesForSplit: 4,
+      summarizationInstructions: { identifierPolicy: "off" },
+    });
+
+    expect(mockGenerateSummary).toHaveBeenCalledTimes(3);
+    for (const call of mockGenerateSummary.mock.calls) {
+      const instructions = extractSummaryInstructions(call);
+      expect(instructions).toContain("Preserve confirmed facts as complete relationships");
+      expect(instructions).toContain("unknown instead of guessing");
+      expect(instructions).not.toContain("Preserve all opaque identifiers exactly as written");
+    }
+  });
 });
 
 function extractSummaryInstructions(call: unknown[] | undefined): string {
@@ -151,7 +178,8 @@ function extractSummaryInstructions(call: unknown[] | undefined): string {
     const arg = call[index];
     if (
       typeof arg === "string" &&
-      (arg.includes("Preserve all opaque identifiers exactly as written") ||
+      (arg.includes("Preserve confirmed facts as complete relationships") ||
+        arg.includes("Preserve all opaque identifiers exactly as written") ||
         arg.includes("Merge these partial summaries into a single cohesive summary.") ||
         arg.includes("Additional focus:"))
     ) {
@@ -190,9 +218,10 @@ describe("compaction identifier policy", () => {
   });
 
   it("can disable identifier preservation with off policy", () => {
-    expect(
-      buildCompactionSummarizationInstructions(undefined, { identifierPolicy: "off" }),
-    ).toBeUndefined();
+    const built = buildCompactionSummarizationInstructions(undefined, { identifierPolicy: "off" });
+    expect(built).not.toContain("Preserve all opaque identifiers exactly as written");
+    expect(built).toContain("Preserve confirmed facts as complete relationships");
+    expect(built).toContain("do not reduce them to a list of identifiers");
   });
 
   it("supports custom identifier instructions", () => {
@@ -202,6 +231,7 @@ describe("compaction identifier policy", () => {
     });
 
     expect(built).toContain("Keep ticket IDs unchanged.");
+    expect(built).toContain("Preserve confirmed facts as complete relationships");
     expect(built).not.toContain("Preserve all opaque identifiers exactly as written");
   });
 
@@ -214,11 +244,12 @@ describe("compaction identifier policy", () => {
   });
 
   it("keeps custom focus text when identifier policy is off", () => {
-    expect(
-      buildCompactionSummarizationInstructions("Track release blockers.", {
-        identifierPolicy: "off",
-      }),
-    ).toBe("Additional focus:\nTrack release blockers.");
+    const built = buildCompactionSummarizationInstructions("Track release blockers.", {
+      identifierPolicy: "off",
+    });
+    expect(built).toContain("Preserve confirmed facts as complete relationships");
+    expect(built).not.toContain("Preserve all opaque identifiers exactly as written");
+    expect(built).toMatch(/Additional focus:\nTrack release blockers\.$/);
   });
 });
 

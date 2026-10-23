@@ -15,9 +15,8 @@ export const DEPTH_MESH_RUNTIME_BUILD_DIGEST = `sha256:${createHash("sha256")
       DEPTH_MESH_CONTRACT_VERSION,
       DEPTH_MESH_ALGORITHM_ID,
       DEPTH_MESH_COMPONENT_MANIFEST_DIGEST,
-      // v3: mask covers the actual generated mesh surface; walkability stays
-      // in the separate collision proof instead of being conflated with it.
-      "renderDeterministicDepthMesh:v3",
+      // v2: generated-region mask encodes walkable polygon (not solid white stub).
+      "renderDeterministicDepthMesh:v2",
     ].join("\n"),
     "utf8",
   )

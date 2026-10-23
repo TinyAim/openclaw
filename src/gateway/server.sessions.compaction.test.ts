@@ -723,7 +723,25 @@ test("sessions.compaction list/get scopes selected global checkpoints to the req
   testState.agentsConfig = undefined;
 });
 
-test("sessions.compact without maxLines runs embedded manual compaction for checkpoint-capable flows", async () => {
+test.each([
+  ["legacy omission", undefined, undefined],
+  [
+    "explicit focus",
+    "  Current verified assignment: continuity steward.  ",
+    "Current verified assignment: continuity steward.",
+  ],
+  ["blank focus", " \t\n", undefined],
+  ["Unicode focus", "😀".repeat(800), "😀".repeat(800)],
+])(
+  "sessions.compact without maxLines runs embedded manual compaction: %s",
+  runGatewayManualCompactionCase,
+);
+
+async function runGatewayManualCompactionCase(
+  _label: string,
+  customInstructions?: string,
+  expectedFocus?: string,
+) {
   const { dir, storePath } = await createSessionStoreDir();
   const sessionScope = {
     agentId: "main",
@@ -858,6 +876,7 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
     result?: { tokensAfter?: number };
   }>(ws, "sessions.compact", {
     key: "main",
+    ...(customInstructions !== undefined ? { customInstructions } : {}),
   });
 
   expectMainCompactionResult(compacted, true);
@@ -913,6 +932,7 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
         trigger?: string;
         workspaceDir?: string;
         cwd?: string;
+        customInstructions?: string;
       }
     | undefined;
   if (!compactionCall) {
@@ -952,6 +972,11 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
     defaultLevel: "off",
   });
   expect(compactionCall.trigger).toBe("manual");
+  if (expectedFocus === undefined) {
+    expect(compactionCall).not.toHaveProperty("customInstructions");
+  } else {
+    expect(compactionCall.customInstructions).toBe(expectedFocus);
+  }
 
   const sqliteRows = await loadTranscriptEvents(sessionScope);
   expect(sqliteRows).toHaveLength(4);
@@ -992,7 +1017,7 @@ test("sessions.compact without maxLines runs embedded manual compaction for chec
   expect(storedEntry?.totalTokensFresh).toBe(true);
 
   ws.close();
-});
+}
 
 test("sessions.compact accounts against the host-accepted successor before returning", async () => {
   const { storePath } = await createSessionStoreDir();

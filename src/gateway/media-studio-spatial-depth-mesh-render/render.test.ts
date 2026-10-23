@@ -141,6 +141,8 @@ describe("deterministic layered depth mesh", () => {
       confidence: 0.8,
       componentManifestDigest: `sha256:${"a".repeat(64)}`,
       checkpointDigests: [`sha256:${"b".repeat(64)}`],
+      commercialUseAllowed: true as const,
+      allowedTerritories: ["*"],
       noticeRefs: ["NOTICE.adapter"],
       samples: new Uint16Array([0, 16384, 32768, 65535]),
     };

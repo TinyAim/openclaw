@@ -124,6 +124,8 @@ export type CompactEmbeddedAgentSessionParams = Pick<
   execOverrides?: Pick<ExecToolDefaults, "host" | "mode" | "security" | "ask" | "node" | "nodeCwd">;
   bashElevated?: ExecElevatedDefaults;
   customInstructions?: string;
+  /** Manual active-context recovery; never trims persisted raw history. */
+  historyMode?: "preserve_recent" | "summary_only";
   tokenBudget?: number;
   force?: boolean;
   /** Force compaction because the caller already determined this turn must compact before prompt submission. */

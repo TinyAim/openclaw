@@ -274,6 +274,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     codeModeControlsEnabled: codeModeControlsEnabledForRun,
     providerPromptState: {
       state: getProviderPromptState(attempt.runId),
+      expectedExtraSystemPrompt: attempt.extraSystemPrompt,
       effectiveContextTokenBudget: Math.max(
         1,
         Math.floor(

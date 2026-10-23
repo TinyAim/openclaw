@@ -833,7 +833,10 @@ export function buildAgentSystemPrompt(params: {
   const runtimeInfo = params.runtimeInfo;
   const modelIdentityLine = buildModelIdentityPromptLine(runtimeInfo?.model);
   if (promptMode === "none") {
-    return ["You are a personal assistant running inside OpenClaw.", modelIdentityLine]
+    return [
+      "You are an agent running inside OpenClaw. Follow your assigned role and responsibilities in the current agent instructions and conversation context.",
+      modelIdentityLine,
+    ]
       .filter(Boolean)
       .join("\n");
   }
@@ -1178,7 +1181,7 @@ export function buildAgentSystemPrompt(params: {
   });
   const stablePrefix = cacheStablePromptPrefix(stablePrefixCacheKey, () => {
     const lines = [
-      "You are a personal assistant running inside OpenClaw.",
+      "You are an agent running inside OpenClaw. Follow your assigned role and responsibilities in the current agent instructions and conversation context.",
       "",
       ...(includeToolGuidance
         ? [

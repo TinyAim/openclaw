@@ -67,7 +67,24 @@ function maskDimensions(
   };
 }
 
-function generatedRegionMaskForSurface(sourceWidth: number, sourceHeight: number): Buffer {
+function pointInPolygon(x: number, y: number, polygon: readonly NormalizedPoint[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i]!.x;
+    const yi = polygon[i]!.y;
+    const xj = polygon[j]!.x;
+    const yj = polygon[j]!.y;
+    const intersect = yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi + 1e-12) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function generatedRegionMaskForSurface(
+  sourceWidth: number,
+  sourceHeight: number,
+  walkableRegionNormalized: readonly NormalizedPoint[],
+): Buffer {
   const { width, height } = maskDimensions(sourceWidth, sourceHeight);
   const ihdr = Buffer.allocUnsafe(13);
   ihdr.writeUInt32BE(width, 0);
@@ -77,10 +94,15 @@ function generatedRegionMaskForSurface(sourceWidth: number, sourceHeight: number
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const scanlines = Buffer.alloc(height * (width + 1), 0xff);
+  const scanlines = Buffer.alloc(height * (width + 1), 0x00);
   for (let y = 0; y < height; y += 1) {
     const row = y * (width + 1);
     scanlines[row] = 0; // PNG filter None
+    const ny = (y + 0.5) / height;
+    for (let x = 0; x < width; x += 1) {
+      const nx = (x + 0.5) / width;
+      scanlines[row + 1 + x] = pointInPolygon(nx, ny, walkableRegionNormalized) ? 0xff : 0x00;
+    }
   }
   return Buffer.concat([
     Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
@@ -360,6 +382,7 @@ export async function renderDeterministicDepthMesh(
   const generatedRegionMaskPng = generatedRegionMaskForSurface(
     input.calibration.sourceWidthPx,
     input.calibration.sourceHeightPx,
+    input.calibration.walkableRegionNormalized,
   );
   const adapterCheckpointDigests = input.depthAdapter?.checkpointDigests ?? [];
   const allowedTerritories = input.depthAdapter?.allowedTerritories ?? ["*"];

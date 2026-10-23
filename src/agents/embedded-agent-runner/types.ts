@@ -287,6 +287,8 @@ export type EmbeddedAgentRunResult = {
 };
 
 export type EmbeddedAgentCompactResult = {
+  /** Only promised after persistent summary-only readback at the public manual boundary. */
+  historyMode?: "summary_only";
   ok: boolean;
   compacted: boolean;
   compactionKind?: "context-engine" | "native-harness" | "server-endpoint";

@@ -9,6 +9,7 @@ import { createToolResultPromptProjectionState } from "../session-prompt-state.j
 import {
   handleEmbeddedAttemptMidTurnPrecheck,
   prepareEmbeddedAttemptPromptPreflight,
+  UnreclaimablePromptBudgetError,
 } from "./attempt-prompt-preflight.js";
 import {
   PREEMPTIVE_OVERFLOW_ERROR_TEXT,
@@ -301,9 +302,9 @@ describe("attempt prompt preflight", () => {
       contextEngineAssemblySucceeded: false,
       contextEnginePromptAuthority: "assembled",
       contextTokenBudget: 100,
-      hookMessagesForCurrentPrompt: [],
+      hookMessagesForCurrentPrompt: [{ role: "user", content: "x".repeat(4_000), timestamp: 1 }],
       includeBoundaryTimestamp: false,
-      promptForPrecheck: "x".repeat(4_000),
+      promptForPrecheck: "hi",
       reserveTokens: 20,
       sessionMessageCount: 0,
       state: {
@@ -325,6 +326,63 @@ describe("attempt prompt preflight", () => {
     expect(result.contextBudgetStatus?.overflowTokens).toBeGreaterThan(0);
   });
 
+  it.each([
+    {
+      label: "system",
+      systemPrompt: "x".repeat(20_000),
+      prompt: "hi",
+      engineOwnsCompaction: false,
+    },
+    {
+      label: "current input",
+      systemPrompt: "sys",
+      prompt: "x".repeat(20_000),
+      engineOwnsCompaction: false,
+    },
+    {
+      label: "system and input with compaction owner",
+      systemPrompt: "x".repeat(10_000),
+      prompt: "x".repeat(10_000),
+      engineOwnsCompaction: true,
+    },
+  ])("blocks unreclaimable $label before provider submission", async (scenario) => {
+    const result = await prepareEmbeddedAttemptPromptPreflight({
+      attempt,
+      compactionReplayEnabled: true,
+      ...(scenario.engineOwnsCompaction
+        ? { activeContextEngine: { info: { id: "owner", name: "Owner", ownsCompaction: true } } }
+        : {}),
+      contextEngineAssemblySucceeded: scenario.engineOwnsCompaction,
+      contextEnginePromptAuthority: "assembled",
+      contextTokenBudget: 4_000,
+      hookMessagesForCurrentPrompt: [],
+      includeBoundaryTimestamp: false,
+      promptForPrecheck: scenario.prompt,
+      reserveTokens: 1_000,
+      sessionMessageCount: 0,
+      state: {
+        contextBudgetStatus: undefined,
+        preflightRecovery: undefined,
+        promptError: null,
+        promptErrorSource: null,
+        skipPromptSubmission: false,
+      },
+      systemPrompt: scenario.systemPrompt,
+      toolResultMaxChars: 1_000,
+    });
+
+    expect(result.skipPromptSubmission).toBe(true);
+    expect(result.promptError).toBeInstanceOf(UnreclaimablePromptBudgetError);
+    expect((result.promptError as Error).message).toContain(
+      "Estimated prompt management budget exceeded",
+    );
+    expect((result.promptError as Error).message).toContain("not a provider token measurement");
+    expect(result.promptErrorSource).toBe("precheck");
+    expect(result.preflightRecovery).toBeUndefined();
+    expect(result.contextBudgetStatus?.shouldCompact).toBe(false);
+    expect(result.contextBudgetStatus?.overflowTokens).toBeGreaterThan(0);
+  });
+
   it("defers overflow admission to a context engine that owns compaction", async () => {
     const state: Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"] = {
       contextBudgetStatus: undefined,
@@ -342,9 +400,9 @@ describe("attempt prompt preflight", () => {
       contextEngineAssemblySucceeded: true,
       contextEnginePromptAuthority: "assembled",
       contextTokenBudget: 100,
-      hookMessagesForCurrentPrompt: [],
+      hookMessagesForCurrentPrompt: [{ role: "user", content: "x".repeat(4_000), timestamp: 1 }],
       includeBoundaryTimestamp: false,
-      promptForPrecheck: "x".repeat(4_000),
+      promptForPrecheck: "hi",
       reserveTokens: 20,
       sessionMessageCount: 0,
       state,
