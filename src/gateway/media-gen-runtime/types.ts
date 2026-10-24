@@ -152,6 +152,8 @@ export type MediaGenRuntimeVendor = {
   trustedOutputHosts?: readonly string[];
   /** Exact default routes implemented by this runtime vendor. */
   capabilityRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
+  /** Historical route claims that remain resolvable for poll / reconcile / cancel / retry, but not new submits. */
+  recoverableRouteClaims?: readonly MediaGenRuntimeCapabilityRouteClaim[];
   /** Private serving identity reported by this vendor, never a secret. */
   modelServingClaims?: readonly MediaGenRuntimeModelServingClaim[];
   /**

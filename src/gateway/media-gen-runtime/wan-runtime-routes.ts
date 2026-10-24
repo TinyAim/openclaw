@@ -118,3 +118,20 @@ export function wanCapabilityRouteClaims(): MediaGenRuntimeCapabilityRouteClaim[
     adapterRevision: route.adapterRevision,
   }));
 }
+
+export function wanRecoverableRouteClaims(): MediaGenRuntimeCapabilityRouteClaim[] {
+  return [WAN22_I2V_RUNTIME_ROUTE, WAN22_FIRST_LAST_RUNTIME_ROUTE].map((route) => ({
+    presetId: "wan",
+    mode: route.mode,
+    route: {
+      schemaVersion: 1,
+      routeId: route.routeId,
+      providerId: "dashscope",
+      modelId: route.modelId,
+      endpointId: route.endpointId,
+      region: "cn-beijing",
+      accountTier: "api_key",
+    },
+    adapterRevision: route.adapterRevision,
+  }));
+}

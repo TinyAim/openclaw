@@ -91,18 +91,26 @@ export function createOpenClawMediaGenRuntimeExecutor(
   // A preset is a product family, not an execution identity. Once cloud and
   // private H3 coexist, selecting by preset alone can silently send local media
   // to the wrong topology. Frozen route + adapter are the exact dispatch key.
-  const vendorFor = (dispatch: MediaGenRuntimeDispatch): MediaGenRuntimeVendor | undefined => {
+  const vendorFor = (
+    dispatch: MediaGenRuntimeDispatch,
+    options?: { allowHistoricalRecovery?: boolean },
+  ): MediaGenRuntimeVendor | undefined => {
     const candidates = vendorsByPreset.get(dispatch.presetId) ?? [];
     if (!dispatch.frozenPlan) return candidates.length === 1 ? candidates[0] : undefined;
-    const matches = candidates.filter((candidate) =>
-      candidate.capabilityRouteClaims?.some(
+    const matches = candidates.filter((candidate) => {
+      const activeClaims = candidate.capabilityRouteClaims ?? [];
+      const recoverableClaims = options?.allowHistoricalRecovery
+        ? (candidate.recoverableRouteClaims ?? [])
+        : [];
+      const allClaims = [...activeClaims, ...recoverableClaims];
+      return allClaims.some(
         (claim) =>
           claim.presetId === dispatch.presetId &&
           claim.mode === dispatch.mode &&
           claim.route.routeId === dispatch.frozenPlan!.providerRouteRef.routeId &&
           claim.adapterRevision === dispatch.frozenPlan!.adapterRevision,
-      ),
-    );
+      );
+    });
     return matches.length === 1 ? matches[0] : undefined;
   };
   const jobs = new Map<string, MediaGenRuntimeTrackedJob>();
@@ -344,7 +352,9 @@ export function createOpenClawMediaGenRuntimeExecutor(
             ? options.resolveReconcileJobReceipt?.(input)?.trim()
             : undefined;
         const resolvedRuntimeJobId = input.runtimeJobId ?? manuallyBoundReceipt;
-        const recoveredVendor = resolvedRuntimeJobId ? vendorFor(input) : undefined;
+        const recoveredVendor = resolvedRuntimeJobId
+          ? vendorFor(input, { allowHistoricalRecovery: true })
+          : undefined;
         const recoveredAcceptance = options.resolveReconcileSpatialInputAcceptance?.(input);
         const recoveredTracked: MediaGenRuntimeTrackedJob | undefined =
           tracked ??
@@ -358,14 +368,16 @@ export function createOpenClawMediaGenRuntimeExecutor(
         return reconcileMediaGenRuntimeJob({
           dispatch: manuallyBoundReceipt ? { ...input, runtimeJobId: manuallyBoundReceipt } : input,
           tracked: recoveredTracked,
-          fallbackVendor: vendorFor(input),
+          fallbackVendor: vendorFor(input, { allowHistoricalRecovery: true }),
           finalize,
           remember: (job) => jobs.set(input.taskId, job),
           forget: () => jobs.delete(input.taskId),
         });
       }
       if (input.op === "retry") {
-        const vendor = vendorFor(input);
+        const vendor = input.runtimeJobId
+          ? vendorFor(input, { allowHistoricalRecovery: true })
+          : vendorFor(input);
         if (!vendor)
           return failed(input, "vendor_rejected", `unsupported preset ${input.presetId}`);
         if (input.runtimeJobId) {
@@ -484,7 +496,9 @@ export function createOpenClawMediaGenRuntimeExecutor(
             )
           : failed(input, "internal", "The runtime job binding did not match the requested task.");
       }
-      const untrackedVendor = input.runtimeJobId ? vendorFor(input) : undefined;
+      const untrackedVendor = input.runtimeJobId
+        ? vendorFor(input, { allowHistoricalRecovery: true })
+        : undefined;
       const tracked: MediaGenRuntimeTrackedJob | undefined =
         trackedForTask ??
         (input.runtimeJobId && untrackedVendor

@@ -18,6 +18,7 @@ import {
   WAN22_I2V_RUNTIME_ROUTE,
   WAN22_T2V_RUNTIME_ROUTE,
   wanCapabilityRouteClaims,
+  wanRecoverableRouteClaims,
   wanProviderJobIdValid,
   type WanRuntimeRoute,
 } from "./wan-runtime-routes.js";
@@ -288,6 +289,7 @@ export function createWanRuntimeVendor(options: WanRuntimeVendorOptions): MediaG
   return {
     presetId: "wan",
     capabilityRouteClaims: usesExactWorkspaceBase ? [...wanCapabilityRouteClaims()] : undefined,
+    recoverableRouteClaims: usesExactWorkspaceBase ? [...wanRecoverableRouteClaims()] : undefined,
     // I2V/KF2V still consume typed `sources[]` for frozen local receipts. The
     // factory advertises this bit only when an image claim survives admission;
     // current public claims intentionally contain T2V only.

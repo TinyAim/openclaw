@@ -2,6 +2,8 @@ import { createHmac } from "node:crypto";
 import {
   compileKlingImage2VideoV2Request,
   KLING_IMAGE2VIDEO_V2_ADAPTER_REVISION,
+  KLING_IMAGE2VIDEO_V2_ENDPOINT_ID,
+  KLING_IMAGE2VIDEO_V2_MODEL_ID,
   KLING_IMAGE2VIDEO_V2_ROUTE_ID,
 } from "./kling-image2video-v2-compiler.js";
 import {
@@ -277,6 +279,25 @@ export function createKlingRuntimeVendor(
                 accountTier: "api_key",
               },
               adapterRevision: KLING_T2V_V2_ADAPTER_REVISION,
+            },
+          ]
+        : undefined,
+    recoverableRouteClaims:
+      baseUrl === DEFAULT_BASE_URL
+        ? [
+            {
+              presetId: "kling",
+              mode: "image2video",
+              route: {
+                schemaVersion: 1,
+                routeId: KLING_IMAGE2VIDEO_V2_ROUTE_ID,
+                providerId: "kling_open_platform",
+                modelId: KLING_IMAGE2VIDEO_V2_MODEL_ID,
+                endpointId: KLING_IMAGE2VIDEO_V2_ENDPOINT_ID,
+                region: "global",
+                accountTier: "api_key",
+              },
+              adapterRevision: KLING_IMAGE2VIDEO_V2_ADAPTER_REVISION,
             },
           ]
         : undefined,

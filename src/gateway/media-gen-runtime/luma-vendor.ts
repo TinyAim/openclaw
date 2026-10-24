@@ -317,20 +317,6 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
         ? [
             {
               presetId: "luma",
-              mode: LUMA_RAY2_I2V_ROUTE.mode,
-              route: {
-                schemaVersion: 1,
-                routeId: LUMA_RAY2_I2V_ROUTE.routeId,
-                providerId: "luma_dream_machine",
-                modelId: LUMA_RAY2_I2V_ROUTE.modelId,
-                endpointId: LUMA_RAY2_I2V_ROUTE.endpointId,
-                region: "global",
-                accountTier: "api_key",
-              },
-              adapterRevision: LUMA_RAY2_I2V_ROUTE.adapterRevision,
-            },
-            {
-              presetId: "luma",
               mode: LUMA_RAY2_T2V_ROUTE.mode,
               route: {
                 schemaVersion: 1,
@@ -342,6 +328,25 @@ export function createLumaRuntimeVendor(options: LumaRuntimeVendorOptions): Medi
                 accountTier: "api_key",
               },
               adapterRevision: LUMA_RAY2_T2V_ROUTE.adapterRevision,
+            },
+          ]
+        : undefined,
+    recoverableRouteClaims:
+      baseUrl === LUMA_DEFAULT_BASE_URL
+        ? [
+            {
+              presetId: "luma",
+              mode: LUMA_RAY2_I2V_ROUTE.mode,
+              route: {
+                schemaVersion: 1,
+                routeId: LUMA_RAY2_I2V_ROUTE.routeId,
+                providerId: "luma_dream_machine",
+                modelId: LUMA_RAY2_I2V_ROUTE.modelId,
+                endpointId: LUMA_RAY2_I2V_ROUTE.endpointId,
+                region: "global",
+                accountTier: "api_key",
+              },
+              adapterRevision: LUMA_RAY2_I2V_ROUTE.adapterRevision,
             },
           ]
         : undefined,

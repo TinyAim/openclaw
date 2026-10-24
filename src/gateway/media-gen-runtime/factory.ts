@@ -9,6 +9,7 @@ import { createH3BaseSglangVendors } from "./h3-base-sglang-factory.js";
 import { createHailuoH3RuntimeVendor } from "./hailuo-h3-vendor.js";
 import { createMediaGenRuntimeImageExecutor, type ImageRouteExecutor } from "./image-http.js";
 import { parseImageRoute } from "./image-route-config.js";
+import { createKlingApiKeyI2VVendor } from "./kling-apikey-i2v-vendor.js";
 import { createKlingRuntimeVendor } from "./kling-vendor.js";
 import { createLumaRuntimeVendor } from "./luma-vendor.js";
 import {
@@ -92,6 +93,19 @@ function maybeKlingVendor(
   return createKlingRuntimeVendor({
     accessKey,
     secret,
+    baseUrl: envString(env, "KLING_BASE_URL", "OPENCLAW_KLING_BASE_URL") || undefined,
+    fetchImpl,
+  });
+}
+
+function maybeKlingApiKeyVendor(
+  env: MediaGenRuntimeEnv,
+  fetchImpl?: MediaGenRuntimeFetch,
+): MediaGenRuntimeVendor | null {
+  const apiKey = envString(env, "KLING_API_KEY", "OPENCLAW_KLING_API_KEY");
+  if (!apiKey) return null;
+  return createKlingApiKeyI2VVendor({
+    apiKey,
     baseUrl: envString(env, "KLING_BASE_URL", "OPENCLAW_KLING_BASE_URL") || undefined,
     fetchImpl,
   });
@@ -272,6 +286,7 @@ export function createOpenClawMediaGenRuntimeFromEnv(
   }
   const vendors = [
     maybeKlingVendor(env, options.fetchImpl),
+    maybeKlingApiKeyVendor(env, options.fetchImpl),
     maybeViduVendor(env, options.fetchImpl),
     maybeSeedanceVendor(env, options.fetchImpl),
     maybeRunwayVendor(env, options.fetchImpl),
@@ -470,7 +485,10 @@ export function createOpenClawMediaGenRuntimeFromEnv(
       .filter((claim) => claim.presetId !== "seedance" || validateMediaBytes !== undefined)
       // Luma I2V remains executable for historical frozen receipts, but its
       // current runtime profile is not evidence-pinned for admission.
-      .filter((claim) => !(claim.presetId === "luma" && claim.mode === "image2video"));
+      .filter((claim) => !(claim.presetId === "luma" && claim.mode === "image2video"))
+      // CogVideoX claims are not yet evidence-pinned for Control API admission.
+      // Filter them out so unpinned claims do not poison whole-runtime registration.
+      .filter((claim) => claim.presetId !== "cogvideox" && !claim.presetId.startsWith("cogvideox"));
   const capabilityRouteClaims = filterCapabilityRouteClaims(
     vendors.flatMap((vendor) => [...(vendor.capabilityRouteClaims ?? [])]),
   );
