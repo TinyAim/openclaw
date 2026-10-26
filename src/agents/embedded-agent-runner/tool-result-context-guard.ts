@@ -45,6 +45,7 @@ type MidTurnPrecheckOptions = {
   enabled?: boolean;
   contextTokenBudget: number;
   reserveTokens: () => number;
+  honorExplicitReserveTokens?: boolean | (() => boolean);
   toolResultMaxChars?: number;
   getSystemPrompt?: () => string | undefined;
   getPrePromptMessageCount?: () => number;
@@ -503,6 +504,10 @@ export function installToolResultContextGuard(params: {
         // Use the same post-truncation view the runtime will send to the next model call.
         // Recovery re-applies truncation to the persisted session manager, so
         // this precheck is only a routing signal, not the source of truth.
+        const honorExplicitReserveTokens =
+          typeof params.midTurnPrecheck.honorExplicitReserveTokens === "function"
+            ? params.midTurnPrecheck.honorExplicitReserveTokens()
+            : Boolean(params.midTurnPrecheck.honorExplicitReserveTokens);
         const precheck = shouldPreemptivelyCompactBeforePrompt({
           replay: params.midTurnPrecheck.getReplay?.(),
           messages: contextMessages,
@@ -511,6 +516,7 @@ export function installToolResultContextGuard(params: {
           prompt: "",
           contextTokenBudget: params.midTurnPrecheck.contextTokenBudget,
           reserveTokens: params.midTurnPrecheck.reserveTokens(),
+          honorExplicitReserveTokens,
           toolResultMaxChars: params.midTurnPrecheck.toolResultMaxChars,
         });
         const request = toMidTurnPrecheckRequest(precheck);

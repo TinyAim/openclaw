@@ -47,18 +47,47 @@ export function applyAgentCompactionSettingsFromConfig(params: {
 
   const configuredKeepRecentTokens = toPositiveInt(compactionCfg?.keepRecentTokens);
   const contextTokenBudget = toPositiveInt(params.contextTokenBudget);
-  const requestedReserveTokens = Math.max(
-    currentReserveTokens,
-    DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
-  );
-  // Cap the final effective reserve, not only its floor; otherwise small models compact at token one.
-  const targetReserveTokens =
-    contextTokenBudget === undefined
-      ? requestedReserveTokens
-      : resolveEffectiveCompactionReserveTokens({
-          contextTokenBudget,
-          reserveTokens: requestedReserveTokens,
-        });
+  const ratio = compactionCfg?.thresholdRatio;
+  const hasEffectiveRatio =
+    typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0 && ratio < 1;
+  const tokenCap = toPositiveInt(compactionCfg?.thresholdTokens);
+  const hasEffectiveTokenCap =
+    contextTokenBudget !== undefined && tokenCap !== undefined && tokenCap < contextTokenBudget;
+  const hasExplicitCompactionThreshold =
+    configuredEnabled !== false &&
+    contextTokenBudget !== undefined &&
+    (hasEffectiveRatio || hasEffectiveTokenCap);
+
+  let targetReserveTokens: number;
+  if (hasExplicitCompactionThreshold) {
+    let desiredThreshold = Math.max(1, contextTokenBudget - 1);
+    if (hasEffectiveRatio) {
+      desiredThreshold = Math.min(
+        desiredThreshold,
+        Math.max(1, Math.floor(contextTokenBudget * ratio)),
+      );
+    }
+    if (hasEffectiveTokenCap) {
+      desiredThreshold = Math.min(desiredThreshold, tokenCap);
+    }
+    targetReserveTokens = Math.min(
+      Math.max(1, contextTokenBudget - 1),
+      Math.max(1, contextTokenBudget - desiredThreshold),
+    );
+  } else {
+    const requestedReserveTokens = Math.max(
+      currentReserveTokens,
+      DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+    );
+    // Cap the final effective reserve, not only its floor; otherwise small models compact at token one.
+    targetReserveTokens =
+      contextTokenBudget === undefined
+        ? requestedReserveTokens
+        : resolveEffectiveCompactionReserveTokens({
+            contextTokenBudget,
+            reserveTokens: requestedReserveTokens,
+          });
+  }
   const targetKeepRecentTokens = configuredKeepRecentTokens ?? currentKeepRecentTokens;
 
   const overrides: { reserveTokens?: number; keepRecentTokens?: number } = {};

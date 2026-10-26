@@ -711,6 +711,12 @@ export async function runSessionCompactionIfNeeded(params: {
   if (!params.sessionKey) {
     return params.sessionEntry;
   }
+  if (params.cfg?.agents?.defaults?.compaction?.enabled === false) {
+    return (
+      params.sessionEntry ??
+      (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined)
+    );
+  }
 
   let entry =
     params.sessionEntry ??
@@ -794,6 +800,8 @@ export async function runSessionCompactionIfNeeded(params: {
     contextWindowTokens,
     reserveTokensFloor,
     minimumThresholdTokens: responsesServerCompactionThreshold,
+    thresholdRatio: params.cfg?.agents?.defaults?.compaction?.thresholdRatio,
+    thresholdTokens: params.cfg?.agents?.defaults?.compaction?.thresholdTokens,
   });
   const freshNeedsOutputRead =
     typeof freshPersistedTokens === "number" &&
@@ -1340,6 +1348,8 @@ export async function runMemoryFlushIfNeeded(params: {
     resolveCompactionThreshold({
       contextWindowTokens,
       reserveTokensFloor: memoryFlushPlan.reserveTokensFloor,
+      thresholdRatio: params.cfg?.agents?.defaults?.compaction?.thresholdRatio,
+      thresholdTokens: params.cfg?.agents?.defaults?.compaction?.thresholdTokens,
     }) - Math.max(0, Math.floor(memoryFlushPlan.softThresholdTokens)),
   );
 

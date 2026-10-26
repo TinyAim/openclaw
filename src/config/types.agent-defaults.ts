@@ -390,6 +390,10 @@ export type AgentCompactionMidTurnPrecheckConfig = {
 export type AgentCompactionConfig = {
   /** Enable embedded proactive auto-compaction. Default: true. */
   enabled?: boolean;
+  /** Optional ratio (0 < r < 1) of the resolved model context window at which proactive compaction triggers. */
+  thresholdRatio?: number;
+  /** Optional positive integer token cap at which proactive compaction triggers. */
+  thresholdTokens?: number;
   /** Compaction summarization mode. */
   mode?: AgentCompactionMode;
   /** Thinking level for embedded OpenClaw compaction summaries. Default: low. */

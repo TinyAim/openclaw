@@ -141,6 +141,8 @@ export const AgentDefaultsSchema = z
     compaction: z
       .object({
         enabled: z.boolean().optional(),
+        thresholdRatio: z.number().gt(0).lt(1).optional(),
+        thresholdTokens: z.number().int().positive().optional(),
         mode: z.union([z.literal("default"), z.literal("safeguard")]).optional(),
         provider: z.string().optional(),
         thinkingLevel: z.union([AgentThinkingLevelSchema, z.literal("inherit")]).optional(),

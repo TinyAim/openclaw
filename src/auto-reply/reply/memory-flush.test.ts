@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import type { ModelDefinitionConfig, ModelProviderConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { modelKey } from "../../shared/model-key.js";
-import { resolveResponsesServerCompactionThreshold } from "./memory-flush.js";
+import {
+  resolveCompactionThreshold,
+  resolveResponsesServerCompactionThreshold,
+} from "./memory-flush.js";
 
 const TEST_MODEL_ID = "gpt-5.4";
 const TEST_CONTEXT_WINDOW = 200_000;
@@ -326,4 +329,53 @@ it("uses a prepared-only Anthropic window for its enabled server floor", () => {
       modelId: "claude-opus-4-6",
     }),
   ).toBe(700_000);
+});
+
+describe("resolveCompactionThreshold", () => {
+  it("resolves explicit thresholdRatio and thresholdTokens accurately across small and large model windows", () => {
+    // Default (no explicit ratio/tokens): uses contextWindow - reserveTokensFloor
+    expect(
+      resolveCompactionThreshold({
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 20_000,
+      }),
+    ).toBe(80_000);
+
+    // Explicit 85% on 100K window -> 85,000 (not clamped down to 80,000 by default 20K floor)
+    expect(
+      resolveCompactionThreshold({
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 20_000,
+        thresholdRatio: 0.85,
+      }),
+    ).toBe(85_000);
+
+    // Explicit 60% on 100K window -> 60,000
+    expect(
+      resolveCompactionThreshold({
+        contextWindowTokens: 100_000,
+        reserveTokensFloor: 20_000,
+        thresholdRatio: 0.6,
+      }),
+    ).toBe(60_000);
+
+    // Combined ratio (85% = 170K) + token cap (100K) on 200K window -> 100,000
+    expect(
+      resolveCompactionThreshold({
+        contextWindowTokens: 200_000,
+        reserveTokensFloor: 20_000,
+        thresholdRatio: 0.85,
+        thresholdTokens: 100_000,
+      }),
+    ).toBe(100_000);
+
+    // Fallback to 64K model when only thresholdTokens=100K is set -> falls back to 64K - 16K = 48,000
+    expect(
+      resolveCompactionThreshold({
+        contextWindowTokens: 64_000,
+        reserveTokensFloor: 16_000,
+        thresholdTokens: 100_000,
+      }),
+    ).toBe(48_000);
+  });
 });

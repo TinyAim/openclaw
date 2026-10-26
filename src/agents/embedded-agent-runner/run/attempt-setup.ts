@@ -231,6 +231,20 @@ export function installEmbeddedAttemptContextGuards(input: {
             }),
             contextTokenBudget,
             reserveTokens: () => settingsManager.getCompactionReserveTokens(),
+            honorExplicitReserveTokens: () => {
+              const compactionCfg = attempt.config?.agents?.defaults?.compaction;
+              return Boolean(
+                compactionCfg?.enabled !== false &&
+                ((typeof compactionCfg?.thresholdRatio === "number" &&
+                  Number.isFinite(compactionCfg.thresholdRatio) &&
+                  compactionCfg.thresholdRatio > 0 &&
+                  compactionCfg.thresholdRatio < 1) ||
+                  (typeof compactionCfg?.thresholdTokens === "number" &&
+                    Number.isFinite(compactionCfg.thresholdTokens) &&
+                    compactionCfg.thresholdTokens > 0 &&
+                    compactionCfg.thresholdTokens < contextTokenBudget)),
+              );
+            },
             toolResultMaxChars,
             getSystemPrompt: input.getSystemPrompt,
             getPrePromptMessageCount: input.getPrePromptMessageCount,

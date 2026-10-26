@@ -4,6 +4,7 @@
 import { CompactionReplayRefreshRequiredError } from "@openclaw/ai/transports";
 import type { AssembleResult } from "../../../context-engine/types.js";
 import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outcome.js";
+import { DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR } from "../../agent-settings.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -210,6 +211,18 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
           boundaryOptions,
         )
       : undefined;
+  const compactionCfg = attempt.config?.agents?.defaults?.compaction;
+  const honorExplicitReserveTokens = Boolean(
+    compactionCfg?.enabled !== false &&
+    ((typeof compactionCfg?.thresholdRatio === "number" &&
+      Number.isFinite(compactionCfg.thresholdRatio) &&
+      compactionCfg.thresholdRatio > 0 &&
+      compactionCfg.thresholdRatio < 1) ||
+      (typeof compactionCfg?.thresholdTokens === "number" &&
+        Number.isFinite(compactionCfg.thresholdTokens) &&
+        compactionCfg.thresholdTokens > 0 &&
+        compactionCfg.thresholdTokens < input.contextTokenBudget)),
+  );
   let preemptiveCompaction: ReturnType<typeof shouldPreemptivelyCompactBeforePrompt> | null = null;
   if (!skipPromptSubmission) {
     try {
@@ -220,6 +233,7 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
         prompt: input.promptForPrecheck,
         contextTokenBudget: input.contextTokenBudget,
         reserveTokens: input.reserveTokens,
+        honorExplicitReserveTokens,
         toolResultMaxChars: input.toolResultMaxChars,
         replay: {
           model: attempt.model,
@@ -239,16 +253,19 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
         skipPromptSubmission: true,
       };
     }
-    // Check only the current rendered system and pending input. Raw/unwindowed
-    // history may be reducible and must not authorize this non-retryable block.
-    // Tool schemas are not supplied here; this is a known-input estimate, not
-    // an exact accounting of every provider-bound token.
+    // Check only the current rendered system and pending input against the hard
+    // output-reserve window, never the soft compaction thresholdRatio/thresholdTokens.
+    const fixedAdmissionReserveTokens = Math.min(
+      input.reserveTokens,
+      DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+    );
     const fixedPromptPressure = shouldPreemptivelyCompactBeforePrompt({
       messages: [],
       systemPrompt: input.systemPrompt,
       prompt: input.promptForPrecheck,
       contextTokenBudget: input.contextTokenBudget,
-      reserveTokens: input.reserveTokens,
+      reserveTokens: fixedAdmissionReserveTokens,
+      honorExplicitReserveTokens: false,
     });
     if (fixedPromptPressure.route !== "fits") {
       return {

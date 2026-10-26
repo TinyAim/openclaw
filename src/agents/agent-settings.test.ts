@@ -301,6 +301,57 @@ describe("applyAgentCompactionSettingsFromConfig", () => {
 
     expect(result.compaction.reserveTokens).toBe(DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR);
   });
+
+  it("honors explicit thresholdRatio and thresholdTokens across 64K/100K/200K model switches and fallbacks", () => {
+    const settingsManager = SettingsManager.inMemory();
+
+    // 85% on 64K model -> threshold = 54,400, reserve = 9,600 (not clamped by default 20K floor)
+    const on64k85 = applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      contextTokenBudget: 64_000,
+      cfg: { agents: { defaults: { compaction: { thresholdRatio: 0.85 } } } },
+    });
+    expect(on64k85.compaction.reserveTokens).toBe(9_600);
+    expect(shouldCompact(54_400, 64_000, settingsManager.getCompactionSettings())).toBe(false);
+    expect(shouldCompact(54_401, 64_000, settingsManager.getCompactionSettings())).toBe(true);
+
+    // 60% on 100K model -> threshold = 60,000, reserve = 40,000 (not capped at 25% reserve)
+    const on100k60 = applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      contextTokenBudget: 100_000,
+      cfg: { agents: { defaults: { compaction: { thresholdRatio: 0.6 } } } },
+    });
+    expect(on100k60.compaction.reserveTokens).toBe(40_000);
+    expect(shouldCompact(60_000, 100_000, settingsManager.getCompactionSettings())).toBe(false);
+    expect(shouldCompact(60_001, 100_000, settingsManager.getCompactionSettings())).toBe(true);
+
+    // Combined thresholdRatio=0.85 + thresholdTokens=100,000 across primary 200K and fallback 64K
+    const combinedCfg = {
+      agents: {
+        defaults: {
+          compaction: {
+            thresholdRatio: 0.85,
+            thresholdTokens: 100_000,
+          },
+        },
+      },
+    };
+    const primary200k = applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      contextTokenBudget: 200_000,
+      cfg: combinedCfg,
+    });
+    // min(200,000 * 0.85 = 170,000, 100,000) = 100,000 -> reserve = 100,000
+    expect(primary200k.compaction.reserveTokens).toBe(100_000);
+
+    const fallback64k = applyAgentCompactionSettingsFromConfig({
+      settingsManager,
+      contextTokenBudget: 64_000,
+      cfg: combinedCfg,
+    });
+    // On 64K fallback, 100,000 token cap is above the window, so 85% ratio (54,400) wins -> reserve = 9,600
+    expect(fallback64k.compaction.reserveTokens).toBe(9_600);
+  });
 });
 
 describe("resolveEffectiveCompactionMode", () => {
