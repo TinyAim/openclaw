@@ -35,6 +35,7 @@ export type RunwayRuntimeVendorOptions = {
 
 type RunwayCreateResponse = { id?: unknown };
 type RunwayTaskResponse = {
+  id?: unknown;
   status?: unknown;
   progress?: unknown;
   output?: unknown;
@@ -254,6 +255,18 @@ export function createRunwayRuntimeVendor(
           vendorJobId: jobReceipt,
           reason: "vendor_failed",
           message: "Runway returned an unreadable task receipt.",
+          retryDisposition: "reconcile_only",
+        },
+        "failed",
+      );
+    }
+    if (json.id !== undefined && json.id !== providerJobId) {
+      return observed(
+        {
+          state: "failed",
+          vendorJobId: jobReceipt,
+          reason: "vendor_failed",
+          message: "Runway returned a task receipt with a conflicting job identity.",
           retryDisposition: "reconcile_only",
         },
         "failed",

@@ -122,6 +122,8 @@ const ambiguous = [
   "unknownState",
   "missingOutput",
   "insecureOutput",
+  "conflictingIdentity",
+  "conflictingFailedIdentity",
   "invalidReceipt",
 ] as const;
 type QueryCase = (typeof ambiguous)[number] | "failed" | "processing";
@@ -133,14 +135,19 @@ function response(kind: QueryCase): Response {
   if (kind === "invalidJSON") return new Response("{");
   if (kind === "nullJSON") return new Response("null");
   const status =
-    kind === "missingOutput" || kind === "insecureOutput"
+    kind === "missingOutput" || kind === "insecureOutput" || kind === "conflictingIdentity"
       ? "SUCCEEDED"
       : kind === "processing"
         ? "RUNNING"
-        : kind.toUpperCase();
+        : kind === "conflictingFailedIdentity"
+          ? "FAILED"
+          : kind.toUpperCase();
   return new Response(
     JSON.stringify({
       status,
+      ...(["conflictingIdentity", "conflictingFailedIdentity"].includes(kind)
+        ? { id: "another-job", output: ["https://example.test/another-video.mp4"] }
+        : {}),
       ...(kind === "insecureOutput" ? { output: ["http://example.test/video.mp4"] } : {}),
     }),
   );
@@ -178,6 +185,17 @@ async function retry(kind: QueryCase) {
   return { result: await executor.dispatch(dispatch), fetchImpl, bridge };
 }
 describe("Runway existing provider attempt query uncertainty", () => {
+  it("rejects another job's successful output before returning it to the executor", async () => {
+    const vendor = createRunwayRuntimeVendor({
+      apiKey: "test-only-credential",
+      fetchImpl: vi.fn(async () => response("conflictingIdentity")),
+    });
+    await expect(vendor.poll(`${JOB_PREFIX}old-job`)).resolves.toMatchObject({
+      state: "failed",
+      vendorJobId: `${JOB_PREFIX}old-job`,
+      retryDisposition: "reconcile_only",
+    });
+  });
   it.each(ambiguous)("%s does not create another provider job", async (kind) => {
     const { result, fetchImpl, bridge } = await retry(kind);
     expect.soft(fetchImpl.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);

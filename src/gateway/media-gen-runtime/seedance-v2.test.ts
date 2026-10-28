@@ -14,6 +14,7 @@ import {
   compileSeedanceV2Request,
   SEEDANCE_V2_LEGACY_IMAGE_PROFILE,
   SEEDANCE_V2_LEGACY_IMAGE_PROFILE_V4,
+  SEEDANCE_V2_PROFILE_DIGESTS,
 } from "./seedance-v2-compiler.js";
 import { createSeedanceV2RuntimeVendor } from "./seedance-vendor-v2.js";
 import type {
@@ -214,6 +215,75 @@ function vendorInput(
 
 describe("Seedance Runtime Adapter V2", () => {
   const job = (mode: "text2video" | "image2video", id: string) => `seedance-v2:${mode}:${id}`;
+
+  it.each(["image", "audio"] as const)(
+    "rejects changed %s bytes even when the resolver repeats the frozen checksum",
+    async (mediaClass) => {
+      const refs = [reference({ role: "subject", ordinal: 0, mediaClass: "image" })];
+      if (mediaClass === "audio") {
+        refs.push(reference({ role: "voice", ordinal: 0, mediaClass: "audio" }));
+      }
+      const frozenPlan = plan({
+        references: refs,
+        scenario:
+          mediaClass === "audio" ? "multimodal_reference_to_video" : "subject_reference_to_video",
+        audio: mediaClass === "audio" ? "reference_conditioned" : "silent",
+      });
+      if (mediaClass === "audio")
+        frozenPlan.capabilityProfileRef = { ...SEEDANCE_V2_LEGACY_IMAGE_PROFILE };
+      const sources = refs.map((ref) =>
+        sourceSlot(ref, {
+          bytes: Buffer.from(
+            ref.mediaClass === mediaClass ? "changed-reference" : `${ref.role}-${ref.ordinal}`,
+          ),
+          mimeType: ref.mimeType!,
+          sha256: ref.sourceDigest!,
+        }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('{"id":"must-not-create"}'));
+      const vendor = createSeedanceV2RuntimeVendor({ apiKey: "test-only-credential", fetchImpl });
+      await expect(vendor.submit(vendorInput(frozenPlan, sources))).resolves.toMatchObject({
+        state: "failed",
+        reason: "vendor_rejected",
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { scenario: "subject_reference_to_video", audio: "silent", withReference: true },
+    { scenario: "text_to_video", audio: "reference_conditioned", withReference: false },
+    { scenario: "video_edit", audio: "silent", withReference: false },
+  ] as const)(
+    "does not widen the text profile to $scenario/$audio",
+    async ({ scenario, audio, withReference }) => {
+      const refs = withReference
+        ? [reference({ role: "subject", ordinal: 0, mediaClass: "image" })]
+        : [];
+      const frozenPlan = plan({ references: refs, scenario, audio });
+      frozenPlan.mode = "text2video";
+      frozenPlan.generationIntent.legacyMode = "text2video";
+      frozenPlan.providerRouteRef.routeId = "volcengine.ark.seedance2.text2video";
+      frozenPlan.capabilityProfileRef = {
+        profileId: "seedance.openclaw-runtime.text2video.v4",
+        revision: 4,
+        digest: SEEDANCE_V2_PROFILE_DIGESTS.text2video,
+      };
+      const sources = refs.map((ref) =>
+        sourceSlot(ref, {
+          bytes: Buffer.from(`${ref.role}-${ref.ordinal}`),
+          mimeType: ref.mimeType!,
+          sha256: ref.sourceDigest!,
+        }),
+      );
+      const fetchImpl = vi.fn(async () => new Response('{"id":"must-not-create"}'));
+      const vendor = createSeedanceV2RuntimeVendor({ apiKey: "test-only-credential", fetchImpl });
+      await expect(
+        vendor.submit({ ...vendorInput(frozenPlan, sources), mode: "text2video" }),
+      ).resolves.toMatchObject({ state: "failed", reason: "vendor_rejected" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
 
   it("advertises both exact official Ark routes and no claims for a custom base", () => {
     expect(createSeedanceV2RuntimeVendor({ apiKey: "ark-key" }).capabilityRouteClaims).toEqual([

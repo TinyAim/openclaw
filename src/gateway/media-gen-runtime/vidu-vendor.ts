@@ -48,6 +48,7 @@ type ViduCreateResponse = {
 };
 
 type ViduCreationsResponse = {
+  id?: unknown;
   state?: unknown;
   err_code?: unknown;
   code?: unknown;
@@ -310,6 +311,21 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
           phase: "task",
           vendorJobId,
         }),
+        operation,
+        "failed",
+        startedAtMs,
+      );
+    }
+    if (json?.id !== undefined && json.id !== taskId) {
+      return observe(
+        identity,
+        {
+          state: "failed",
+          vendorJobId,
+          reason: "vendor_failed",
+          message: "Vidu returned a task receipt with a conflicting job identity.",
+          retryDisposition: "reconcile_only",
+        },
         operation,
         "failed",
         startedAtMs,

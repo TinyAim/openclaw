@@ -165,6 +165,13 @@ function sourceUrl(
   if (!expectedSha || actualSha !== expectedSha) {
     return null;
   }
+  if (
+    !source.providerRef &&
+    source.bytes &&
+    `sha256:${createHash("sha256").update(source.bytes).digest("hex")}` !== expectedSha
+  ) {
+    return null;
+  }
   const mime = source.mimeType.toLowerCase();
   if (ref.mimeType && ref.mimeType.toLowerCase() !== mime) {
     return null;
@@ -312,6 +319,14 @@ export function compileSeedanceV2Request(
     return fail(identityError);
   }
   const intent = input.frozenPlan!.generationIntent;
+  if (
+    input.mode === "text2video" &&
+    (intent.generationScenario !== "text_to_video" ||
+      intent.references.length !== 0 ||
+      !["silent", "native_generate"].includes(intent.outputAudioPolicy))
+  ) {
+    return fail("The frozen Seedance text profile does not claim this scenario or reference set.");
+  }
   const imageOnlyV4Profile =
     input.mode === "image2video" &&
     input.frozenPlan!.capabilityProfileRef.profileId === "seedance.openclaw-runtime.multimodal.v4";
