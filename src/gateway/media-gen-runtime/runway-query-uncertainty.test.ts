@@ -18,8 +18,12 @@ import { createRunwayRuntimeVendor } from "./runway-vendor.js";
 import type { MediaGenRuntimeBridge } from "./types.js";
 const JOB_PREFIX = "runway-gen45-t2v:";
 function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object)
     .toSorted()
@@ -131,9 +135,15 @@ function receipt(kind: QueryCase) {
   return `${JOB_PREFIX}${kind === "invalidReceipt" ? "" : "old-job"}`;
 }
 function response(kind: QueryCase): Response {
-  if (kind.startsWith("HTTP")) return new Response("{}", { status: Number(kind.slice(4)) });
-  if (kind === "invalidJSON") return new Response("{");
-  if (kind === "nullJSON") return new Response("null");
+  if (kind.startsWith("HTTP")) {
+    return new Response("{}", { status: Number(kind.slice(4)) });
+  }
+  if (kind === "invalidJSON") {
+    return new Response("{");
+  }
+  if (kind === "nullJSON") {
+    return new Response("null");
+  }
   const status =
     kind === "missingOutput" || kind === "insecureOutput" || kind === "conflictingIdentity"
       ? "SUCCEEDED"
@@ -161,12 +171,12 @@ async function retry(kind: QueryCase) {
       : response(kind),
   );
   const vendor = createRunwayRuntimeVendor({ apiKey: "test-only-credential", fetchImpl });
-  const bridge: MediaGenRuntimeBridge = {
+  const bridge = {
     runtimeId: plan.runtimeRef.runtimeId,
     register: vi.fn(),
     resolveArtifactReference: vi.fn(),
     handoffArtifact: vi.fn(),
-  };
+  } satisfies MediaGenRuntimeBridge;
   const executor = createOpenClawMediaGenRuntimeExecutor({ bridge, vendors: [vendor] });
   const dispatch: MediaGenRuntimeDispatch = {
     op: "retry",
@@ -253,12 +263,12 @@ describe("Runway provider create outcome uncertainty", () => {
     const fetchImpl = vi.fn(
       async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status }),
     );
-    const bridge: MediaGenRuntimeBridge = {
+    const bridge = {
       runtimeId: plan.runtimeRef.runtimeId,
       register: vi.fn(),
       resolveArtifactReference: vi.fn(),
       handoffArtifact: vi.fn(),
-    };
+    } satisfies MediaGenRuntimeBridge;
     const executor = createOpenClawMediaGenRuntimeExecutor({
       bridge,
       vendors: [createRunwayRuntimeVendor({ apiKey: "test-only-credential", fetchImpl })],

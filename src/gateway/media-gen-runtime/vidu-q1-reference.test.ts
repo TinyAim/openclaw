@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import { parseDispatch } from "../media-gen-runtime-dispatch.js";
 import type { MediaGenRuntimeDispatch } from "../media-gen-runtime-http.js";
 import { createOpenClawMediaGenRuntimeExecutor } from "./executor.js";
 import type { MediaGenRuntimeFrozenPlanV2 } from "./frozen-plan.js";
@@ -24,6 +25,20 @@ const SUBJECT_BYTES = [
 
 function sha(bytes: Buffer): string {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object)
+    .toSorted()
+    .map((key) => `${JSON.stringify(key)}:${stableJson(object[key])}`)
+    .join(",")}}`;
 }
 
 function requestUrl(value: RequestInfo | URL): string {
@@ -60,7 +75,7 @@ function frozenPlan(
     mimeType: "image/png",
     sourceDigest: `sha256:${sha(value)}`,
   }));
-  return {
+  const result: MediaGenRuntimeFrozenPlanV2 = {
     schemaVersion: 2,
     previewId: "preview-vidu-q1",
     presetId: "vidu",
@@ -174,6 +189,8 @@ function frozenPlan(
     inputFingerprint: "3".repeat(64),
     intentFingerprint: "4".repeat(64),
   };
+  result.generationIntentDigest = `intent:sha256:${createHash("sha256").update(stableJson(result.generationIntent)).digest("hex")}`;
+  return result;
 }
 
 function sourceSlots(bytes = SUBJECT_BYTES): MediaGenRuntimeSourceSlot[] {
@@ -354,7 +371,7 @@ describe("Vidu Q1 exact reference-to-video runtime", () => {
         resolution: "1080p",
       },
     });
-    await expect(vendor.cancel!("vidu-state-job")).resolves.toBeUndefined();
+    await expect(vendor.cancel!("vidu-state-job")).resolves.toEqual({ state: "confirmed" });
     expect(calls.at(-1)).toEqual({
       url: "https://api.vidu.com/ent/v2/tasks/vidu-state-job/cancel",
       method: "POST",
@@ -362,49 +379,22 @@ describe("Vidu Q1 exact reference-to-video runtime", () => {
     });
   });
 
-  it("downloads the expiring output before quality proof and Artifact handoff", async () => {
-    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
-      const value = requestUrl(url);
-      if (value.endsWith("/reference2video") && init?.method === "POST") {
-        return new Response(JSON.stringify({ task_id: "vidu-artifact-job" }), { status: 200 });
-      }
-      if (value.endsWith("/tasks/vidu-artifact-job/creations")) {
-        return new Response(
-          JSON.stringify({
-            state: "success",
-            creations: [{ url: "https://media.example/vidu.mp4" }],
-          }),
-          { status: 200 },
-        );
-      }
-      return new Response(Buffer.from("vidu-video-bytes"), {
-        status: 200,
-        headers: { "content-type": "video/mp4" },
-      });
-    }) as unknown as typeof fetch;
-    const handoffArtifact = vi.fn(async ({ sha256 }: { sha256: string }) => ({
-      artifactId: "artifact-vidu-output",
-      mimeType: "video/mp4",
-      sha256,
-      durationSec: 5,
-      resolution: "1080p",
-    }));
-    const bridge: MediaGenRuntimeBridge = {
+  it("rejects an unadvertised reference route before Provider or Artifact effects", async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"task_id":"must-not-create"}'));
+    const bridge = {
       runtimeId: "runtime-vidu",
       register: vi.fn(async () => undefined),
-      resolveArtifactReference: vi.fn(async ({ artifactId }: { artifactId: string }) => {
-        const index = Number(artifactId.split("-").at(-1));
-        const bytes = SUBJECT_BYTES[index];
-        return { bytes, mimeType: "image/png", sha256: sha(bytes) };
-      }),
-      handoffArtifact,
-    };
+      resolveArtifactReference: vi.fn(),
+      handoffArtifact: vi.fn(),
+    } satisfies MediaGenRuntimeBridge;
+    const vendor = createViduRuntimeVendor({ apiKey: "vidu-key", fetchImpl });
+    const validateMediaBytes = vi.fn(async () => ({ ok: true as const }));
     const executor = createOpenClawMediaGenRuntimeExecutor({
       bridge,
-      vendors: [createViduRuntimeVendor({ apiKey: "vidu-key", fetchImpl })],
+      vendors: [vendor],
       fetchImpl,
       allowedMediaHosts: ["media.example"],
-      validateMediaBytes: vi.fn(async () => ({ ok: true as const })),
+      validateMediaBytes,
     });
     const plan = frozenPlan();
     const dispatch: MediaGenRuntimeDispatch = {
@@ -425,31 +415,25 @@ describe("Vidu Q1 exact reference-to-video runtime", () => {
       })),
       frozenPlan: plan,
     };
+    // A valid compiler fixture is not a runtime admission claim. Keep this
+    // source-only route closed instead of injecting a claim to make it run.
+    expect(compileViduQ1ReferenceRequest(vendorInput(plan))).toMatchObject({ ok: true });
+    expect(parseDispatch(dispatch)).not.toBeNull();
+    expect(
+      vendor.capabilityRouteClaims?.some(
+        (claim) => claim.route.routeId === VIDU_Q1_REFERENCE_ROUTE_ID,
+      ),
+    ).toBe(false);
     const submitted = await executor.dispatch(dispatch);
     expect(submitted).toMatchObject({
-      status: "processing",
-      runtimeJobId: "vidu-artifact-job",
-      providerObservation: { operation: "submit", outcome: "processing" },
+      status: "failed",
+      failureReason: "vendor_rejected",
+      failureMessage: "unsupported preset vidu",
     });
-    const completed = await executor.dispatch({
-      op: "poll",
-      taskId: dispatch.taskId,
-      workspaceId: dispatch.workspaceId,
-      correlationId: "corr-vidu-poll",
-      presetId: "vidu",
-      mode: "image2video",
-      runtimeJobId: submitted.runtimeJobId,
-    });
-    expect(completed).toMatchObject({
-      status: "succeeded",
-      artifact: { artifactId: "artifact-vidu-output" },
-      providerRequestDigest: expect.stringMatching(/^sha256:/u),
-      providerObservation: {
-        operation: "poll",
-        outcome: "succeeded",
-        qualityOutcome: "passed",
-      },
-    });
-    expect(handoffArtifact).toHaveBeenCalledTimes(1);
+    expect(submitted.runtimeJobId).toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(bridge.resolveArtifactReference).not.toHaveBeenCalled();
+    expect(bridge.handoffArtifact).not.toHaveBeenCalled();
+    expect(validateMediaBytes).not.toHaveBeenCalled();
   });
 });

@@ -290,8 +290,12 @@ function mappedSpatialInputEnvelope(
   slots: Map<string, MediaGenRuntimeSourceSlot>,
 ): MediaGenRuntimeSpatialInputEnvelope | null | undefined {
   const envelope = input.spatialInputEnvelope;
-  if (!envelope) return undefined;
-  if (!input.executionAttempt || !input.frozenPlanDigest) return null;
+  if (!envelope) {
+    return undefined;
+  }
+  if (!input.executionAttempt || !input.frozenPlanDigest) {
+    return null;
+  }
   const frozenReferences = input.frozenPlan!.generationIntent.references;
   for (const tuple of envelope.references) {
     const key = `${tuple.role}:${tuple.ordinal}`;
@@ -304,8 +308,9 @@ function mappedSpatialInputEnvelope(
       slot.artifactId !== tuple.artifactId ||
       sourceChecksum !== tuple.checksum ||
       normalizedSha(reference.sourceDigest) !== tuple.checksum
-    )
+    ) {
       return null;
+    }
   }
   return envelope;
 }
@@ -348,7 +353,9 @@ export function compileSeedanceV2Request(
     input.frozenPlan!.capabilityProfileRef.profileId === "seedance.openclaw-runtime.multimodal.v5";
   if (multimodalV5Profile) {
     const referenceError = validateSeedanceV2MultimodalV5Intent(intent);
-    if (referenceError) return fail(referenceError);
+    if (referenceError) {
+      return fail(referenceError);
+    }
   }
   const output = intent.output;
   if (

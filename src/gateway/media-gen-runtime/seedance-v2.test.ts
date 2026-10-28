@@ -229,8 +229,9 @@ describe("Seedance Runtime Adapter V2", () => {
           mediaClass === "audio" ? "multimodal_reference_to_video" : "subject_reference_to_video",
         audio: mediaClass === "audio" ? "reference_conditioned" : "silent",
       });
-      if (mediaClass === "audio")
+      if (mediaClass === "audio") {
         frozenPlan.capabilityProfileRef = { ...SEEDANCE_V2_LEGACY_IMAGE_PROFILE };
+      }
       const sources = refs.map((ref) =>
         sourceSlot(ref, {
           bytes: Buffer.from(
@@ -251,15 +252,24 @@ describe("Seedance Runtime Adapter V2", () => {
   );
 
   it.each([
-    { scenario: "subject_reference_to_video", audio: "silent", withReference: true },
-    { scenario: "text_to_video", audio: "reference_conditioned", withReference: false },
-    { scenario: "video_edit", audio: "silent", withReference: false },
+    { scenario: "subject_reference_to_video", audio: "silent", roles: ["subject"] },
+    {
+      scenario: "multimodal_reference_to_video",
+      audio: "reference_conditioned",
+      roles: ["subject", "voice"],
+    },
+    { scenario: "video_edit", audio: "silent", roles: ["source_video"] },
   ] as const)(
-    "does not widen the text profile to $scenario/$audio",
-    async ({ scenario, audio, withReference }) => {
-      const refs = withReference
-        ? [reference({ role: "subject", ordinal: 0, mediaClass: "image" })]
-        : [];
+    "rejects $scenario/$audio at the direct text compiler seam",
+    async ({ scenario, audio, roles }) => {
+      const refs = roles.map((role) =>
+        reference({
+          role,
+          ordinal: 0,
+          mediaClass: role === "voice" ? "audio" : role === "source_video" ? "video" : "image",
+          ...(role === "source_video" ? { kind: "runtime_local" as const } : {}),
+        }),
+      );
       const frozenPlan = plan({ references: refs, scenario, audio });
       frozenPlan.mode = "text2video";
       frozenPlan.generationIntent.legacyMode = "text2video";
@@ -269,9 +279,15 @@ describe("Seedance Runtime Adapter V2", () => {
         revision: 4,
         digest: SEEDANCE_V2_PROFILE_DIGESTS.text2video,
       };
+      frozenPlan.generationIntentDigest = `intent:sha256:${sha(stableJson(frozenPlan.generationIntent))}`;
+      // The public dispatch parser already rejects this mode/scenario mix.
+      // The directly callable vendor/compiler must retain the same boundary.
+      expect(parseMediaGenRuntimeFrozenPlan(frozenPlan)).toBeNull();
       const sources = refs.map((ref) =>
         sourceSlot(ref, {
-          bytes: Buffer.from(`${ref.role}-${ref.ordinal}`),
+          ...(ref.mediaClass === "video"
+            ? { providerRef: "asset://source-video" }
+            : { bytes: Buffer.from(`${ref.role}-${ref.ordinal}`) }),
           mimeType: ref.mimeType!,
           sha256: ref.sourceDigest!,
         }),
@@ -464,7 +480,7 @@ describe("Seedance Runtime Adapter V2", () => {
       compileSeedanceV2Request(
         vendorInput(frozenPlan, [
           sourceSlot(ref, {
-            bytes: Buffer.from("first-frame"),
+            bytes: Buffer.from("first_frame-0"),
             mimeType: "image/png",
             sha256: sha("first_frame-0"),
           }),

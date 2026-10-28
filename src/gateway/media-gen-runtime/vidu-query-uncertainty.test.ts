@@ -18,8 +18,12 @@ import {
 import { VIDU_Q1_T2V_JOB_PREFIX } from "./vidu-q1-text2video-vendor.js";
 import { createViduRuntimeVendor } from "./vidu-vendor.js";
 function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
   const object = value as Record<string, unknown>;
   return `{${Object.keys(object)
     .toSorted()
@@ -172,9 +176,15 @@ function receipt(kind: QueryCase) {
   return `${VIDU_Q1_T2V_JOB_PREFIX}${kind === "invalidReceipt" ? "" : "old-job"}`;
 }
 function response(kind: QueryCase): Response {
-  if (kind.startsWith("HTTP")) return new Response("{}", { status: Number(kind.slice(4)) });
-  if (kind === "invalidJSON") return new Response("{");
-  if (kind === "nullJSON") return new Response("null");
+  if (kind.startsWith("HTTP")) {
+    return new Response("{}", { status: Number(kind.slice(4)) });
+  }
+  if (kind === "invalidJSON") {
+    return new Response("{");
+  }
+  if (kind === "nullJSON") {
+    return new Response("null");
+  }
   return new Response(
     JSON.stringify({
       state:
@@ -201,12 +211,12 @@ async function retry(kind: QueryCase) {
       : response(kind),
   );
   const vendor = createViduRuntimeVendor({ apiKey: "test-only-credential", fetchImpl });
-  const bridge: MediaGenRuntimeBridge = {
+  const bridge = {
     runtimeId: plan.runtimeRef.runtimeId,
     register: vi.fn(),
     resolveArtifactReference: vi.fn(),
     handoffArtifact: vi.fn(),
-  };
+  } satisfies MediaGenRuntimeBridge;
   const executor = createOpenClawMediaGenRuntimeExecutor({ bridge, vendors: [vendor] });
   const dispatch: MediaGenRuntimeDispatch = {
     op: "retry",
@@ -296,12 +306,12 @@ describe("Vidu provider create outcome uncertainty", () => {
     const fetchImpl = vi.fn(
       async (_url: RequestInfo | URL, _init?: RequestInit) => new Response("{}", { status }),
     );
-    const bridge: MediaGenRuntimeBridge = {
+    const bridge = {
       runtimeId: plan.runtimeRef.runtimeId,
       register: vi.fn(),
       resolveArtifactReference: vi.fn(),
       handoffArtifact: vi.fn(),
-    };
+    } satisfies MediaGenRuntimeBridge;
     const executor = createOpenClawMediaGenRuntimeExecutor({
       bridge,
       vendors: [createViduRuntimeVendor({ apiKey: "test-only-credential", fetchImpl })],
@@ -367,7 +377,7 @@ describe.each(["text2video", "image2video"] as const)(
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("POST");
-      expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe(
         `https://api.vidu.com/ent/v2/${mode === "image2video" ? "img2video" : "text2video"}`,
       );
       return result;
