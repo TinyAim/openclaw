@@ -23,6 +23,7 @@ export type ViduQ1T2vCreateBody = {
   duration: 5;
   aspect_ratio: "16:9" | "9:16" | "1:1";
   resolution: "1080p";
+  audio: false;
   bgm: false;
   movement_amplitude: "auto";
   off_peak: false;
@@ -164,6 +165,8 @@ export function compileViduQ1T2vRequest(input: MediaGenRuntimeVendorInput): Vidu
     duration: 5,
     aspect_ratio: ratio as ViduQ1T2vCreateBody["aspect_ratio"],
     resolution: "1080p",
+    // Native audio defaults on independently of BGM; preserve the frozen silent policy.
+    audio: false,
     bgm: false,
     movement_amplitude: "auto",
     off_peak: false,

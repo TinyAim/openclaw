@@ -285,7 +285,7 @@ describe("MiniMax H3 exact multimodal runtime", () => {
         return new Response(
           JSON.stringify({
             task_id: "queued-cancel",
-            action: "cancel",
+            action: "cancelled",
             status: "cancelled",
           }),
         );
@@ -336,7 +336,7 @@ describe("MiniMax H3 exact multimodal runtime", () => {
       output: { mediaRef: "https://cdn.example/h3.mp4", resolution: "2K" },
       providerObservation: { operation: "reconcile", outcome: "succeeded" },
     });
-    await vendor.cancel!("queued-cancel");
+    expect(await vendor.cancel!("queued-cancel")).toEqual({ state: "confirmed" });
     expect(calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "DELETE"]);
     expect(calls.map((call) => call.url)).toEqual([
       "https://api.minimax.io/v2/video_generation",

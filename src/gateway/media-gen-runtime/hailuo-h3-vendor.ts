@@ -391,11 +391,12 @@ export function createHailuoH3RuntimeVendor(
       if (
         !response.ok ||
         json?.task_id !== vendorJobId ||
-        json.action !== "cancel" ||
+        json.action !== "cancelled" ||
         json.status !== "cancelled"
       ) {
         throw new Error("MiniMax H3 did not confirm queued-task cancellation.");
       }
+      return { state: "confirmed" };
     },
   };
 }

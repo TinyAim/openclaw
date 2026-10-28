@@ -16,9 +16,7 @@ import type {
 } from "./types.js";
 import {
   compileViduQ1ReferenceRequest,
-  VIDU_Q1_MODEL_ID,
   VIDU_Q1_REFERENCE_ADAPTER_REVISION,
-  VIDU_Q1_REFERENCE_ENDPOINT_ID,
   VIDU_Q1_REFERENCE_PROFILE_ID,
   VIDU_Q1_REFERENCE_ROUTE_ID,
 } from "./vidu-q1-reference-compiler.js";
@@ -538,7 +536,17 @@ export function createViduRuntimeVendor(options: ViduRuntimeVendorOptions): Medi
       if (!response.ok) {
         throw new Error("Vidu could not cancel the task.");
       }
+      // Vidu documents HTTP 200 for both an empty success object and a
+      // structured cancellation error. Transport success alone is not stop proof.
+      const json: unknown = await response.json().catch(() => null);
+      if (!json || typeof json !== "object" || Array.isArray(json)) {
+        return { state: "unknown" };
+      }
+      if (Object.keys(json).length !== 0) {
+        return { state: "code" in json || "reason" in json ? "failed" : "unknown" };
+      }
       exactJobs.delete(taskId);
+      return { state: "confirmed" };
     },
   };
 }

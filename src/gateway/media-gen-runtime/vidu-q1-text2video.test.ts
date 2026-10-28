@@ -175,7 +175,7 @@ function vendorInput(
 }
 
 describe("Vidu Q1 exact Text-to-Video Adapter V2", () => {
-  it("compiles and submits only the pinned official Q1 fields", async () => {
+  it("compiles and submits pinned Q1 fields with native audio disabled", async () => {
     const compiled = compileViduQ1T2vRequest(vendorInput());
     expect(compiled).toMatchObject({
       ok: true,
@@ -222,6 +222,8 @@ describe("Vidu Q1 exact Text-to-Video Adapter V2", () => {
     });
     expect(calls[0]?.url).toBe("https://api.vidu.com/ent/v2/text2video");
     expect(calls[0]?.init?.headers).toMatchObject({ authorization: "Token vidu-key" });
+    // Q1 defaults native audio on; disabling BGM alone does not honor silent output.
+    expect(requestJsonBody(calls[0]?.init)).toMatchObject({ audio: false, bgm: false });
     expect(requestJsonBody(calls[0]?.init)).toEqual(compiled.ok ? compiled.body : undefined);
   });
 

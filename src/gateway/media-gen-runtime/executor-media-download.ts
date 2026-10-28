@@ -25,8 +25,12 @@ export function mediaMimeAllowed(value: string): boolean {
 
 function isLoopbackHost(hostname: string): boolean {
   const host = hostname.replace(/^\[/u, "").replace(/\]$/u, "").toLowerCase();
-  if (host === "localhost" || host === "::1") return true;
-  if (isIP(host) !== 4) return false;
+  if (host === "localhost" || host === "::1") {
+    return true;
+  }
+  if (isIP(host) !== 4) {
+    return false;
+  }
   return host.split(".").map(Number)[0] === 127;
 }
 
@@ -110,28 +114,53 @@ export async function downloadMedia(
   if (inline) {
     return inline;
   }
-  const url = new URL(output.mediaRef);
-  const privateLoopbackHttp =
-    output.allowInsecureLoopback === true &&
-    url.protocol === "http:" &&
-    isLoopbackHost(url.hostname);
-  if (
-    url.protocol !== "https:" &&
-    !(options.allowInsecure && url.protocol === "http:") &&
-    !privateLoopbackHttp
-  ) {
-    throw new Error("media output URL must be HTTPS");
-  }
-  if (!hostAllowed(url, options.allowedHosts)) {
-    throw new Error(`media output host is not allowlisted: ${url.hostname}`);
-  }
+  let url = new URL(output.mediaRef);
+  let contentHeaders = output.contentHeaders;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
   try {
-    const res = await options.fetchImpl(url.toString(), {
-      signal: controller.signal,
-      ...(output.contentHeaders ? { headers: output.contentHeaders } : {}),
-    });
+    let res: Response;
+    for (let redirects = 0; ; redirects += 1) {
+      const privateLoopbackHttp =
+        output.allowInsecureLoopback === true &&
+        url.protocol === "http:" &&
+        isLoopbackHost(url.hostname);
+      if (
+        url.protocol !== "https:" &&
+        !(options.allowInsecure && url.protocol === "http:") &&
+        !privateLoopbackHttp
+      ) {
+        throw new Error("media output URL must be HTTPS");
+      }
+      if (!hostAllowed(url, options.allowedHosts)) {
+        throw new Error(`media output host is not allowlisted: ${url.hostname}`);
+      }
+      res = await options.fetchImpl(url.toString(), {
+        signal: controller.signal,
+        redirect: "manual",
+        ...(contentHeaders ? { headers: contentHeaders } : {}),
+      });
+      if (![301, 302, 303, 307, 308].includes(res.status)) {
+        break;
+      }
+      // Redirect bodies can be unending. Release each transfer before the next
+      // hop, and apply the same host/protocol/deadline policy to every target.
+      await res.body?.cancel().catch(() => undefined);
+      if (redirects >= 5) {
+        throw new Error("media output redirect limit exceeded");
+      }
+      const location = res.headers.get("location");
+      if (!location) {
+        throw new Error("media output redirect has no location");
+      }
+      const next = new URL(location, url);
+      // Runtime-private serving headers belong to one origin. Once stripped,
+      // they must not reappear if a later redirect returns to the original host.
+      if (next.origin !== url.origin) {
+        contentHeaders = undefined;
+      }
+      url = next;
+    }
     if (!res.ok) {
       throw new Error(`media output fetch failed with status ${res.status}`);
     }
