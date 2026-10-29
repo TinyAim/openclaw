@@ -22,6 +22,45 @@ type ResolvedImageGenerationOverrides = {
   normalization?: ImageGenerationNormalization;
 };
 
+/** This rejection is known to precede all Provider effects. */
+export class ImageGenerationExactOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ImageGenerationExactOutputError";
+  }
+}
+
+/** Frozen output contracts cannot use the conversational nearest-size policy. */
+export function assertExactImageGenerationOverrides(
+  requested: {
+    size?: string;
+    aspectRatio?: string;
+    resolution?: ImageGenerationResolution;
+    quality?: ImageGenerationQuality;
+    outputFormat?: ImageGenerationOutputFormat;
+    background?: ImageGenerationBackground;
+  },
+  resolved: ResolvedImageGenerationOverrides,
+): void {
+  const keys = [
+    "size",
+    "aspectRatio",
+    "resolution",
+    "quality",
+    "outputFormat",
+    "background",
+  ] as const;
+  if (
+    resolved.ignoredOverrides.length > 0 ||
+    resolved.normalization !== undefined ||
+    keys.some((key) => requested[key] !== undefined && requested[key] !== resolved[key])
+  ) {
+    throw new ImageGenerationExactOutputError(
+      "Frozen image output is not supported exactly; no Provider request was sent.",
+    );
+  }
+}
+
 /** Returns supported image overrides plus ignored/normalized override metadata for replies. */
 export function resolveImageGenerationOverrides(params: {
   provider: ImageGenerationProvider;

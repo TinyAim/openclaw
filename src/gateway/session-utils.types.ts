@@ -98,6 +98,8 @@ export type GatewaySessionRow = Omit<SessionRow, "archivedBy" | "updatedAt" | "w
   lastTo?: string;
   lastAccountId?: string;
   lastThreadId?: string | number;
+  compactionCheckpointCount?: number;
+  latestCompactionCheckpoint?: SessionRow["latestCompactionCheckpoint"];
   pluginExtensions?: PluginSessionExtensionProjection[];
 };
 

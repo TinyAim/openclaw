@@ -295,7 +295,9 @@ export const agentFileHandlers: Pick<
             path: filePath,
             missing: file === undefined,
             // Missing entries retain the same absence classification as the file list.
-            ...(file ?? { expectedAbsent: isExpectedAbsentBootstrapFile(name) }),
+            ...(file
+              ? { ...file, contentHash: file.hash }
+              : { expectedAbsent: isExpectedAbsentBootstrapFile(name) }),
           },
         },
         undefined,
@@ -370,6 +372,7 @@ export const agentFileHandlers: Pick<
     const access = getAgentWorkspaceAccess(workspaceDir);
     const filePath = path.join(workspaceDir, name);
     const content = params.content;
+    const expectedMissing = params.expectedMissing === true || params.expectedHash === null;
     let workspaceRoot: WorkspaceRoot | null = null;
     let conflict: { currentHash: string | undefined } | undefined;
     if (Buffer.byteLength(params.content) > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES) {
@@ -382,7 +385,7 @@ export const agentFileHandlers: Pick<
         }
       };
       const createFileExclusive = access.bridge.createFileExclusive;
-      if (params.expectedMissing && !createFileExclusive) {
+      if (expectedMissing && !createFileExclusive) {
         respond(
           false,
           undefined,
@@ -395,14 +398,25 @@ export const agentFileHandlers: Pick<
       }
       conflict = await enqueueWorkspaceFileUpdate(async () => {
         assertCurrent();
-        if (params.expectedMissing && createFileExclusive) {
+        if (expectedMissing && createFileExclusive) {
           const result = await createFileExclusive({
             filePath: name,
             data: content,
             mkdir: true,
           });
           assertCurrent();
-          return result === "exists" ? { currentHash: undefined } : undefined;
+          if (result === "exists") {
+            if (params.expectedHash !== null) return { currentHash: undefined };
+            const data = await access.bridge.readFile({
+              filePath: name,
+              maxBytes: MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES,
+            });
+            assertCurrent();
+            if (data.length > MAX_WORKSPACE_BOOTSTRAP_FILE_BYTES)
+              throw new Error("Workspace document exceeds its read bound");
+            return { currentHash: sha256Hex(data) };
+          }
+          return undefined;
         }
         const expectedHash = params.expectedHash?.toLowerCase();
         if (expectedHash) {
@@ -437,12 +451,17 @@ export const agentFileHandlers: Pick<
         const writeRoot = workspaceRoot;
         const expectedHash = params.expectedHash?.toLowerCase();
         conflict = await enqueueWorkspaceFileUpdate(async () => {
-          if (params.expectedMissing) {
+          if (expectedMissing) {
             try {
               await writeRoot.create(name, content, { encoding: "utf8", atomic: true });
             } catch (err) {
               if (err instanceof FsSafeError && err.code === "already-exists") {
-                return { currentHash: undefined };
+                return {
+                  currentHash:
+                    params.expectedHash === null
+                      ? await readWorkspaceFileHash(writeRoot, name)
+                      : undefined,
+                };
               }
               throw err;
             }
@@ -466,6 +485,24 @@ export const agentFileHandlers: Pick<
       }
     }
     if (conflict) {
+      if (params.expectedHash !== undefined) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `conditional write conflict for workspace file "${name}"`,
+            {
+              details: {
+                type: "workspace_file_conditional_write_conflict",
+                expectedHash: params.expectedHash,
+                actualHash: conflict.currentHash ?? null,
+              },
+            },
+          ),
+        );
+        return;
+      }
       respondWorkspaceFileConflict(respond, name, conflict.currentHash);
       return;
     }
@@ -485,6 +522,7 @@ export const agentFileHandlers: Pick<
           size: meta?.size,
           ...(!access ? { updatedAtMs: meta?.updatedAtMs } : {}),
           hash: sha256Hex(content),
+          contentHash: sha256Hex(content),
           content,
         },
       },

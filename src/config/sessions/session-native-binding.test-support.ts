@@ -15,10 +15,15 @@ import {
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  getOpenClawAgentDatabaseIfOpen,
+  openOpenClawAgentDatabase,
+  resolveIncognitoOpenClawAgentSqlitePath,
+} from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createSessionEntryWithTranscript } from "./session-accessor.entry-mutation.js";
 import { cleanupSessionLifecycleArtifactsCore } from "./session-accessor.sqlite-artifact-cleanup.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
@@ -59,11 +64,12 @@ export async function withNativeBindingFixture<T>(
   kind: "codex" | "agentsapi",
   run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<T>,
   mode: "worker" | "native" = "worker",
+  incognito = false,
 ): Promise<T> {
   return withOpenClawTestState(
     { scenario: "minimal", label: "native-binding-settlement" },
     async (state) => {
-      const fixture = await createFixture(kind, mode, state.env);
+      const fixture = await createFixture(kind, mode, state.env, incognito);
       try {
         return await run(fixture);
       } finally {
@@ -78,13 +84,38 @@ async function createFixture(
   kind: "codex" | "agentsapi",
   mode: "worker" | "native",
   env: NodeJS.ProcessEnv,
+  incognito: boolean,
 ) {
-  const database = openOpenClawAgentDatabase({ agentId: "main", env });
+  const sessionKey = incognito
+    ? "agent:main:dashboard:incognito-native-binding"
+    : "agent:main:native-binding";
+  const sessionId = "native-binding-session";
+  const incognitoPath = resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main", env });
+  if (incognito) {
+    const created = await createSessionEntryWithTranscript(
+      { agentId: "main", sessionKey, env },
+      () => ({
+        ok: true,
+        entry: {
+          sessionId,
+          lifecycleRevision: "native-binding-generation",
+          updatedAt: 1,
+          agentHarnessId: kind,
+          incognito: true,
+        },
+      }),
+    );
+    if (!created.ok) throw new Error("native incognito fixture creation failed");
+  }
+  const database = incognito
+    ? getOpenClawAgentDatabaseIfOpen({ agentId: "main", path: incognitoPath, env })
+    : openOpenClawAgentDatabase({ agentId: "main", env });
+  if (!database) throw new Error("native incognito owner did not open");
   const shared = openOpenClawStateDatabase({ env });
   const scope = {
     agentId: "main",
-    sessionId: "native-binding-session",
-    sessionKey: "agent:main:native-binding",
+    sessionId,
+    sessionKey,
     storePath: database.path,
     env,
   };
@@ -93,6 +124,7 @@ async function createFixture(
     lifecycleRevision: "native-binding-generation",
     updatedAt: 1,
     agentHarnessId: kind,
+    ...(incognito ? { incognito: true } : {}),
   });
   const events = [
     {

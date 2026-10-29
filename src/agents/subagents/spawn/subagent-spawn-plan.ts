@@ -49,6 +49,7 @@ export async function resolveSubagentModelAndThinkingPlan(params: {
   requesterAgentConfig?: ResolvedAgentConfig;
   targetAgentConfig?: ResolvedAgentConfig;
   modelOverride?: string;
+  requesterModelRef?: string;
   thinkingOverrideRaw?: string;
   callerThinkingRaw?: string;
   inheritedModel?: ModelRef;
@@ -56,12 +57,27 @@ export async function resolveSubagentModelAndThinkingPlan(params: {
   workspaceDir?: string;
   requiresTools?: boolean;
 }) {
+  const requestedInheritedRef = params.modelOverride?.trim()
+    ? undefined
+    : params.requesterModelRef?.trim();
+  const parsedInherited = requestedInheritedRef ? splitModelRef(requestedInheritedRef) : undefined;
+  if (parsedInherited && (!parsedInherited.provider || !parsedInherited.model)) {
+    return {
+      status: "error" as const,
+      resolvedModel: requestedInheritedRef!,
+      error: "sessions_spawn could not verify the inherited provider/model.",
+    };
+  }
+  const selectedInherited =
+    parsedInherited?.provider && parsedInherited.model
+      ? { provider: parsedInherited.provider, model: parsedInherited.model }
+      : params.inheritedModel;
   const { model: rawResolvedModel, resolvedModel: inheritedModel } =
     resolveSubagentSpawnModelSelection({
       cfg: params.cfg,
       agentId: params.targetAgentId,
-      modelOverride: params.modelOverride,
-      inheritedModel: params.inheritedModel,
+      modelOverride: params.modelOverride?.trim() || requestedInheritedRef,
+      inheritedModel: selectedInherited,
     });
   const { model: requestedModel, profile: authProfileId } =
     splitTrailingAuthProfile(rawResolvedModel);
@@ -96,15 +112,17 @@ export async function resolveSubagentModelAndThinkingPlan(params: {
       ...(inheritedModel ? { resolvedRef: inheritedModel } : {}),
       ...(modelOverrideSource === "auto"
         ? {
-            fallbacks: modelFallbackOverrideFromAvailability(
-              resolveModelFallbackAvailability({
-                cfg: params.cfg,
-                agentId: params.targetAgentId,
-                hasSessionModelOverride: true,
-                modelOverrideSource: "auto",
-                subagentSpawnLineage: true,
-              }),
-            ),
+            fallbacks: requestedInheritedRef
+              ? []
+              : modelFallbackOverrideFromAvailability(
+                  resolveModelFallbackAvailability({
+                    cfg: params.cfg,
+                    agentId: params.targetAgentId,
+                    hasSessionModelOverride: true,
+                    modelOverrideSource: "auto",
+                    subagentSpawnLineage: true,
+                  }),
+                ),
           }
         : {}),
     });
@@ -133,7 +151,7 @@ export async function resolveSubagentModelAndThinkingPlan(params: {
   const hasSelectedAutoModel =
     modelOverrideSource === "auto" &&
     Boolean(
-      params.inheritedModel ??
+      selectedInherited ??
       resolveSubagentConfiguredModelSelection({
         cfg: params.cfg,
         agentId: params.targetAgentId,

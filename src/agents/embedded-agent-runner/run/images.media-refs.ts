@@ -35,7 +35,12 @@ export function isOpenClawCliImageCachePath(filePath: string): boolean {
 }
 
 export function resolveMediaFactLocalRef(fact: MediaFact): MediaFileRef | undefined {
-  const mediaUri = [fact.url, fact.path].find((value) => value?.startsWith("media://inbound/"));
+  // An admitted sandbox staging path owns hydration; keep the canonical URI
+  // as an alias for history without reading host media across the boundary.
+  const mediaUri =
+    fact.staged === true && fact.path
+      ? undefined
+      : [fact.url, fact.path].find((value) => value?.startsWith("media://inbound/"));
   const identity = mediaUri ?? fact.path ?? fact.url;
   if (!identity) {
     return undefined;

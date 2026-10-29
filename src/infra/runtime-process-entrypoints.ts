@@ -120,4 +120,7 @@ export const runtimeProcessEntrypoints = {
   // Not a launcher: the daemon runtime probe requires this module inside candidate Bun
   // executables so they select the same SQLite library the Gateway will run with.
   bunSqliteLibrary: runtimeProcessEntrypoint("infra/bun-sqlite-library"),
+  spatialReferenceGuardian: runtimeProcessEntrypoint(
+    "gateway/media-studio-spatial-reference-runtime/spatial-guardian.worker",
+  ),
 } as const;

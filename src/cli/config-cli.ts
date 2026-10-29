@@ -125,7 +125,12 @@ export async function runConfigPatch(opts: {
   });
 }
 
-export async function runConfigGet(opts: { path: string; json?: boolean; runtime?: RuntimeEnv }) {
+export async function runConfigGet(opts: {
+  path: string;
+  json?: boolean;
+  authored?: boolean;
+  runtime?: RuntimeEnv;
+}) {
   const runtime = opts.runtime ?? defaultRuntime;
   try {
     const parsedPath = parseConfigSetPath(opts.path);
@@ -143,7 +148,9 @@ export async function runConfigGet(opts: { path: string; json?: boolean; runtime
       pluginMetadataSnapshot.manifestRegistry,
       snapshot.sourceConfig,
     );
-    const res = getAtPath(redactConfigObject(snapshot.config, uiHints), parsedPath);
+    // Authored reads retain omitted fields for conditional writes.
+    const visibleConfig = opts.authored === true ? snapshot.resolved : snapshot.config;
+    const res = getAtPath(redactConfigObject(visibleConfig, uiHints), parsedPath);
     if (!res.found || res.value === undefined) {
       const autoManaged = AUTO_MANAGED_CONFIG_META_PATHS.some(
         (managedPath) =>
@@ -347,8 +354,9 @@ export function registerConfigCli(program: Command) {
     .description("Get a config value by dot path")
     .argument("<path>", "Config path (dot or bracket notation)")
     .option("--json", "Output JSON", false)
+    .option("--authored", "Read authored values without runtime defaults (still redacted)", false)
     .action(async (path: string, opts) => {
-      await runConfigGet({ path, json: Boolean(opts.json) });
+      await runConfigGet({ path, json: Boolean(opts.json), authored: Boolean(opts.authored) });
     });
 
   setCommandJsonMode(cmd.command("set"), "parse-only", ({ argv }) => isConfigSetJsonParseOnly(argv))

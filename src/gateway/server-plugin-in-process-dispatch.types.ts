@@ -24,6 +24,8 @@ export type DispatchGatewayMethodInProcessOptions = {
   privateCompletion?: true;
   settleWakeReplay?: RequesterSettleWakeReplay;
   allowSyntheticModelOverride?: boolean;
+  /** Host-only restriction for the already selected run route. */
+  disableModelFallbacks?: true;
   agentToolCaller?: TrustedAgentToolCaller;
   agentRunTracking?: GatewayAgentRunTaskOwner;
   cancelOnDeadline?: boolean;

@@ -384,7 +384,13 @@ describe("resolveEmbeddedAgentStream", () => {
       expect(resolveSessionAuth).toHaveBeenCalledTimes(2);
       expect(fetchSpy).not.toHaveBeenCalled();
       expect(boundaryStreamFactory.mock.calls.slice(initialBoundaryCalls)).toEqual([]);
-      expect(recordEvent).toHaveBeenCalledTimes(1);
+      expect(
+        recordEvent.mock.calls.filter(([type]) => type === "provider.prompt.observed"),
+      ).toHaveLength(1);
+      expect(
+        recordEvent.mock.calls.filter(([type]) => type === "provider.prompt.system_observed"),
+      ).toHaveLength(2);
+      expect(recordEvent).toHaveBeenCalledTimes(3);
     } finally {
       vi.unstubAllGlobals();
     }

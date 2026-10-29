@@ -27,6 +27,7 @@ import {
 import { resolveChatAttachmentMaxBytes } from "../chat-attachment-policy.js";
 import {
   MediaOffloadError,
+  UnsupportedAttachmentError,
   logAttachmentFailure,
   parseMessageWithAttachments,
   type ChatAttachment,
@@ -249,6 +250,16 @@ export async function prepareAgentContentPhase(params: {
                 ? ErrorCodes.UNAVAILABLE
                 : ErrorCodes.INVALID_REQUEST,
               String(err),
+              err instanceof UnsupportedAttachmentError && err.reason === "text-only-image"
+                ? {
+                    details: {
+                      reasonCode: "attachment_image_input_unsupported",
+                      phase: "attachment_admission",
+                      providerEffects: "none",
+                      clientRunId: params.request.idempotencyKey,
+                    },
+                  }
+                : undefined,
             ),
       );
       return undefined;

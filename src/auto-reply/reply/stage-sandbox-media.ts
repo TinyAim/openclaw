@@ -10,6 +10,7 @@ import { assertSandboxPath } from "../../agents/sandbox-paths.js";
 import { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "../../agents/sandbox.js";
 import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import { slugifySessionKey } from "../../agents/sandbox/shared.js";
+import type { SandboxContext } from "../../agents/sandbox/types.js";
 import { getAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
@@ -57,6 +58,8 @@ export async function stageSandboxMedia(params: {
   skillsSnapshot?: SkillSnapshot;
   remoteMediaMode?: "sandbox-or-cache" | "cache";
   abortSignal?: AbortSignal;
+  /** Reuse the admitted runner owner rather than resolving a replacement sandbox. */
+  preparedSandbox?: SandboxContext;
 }): Promise<StageSandboxMediaResult> {
   const { ctx, sessionCtx, cfg, sessionKey, workspaceDir, abortSignal } = params;
   abortSignal?.throwIfAborted();
@@ -71,10 +74,20 @@ export async function stageSandboxMedia(params: {
     return EMPTY_STAGE_RESULT;
   }
 
+  const prepared = params.preparedSandbox;
+  if (
+    prepared &&
+    (!prepared.enabled ||
+      prepared.sessionKey !== sessionKey ||
+      path.resolve(prepared.agentWorkspaceDir) !== path.resolve(workspaceDir) ||
+      ctx.MediaRemoteHost)
+  ) {
+    throw new Error(
+      "Prepared inbound media sandbox does not match the admitted session workspace.",
+    );
+  }
   const remoteWorkspace = getAgentWorkspaceAccess(workspaceDir, "prepareTurnAttachments");
   if (remoteWorkspace?.prepareTurnAttachments && !ctx.MediaRemoteHost) {
-    // Keep managed originals on Gateway; the admitted turn transfers them to the Harness.
-    // This is an intentional handoff, not a failure — keep it at debug level.
     logVerbose("Inbound media staging skipped: remote workspace owns attachment preparation");
     return EMPTY_STAGE_RESULT;
   }
@@ -89,16 +102,21 @@ export async function stageSandboxMedia(params: {
     skillsSnapshot: params.skillsSnapshot,
   };
   const sshSandbox =
-    !forceRemoteCache &&
-    resolveSandboxConfigForAgent(
-      cfg,
-      resolveSessionAgentId({ sessionKey, config: cfg, agentId: params.agentId }),
-    ).backend === "ssh"
-      ? await resolveSandboxContext(sandboxParams)
-      : null;
-  const sandbox = forceRemoteCache
-    ? null
-    : (sshSandbox ?? (await ensureSandboxWorkspaceForSession(sandboxParams)));
+    prepared?.backendId === "ssh"
+      ? prepared
+      : !prepared &&
+          !forceRemoteCache &&
+          resolveSandboxConfigForAgent(
+            cfg,
+            resolveSessionAgentId({ sessionKey, config: cfg, agentId: params.agentId }),
+          ).backend === "ssh"
+        ? await resolveSandboxContext(sandboxParams)
+        : null;
+  const sandbox =
+    prepared ??
+    (forceRemoteCache
+      ? null
+      : (sshSandbox ?? (await ensureSandboxWorkspaceForSession(sandboxParams))));
   const remoteBridge = sshSandbox?.fsBridge;
   if (sshSandbox && !remoteBridge) {
     throw new Error("SSH sandbox has no filesystem bridge for inbound media staging");
@@ -250,10 +268,15 @@ export async function stageSandboxMedia(params: {
     });
     // Keep the managed original fetchable after history redacts the runner's
     // private staged path. A remote host's path is not a local store reference.
+    const originalInbound = !ctx.MediaRemoteHost
+      ? await resolveInboundMediaReference(entry.path).catch(() => null)
+      : null;
     const inboundUri =
       downloadedMediaUri ??
       (!ctx.MediaRemoteHost && (!originalUrl || rewritesUrl)
-        ? buildInboundMediaUriFromPath(source)
+        ? originalInbound
+          ? `media://inbound/${encodeURIComponent(originalInbound.id)}`
+          : buildInboundMediaUriFromPath(source)
         : undefined);
     if (inboundUri || rewritesUrl) {
       stagedUrls.set(entry.index, inboundUri ?? stagedPath);

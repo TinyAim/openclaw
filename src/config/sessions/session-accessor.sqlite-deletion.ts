@@ -106,6 +106,32 @@ export function preparedSessionDeletionRequiresNativeTransaction(): boolean {
   );
 }
 
+/** Inspect prepared owner-minted participants without opening a database. */
+export function hasPreparedNativeSessionDeletionWorkerParticipant(): boolean {
+  return [...(deletions.getStore()?.values() ?? [])].some(({ mutations }) =>
+    mutations.some((mutation) => Boolean(getNativeSessionDeletionParticipant(mutation))),
+  );
+}
+
+/** Never send a minted worker participant through an opaque native transaction. */
+export function assertPreparedSessionDeletionNotMixed(): void {
+  if (
+    preparedSessionDeletionRequiresNativeTransaction() &&
+    hasPreparedNativeSessionDeletionWorkerParticipant()
+  ) {
+    throw new Error(
+      "Mixed native worker participants and opaque session deletion hooks are unsupported",
+    );
+  }
+}
+
+/** Existing-only synchronous incognito has no safe worker bridge for minted participants. */
+export function assertNoPreparedNativeSessionDeletionWorkerParticipant(): void {
+  if (hasPreparedNativeSessionDeletionWorkerParticipant()) {
+    throw new Error("Native incognito checkpoint cannot synchronously commit a worker participant");
+  }
+}
+
 /** Opaque SDK mutations keep their native transaction; only owner-minted participants qualify. */
 export function captureNativeSessionWorkerDeletion(entries: readonly DeletionEntry[]) {
   if (preparedSessionDeletionRequiresNativeTransaction()) {

@@ -288,6 +288,7 @@ export async function spawnSubagentDirect(
       spawnMode,
       task,
       requesterSessionKey: ctx.agentSessionKey,
+      requesterUserLanguageReference: ctx.requesterUserLanguageReference,
       requesterOrigin: childSessionOrigin,
       childSessionKey,
       label: label || undefined,
@@ -302,6 +303,10 @@ export async function spawnSubagentDirect(
       maxSpawnDepth,
     });
     let childSystemPrompt = envelope.systemPrompt;
+    const operatorExtraSystemPrompt = params.operatorExtraSystemPrompt?.trim();
+    if (operatorExtraSystemPrompt) {
+      childSystemPrompt = `${childSystemPrompt}\n\n${operatorExtraSystemPrompt}`;
+    }
     if (params.outputSchema) {
       childSystemPrompt = `${childSystemPrompt}\n\nCall structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.`;
     }

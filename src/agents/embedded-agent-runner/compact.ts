@@ -41,6 +41,7 @@ import type {
 } from "./compact.types.js";
 import { resolveEmbeddedCompactionTarget } from "./compaction-runtime-context.js";
 import {
+  assertSummaryOnlyCompactionSupported,
   projectCodexHostTranscriptBytePreflightConfig,
   resolveCompactionRuntimeSelection,
 } from "./compaction-runtime-preparation.js";
@@ -249,6 +250,11 @@ export async function compactEmbeddedAgentSessionDirect(
     boundHarnessRuntime: requestedParams.agentHarnessId,
     preparedRuntimePlan: requestedParams.runtimePlan,
   });
+  assertSummaryOnlyCompactionSupported({
+    ...requestedParams,
+    harnessRuntime: runtimeSelection.selectedHarnessRuntime,
+    provider: runtimeSelection.provider,
+  });
   // Native control operations reuse the backend's existing authenticated session.
   // Run them before generic model preparation so subscription-only CLI sessions do
   // not incorrectly require an OpenClaw model API credential.
@@ -405,6 +411,7 @@ export async function compactEmbeddedAgentSessionDirect(
             }
           : {}),
       };
+      assertSummaryOnlyCompactionSupported({ ...params, harnessRuntime: params.agentHarnessId });
       const compactPrepared = async () => {
         if (
           transcriptBytePreflightAuthority ||

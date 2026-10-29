@@ -341,46 +341,53 @@ describe("agent file requests", () => {
     expect(state.agentFileSaving).toBe(false);
   });
 
-  it("sends the loaded hash on save and keeps that hash after a refused write", async () => {
-    const loadedHash = "a".repeat(64);
-    const currentHash = "b".repeat(64);
-    const conflict = () =>
-      new GatewayRequestError({
-        code: "INVALID_REQUEST",
-        message: 'agent file "AGENTS.md" changed since it was read',
-        details: { type: "agent_file_conflict", name: "AGENTS.md", currentHash },
-      });
-    const request = vi
-      .fn()
-      .mockResolvedValueOnce(fileResult("original", loadedHash))
-      .mockRejectedValueOnce(conflict())
-      .mockRejectedValueOnce(conflict());
-    const state = createState({ request } as unknown as GatewayBrowserClient);
+  it.each(["agent_file_conflict", "workspace_file_conditional_write_conflict"])(
+    "sends the loaded hash and retains it after %s",
+    async (conflictType) => {
+      const loadedHash = "a".repeat(64);
+      const currentHash = "b".repeat(64);
+      const conflict = () =>
+        new GatewayRequestError({
+          code: "INVALID_REQUEST",
+          message: 'agent file "AGENTS.md" changed since it was read',
+          details: { type: conflictType, name: "AGENTS.md", currentHash },
+        });
+      const request = vi
+        .fn()
+        .mockResolvedValueOnce(fileResult("original", loadedHash))
+        .mockRejectedValueOnce(conflict())
+        .mockRejectedValueOnce(conflict());
+      const state = createState({ request } as unknown as GatewayBrowserClient);
 
-    expect(await loadAgentFileContent(state, "main", "AGENTS.md")).toBe(true);
-    setAgentFileValues(state, "draft", { "AGENTS.md": "original\noperator note" });
-    expect(await saveAgentFile(state, "main", "AGENTS.md", "original\noperator note")).toBe(false);
-    expect(await saveAgentFile(state, "main", "AGENTS.md", "original\noperator note")).toBe(false);
+      expect(await loadAgentFileContent(state, "main", "AGENTS.md")).toBe(true);
+      setAgentFileValues(state, "draft", { "AGENTS.md": "original\noperator note" });
+      expect(await saveAgentFile(state, "main", "AGENTS.md", "original\noperator note")).toBe(
+        false,
+      );
+      expect(await saveAgentFile(state, "main", "AGENTS.md", "original\noperator note")).toBe(
+        false,
+      );
 
-    const setCall = [
-      "agents.files.set",
-      {
-        agentId: "main",
-        name: "AGENTS.md",
-        content: "original\noperator note",
-        expectedHash: loadedHash,
-      },
-    ];
-    expect(request.mock.calls[1]).toEqual(setCall);
-    expect(request.mock.calls[2]).toEqual(setCall);
-    expect(state.agentFileEditors["AGENTS.md"]?.content).toBe("original");
-    expect(state.agentFileEditors["AGENTS.md"]?.version).toEqual({ hash: loadedHash });
-    expect(state.agentFileEditors["AGENTS.md"]?.draft).toBe("original\noperator note");
-    expect(state.agentFileConflict).toBe("AGENTS.md");
-    expect(state.agentFilesError).toContain("changed since it was read");
-    expect(state.agentFileSaving).toBe(false);
-    expect(state.agentFilesLoading).toBe(false);
-  });
+      const setCall = [
+        "agents.files.set",
+        {
+          agentId: "main",
+          name: "AGENTS.md",
+          content: "original\noperator note",
+          expectedHash: loadedHash,
+        },
+      ];
+      expect(request.mock.calls[1]).toEqual(setCall);
+      expect(request.mock.calls[2]).toEqual(setCall);
+      expect(state.agentFileEditors["AGENTS.md"]?.content).toBe("original");
+      expect(state.agentFileEditors["AGENTS.md"]?.version).toEqual({ hash: loadedHash });
+      expect(state.agentFileEditors["AGENTS.md"]?.draft).toBe("original\noperator note");
+      expect(state.agentFileConflict).toBe("AGENTS.md");
+      expect(state.agentFilesError).toContain("changed since it was read");
+      expect(state.agentFileSaving).toBe(false);
+      expect(state.agentFilesLoading).toBe(false);
+    },
+  );
 
   it("keeps a dirty draft's precondition when an ordinary refresh rebases the base", async () => {
     const loadedHash = "a".repeat(64);

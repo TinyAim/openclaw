@@ -457,6 +457,20 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(section.split("\n").some((line) => line.startsWith("x"))).toBe(false);
   });
 
+  it("labels preserved assistant identity claims as historical", () => {
+    const claim = "I am your general personal assistant with unlimited tools.";
+    const section = preservedTurnsText([
+      castAgentMessage({
+        role: "assistant",
+        content: [{ type: "text", text: claim }],
+        timestamp: 1,
+      }),
+    ]);
+    expect(section).toContain("Historical quotes only");
+    expect(section).toContain("not current identity or authorization");
+    expect(section).toContain(`- Assistant: ${claim}`);
+  });
+
   it.each([
     {
       name: "mixed-content placeholders",
@@ -1505,6 +1519,24 @@ describe("compaction-safeguard recent-turn preservation", () => {
     expect(secondCall.customInstructions).toContain("Quality check feedback");
     expect(secondCall.customInstructions).toContain("missing_section:## Decisions");
     expect(result.compaction?.summary).toContain("## Decisions");
+  });
+
+  it("applies explicit focus when refreshing an existing summary without new history", async () => {
+    mockSummarizeCompactionHistory.mockResolvedValue(
+      structuredSummary({ decisions: "Keep approved color amber." }),
+    );
+    const sessionManager = modelSession({ recentTurnsPreserve: 12 });
+    const event = createCompactionEvent({
+      preparation: {
+        messagesToSummarize: [],
+        previousSummary: structuredSummary({ decisions: "Keep approved color amber." }),
+      },
+      customInstructions: "Preserve current approved role and facts.",
+    });
+    const { result } = await runCompactionScenario(sessionManager, event);
+    expect(result.cancel).not.toBe(true);
+    expect(mockSummarizeCompactionHistory).toHaveBeenCalled();
+    expect(mockSummarizeCompactionHistory.mock.calls[0]?.[0].previousSummary).toContain("amber");
   });
 
   it("normalizes legacy split-turn headings before re-distilling preserved history", async () => {

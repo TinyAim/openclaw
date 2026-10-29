@@ -188,6 +188,7 @@ export function shouldPreemptivelyCompactBeforePrompt(params: {
   prompt: string;
   contextTokenBudget: number;
   reserveTokens: number;
+  honorExplicitReserveTokens?: boolean;
   toolResultMaxChars?: number;
   toolSchemaTokens?: number;
   llmBoundaryTokenPressure?: LlmBoundaryTokenPressure;
@@ -254,14 +255,21 @@ function resolveCompactionPressureDecision(
   pressure: Pick<TranscriptBoundaryTokenPressure, "messages" | "estimatedPromptTokens"> & {
     source: string;
   },
-  params: { contextTokenBudget: number; reserveTokens: number; toolResultMaxChars?: number },
+  params: {
+    contextTokenBudget: number;
+    reserveTokens: number;
+    honorExplicitReserveTokens?: boolean;
+    toolResultMaxChars?: number;
+  },
 ): CompactionPressureDecision {
   const { estimatedPromptTokens } = pressure;
   const contextTokenBudget = Math.max(1, Math.floor(params.contextTokenBudget));
-  const effectiveReserveTokens = resolveEffectiveCompactionReserveTokens({
-    contextTokenBudget,
-    reserveTokens: params.reserveTokens,
-  });
+  const effectiveReserveTokens = params.honorExplicitReserveTokens
+    ? Math.min(Math.max(0, Math.floor(params.reserveTokens)), Math.max(0, contextTokenBudget - 1))
+    : resolveEffectiveCompactionReserveTokens({
+        contextTokenBudget,
+        reserveTokens: params.reserveTokens,
+      });
   const promptBudgetBeforeReserve = Math.max(1, contextTokenBudget - effectiveReserveTokens);
   const overflowTokens = Math.max(0, estimatedPromptTokens - promptBudgetBeforeReserve);
   const toolResultPotential = estimateToolResultReductionPotential({

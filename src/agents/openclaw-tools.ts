@@ -598,6 +598,10 @@ export function createOpenClawTools(
             (options?.runSessionKey ?? options?.agentSessionKey) ? options?.sessionId : undefined,
           agentSessionKey: options?.runSessionKey ?? options?.agentSessionKey,
           requesterTurnRunId: options?.runId,
+          requesterModelRef:
+            options?.modelProvider?.trim() && options?.modelId?.trim()
+              ? `${options.modelProvider.trim()}/${options.modelId.trim()}`
+              : undefined,
           completionOwnerKey: options?.runSessionKey,
           currentMessagingTarget: options?.currentMessagingTarget ?? options?.currentChannelId,
           currentChannelId: options?.nativeChannelId ?? options?.currentChannelId,

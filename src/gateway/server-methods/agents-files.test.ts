@@ -96,6 +96,38 @@ for (const storage of ["local", "remote"] as const) {
         return fs.readFileSync(path.join(storageDir, "MEMORY.md"), "utf8");
       }
 
+      it("preserves Wisclaw null preconditions and contentHash without weakening native create", async () => {
+        const created = await invokeAgentFilesHandler("agents.files.set", {
+          agentId: "main",
+          name: "MEMORY.md",
+          content: "first",
+          expectedHash: null,
+        });
+        expect(created.ok).toBe(true);
+        expect((created.payload as { file: { contentHash: string } }).file.contentHash).toBe(
+          hashContent("first"),
+        );
+        const read = await invokeAgentFilesHandler("agents.files.get", {
+          agentId: "main",
+          name: "MEMORY.md",
+        });
+        expect((read.payload as { file: { contentHash: string } }).file.contentHash).toBe(
+          hashContent("first"),
+        );
+        const conflict = await invokeAgentFilesHandler("agents.files.set", {
+          agentId: "main",
+          name: "MEMORY.md",
+          content: "second",
+          expectedHash: null,
+        });
+        expect(conflict.error?.details).toEqual({
+          type: "workspace_file_conditional_write_conflict",
+          expectedHash: null,
+          actualHash: hashContent("first"),
+        });
+        expect(readMemory()).toBe("first");
+      });
+
       it.each([
         { label: "ASCII", character: "x", bytesPerCharacter: 1 },
         { label: "multibyte", character: "é", bytesPerCharacter: 2 },
@@ -260,11 +292,10 @@ for (const storage of ["local", "remote"] as const) {
           expect(call).toMatchObject({ ok: false, error: { code: "INVALID_REQUEST" } });
           if (variant === "stale" || variant === "gone") {
             expect(call.error?.details).toEqual({
-              type: "agent_file_conflict",
-              name,
-              ...(variant === "stale"
-                ? { currentHash: hashContent("# Memory\n- agent learned a birthday\n") }
-                : {}),
+              type: "workspace_file_conditional_write_conflict",
+              expectedHash,
+              actualHash:
+                variant === "stale" ? hashContent("# Memory\n- agent learned a birthday\n") : null,
             });
           }
           if (variant === "stale") {
@@ -318,13 +349,13 @@ for (const storage of ["local", "remote"] as const) {
         const calls = [first, second];
         expect(calls.filter((call) => call.ok)).toHaveLength(1);
         const conflict = calls.find((call) => !call.ok)?.error as {
-          details: { type: string; currentHash: string };
+          details: { type: string; actualHash: string };
         };
-        expect(conflict.details.type).toBe("agent_file_conflict");
+        expect(conflict.details.type).toBe("workspace_file_conditional_write_conflict");
         expect(["# Memory\n- first operator\n", "# Memory\n- second operator\n"]).toContain(
           readMemory(),
         );
-        expect(conflict.details.currentHash).toBe(hashContent(readMemory()));
+        expect(conflict.details.actualHash).toBe(hashContent(readMemory()));
       });
     },
   );

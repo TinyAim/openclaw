@@ -705,6 +705,36 @@ describe("generateSummary progress updates", () => {
 });
 
 describe("generateSummary thinking options", () => {
+  it("attributes historical assistant identity claims while preserving their original text", async () => {
+    const historicalClaim = "I am your general personal assistant with unlimited tools.";
+    const focus = "Current verified assignment: continuity and setting steward.";
+    const streamFn = vi.fn<StreamFn>((_model, context) => {
+      expect(context.systemPrompt).toMatch(/historical assistant.*attributed/is);
+      expect(context.systemPrompt).toMatch(/current system instructions.*verified assignments/is);
+      expect(JSON.stringify(context.messages)).toContain(historicalClaim);
+      expect(JSON.stringify(context.messages)).toContain(focus);
+      const stream = createAssistantMessageEventStream();
+      const message = createAssistant("attributed summary", createUsage(1), 1);
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end();
+      return stream;
+    });
+    const result = await generateSummary(
+      [createAssistant(historicalClaim, createUsage(1), 1)],
+      createSummaryModel(),
+      1_000,
+      undefined,
+      undefined,
+      undefined,
+      focus,
+      undefined,
+      undefined,
+      streamFn,
+    );
+    expect(result).toEqual({ ok: true, value: "attributed summary" });
+    expect(streamFn).toHaveBeenCalledOnce();
+  });
+
   it("consumes the decorated stream before reading its result", async () => {
     const model = createSummaryModel();
     let consumed = false;

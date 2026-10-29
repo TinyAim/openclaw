@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { validateAgentParams } from "../../../../packages/gateway-protocol/src/index.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { withGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { resolveSubagentRunDurationMs } from "../registry/subagent-run-timeout.js";
@@ -102,6 +103,54 @@ describe("native subagent Gateway transport ownership", () => {
     ).resolves.toMatchObject({
       response: { runId: "accepted-child" },
     });
+  });
+
+  it("carries inherited fallback restriction only through trusted dispatch metadata", async () => {
+    const dispatch = vi.fn(async () => ({ runId: "inherited-run", status: "accepted" }));
+    spawnTesting.setDepsForTest({
+      hasInProcessGatewayContext: () => true,
+      dispatchGatewayMethodInProcess: dispatch as never,
+    });
+    await callNativeSubagentGateway(
+      {
+        method: "agent",
+        params: {
+          message: "inspect",
+          idempotencyKey: "inherited-run",
+        },
+      },
+      { modelOverride: { provider: "openai", model: "gpt-5.4" }, disableModelFallbacks: true },
+    );
+    expect(dispatch).toHaveBeenCalledWith(
+      "agent",
+      expect.not.objectContaining({ disableModelFallbacks: true }),
+      expect.objectContaining({ disableModelFallbacks: true, allowSyntheticModelOverride: true }),
+    );
+    expect(
+      validateAgentParams({
+        message: "external",
+        idempotencyKey: "external",
+        disableModelFallbacks: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an inherited policy without a trusted in-process owner before socket dispatch", async () => {
+    const socket = vi.fn();
+    spawnTesting.setDepsForTest({ hasInProcessGatewayContext: () => false, callGateway: socket });
+    await expect(
+      callNativeSubagentGateway(
+        {
+          method: "agent",
+          params: {
+            message: "inspect",
+            idempotencyKey: "no-owner",
+          },
+        },
+        { modelOverride: { provider: "openai", model: "gpt-5.4" }, disableModelFallbacks: true },
+      ),
+    ).rejects.toThrow("trusted in-process Gateway");
+    expect(socket).not.toHaveBeenCalled();
   });
 
   it("keeps socket dispatch available when no Gateway owner was bound", async () => {

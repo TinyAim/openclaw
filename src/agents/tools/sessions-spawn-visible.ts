@@ -139,8 +139,10 @@ export async function maybeSpawnVisibleSession(params: {
   const group = readToolStringParam(params.raw, "group");
   const projectId = readToolStringParam(params.raw, "projectId");
   const projectGitUrl = readToolStringParam(params.raw, "projectGitUrl");
+  const targetAgent = readToolStringParam(params.raw, "targetAgent");
   if (params.raw.visible !== true) {
     const visibleOnlyParams = [
+      ["targetAgent", targetAgent],
       ["group", group],
       ["projectGitUrl", projectGitUrl],
     ] as const;
@@ -342,10 +344,17 @@ export async function maybeSpawnVisibleSession(params: {
     };
   }
 
+  const requesterModelRef = params.task?.trim()
+    ? (params.options?.requesterModelRef ??
+      (params.options?.requesterModel
+        ? `${params.options.requesterModel.provider}/${params.options.requesterModel.model}`
+        : undefined))
+    : undefined;
   const modelPlan = await resolveSubagentModelAndThinkingPlan({
     cfg,
     targetAgentId,
     modelOverride,
+    requesterModelRef,
     workspaceDir: spawnedWorkspaceDir,
     inheritedModel:
       targetAgentId === requesterAgentId
@@ -421,32 +430,38 @@ export async function maybeSpawnVisibleSession(params: {
       }
     }
     const gatewayCall = params.options?.callGateway ?? callInProcessGatewayTool;
-    const createGatewayCall: InProcessGatewayCaller =
-      params.options?.callGateway ??
-      ((method, requestParams, requestOptions) =>
-        callInProcessGatewayToolWithCreation(
-          method,
-          requestParams,
-          {
-            via: "spawn",
-            actor: { type: "agent", id: requesterAgentId },
-            requesterSessionKey: requesterKey,
-            ...(childSessionPublication ? { childSessionPublication } : {}),
-            requesterSenderIsOwner: params.options?.senderIsOwner === true,
-            completionOwnerSessionKey: ownership.completionRequesterSessionKey,
-            ...(params.options?.sessionPermissionPolicy
-              ? { inheritedPermissionMode: params.options.sessionPermissionPolicy.mode }
-              : {}),
-            ...(spawnModelAutoSelection ? { spawnModelAutoSelection } : {}),
-            inheritedToolPolicy: {
-              version: 1,
-              allow: [...(params.options?.inheritedToolAllowlist ?? [])],
-              deny: [...(params.options?.inheritedToolDenylist ?? [])],
-            },
-            ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
+    const createGatewayCall: InProcessGatewayCaller = (method, requestParams, requestOptions) => {
+      const options =
+        requesterModelRef && !modelOverride
+          ? { ...requestOptions, disableModelFallbacks: true as const }
+          : requestOptions;
+      if (params.options?.callGateway) {
+        return params.options.callGateway(method, requestParams, options);
+      }
+      return callInProcessGatewayToolWithCreation(
+        method,
+        requestParams,
+        {
+          via: "spawn",
+          actor: { type: "agent", id: requesterAgentId },
+          requesterSessionKey: requesterKey,
+          ...(childSessionPublication ? { childSessionPublication } : {}),
+          requesterSenderIsOwner: params.options?.senderIsOwner === true,
+          completionOwnerSessionKey: ownership.completionRequesterSessionKey,
+          ...(params.options?.sessionPermissionPolicy
+            ? { inheritedPermissionMode: params.options.sessionPermissionPolicy.mode }
+            : {}),
+          ...(spawnModelAutoSelection ? { spawnModelAutoSelection } : {}),
+          inheritedToolPolicy: {
+            version: 1,
+            allow: [...(params.options?.inheritedToolAllowlist ?? [])],
+            deny: [...(params.options?.inheritedToolDenylist ?? [])],
           },
-          requestOptions,
-        ));
+          ...(inheritedModel ? { resolvedModel: inheritedModel } : {}),
+        },
+        options,
+      );
+    };
     let response: {
       key?: string;
       sessionId?: string;
@@ -463,6 +478,7 @@ export async function maybeSpawnVisibleSession(params: {
       spawnMode: "session",
       childDepth: callerDepth + 1,
       maxSpawnDepth: maxDepth,
+      requesterUserLanguageReference: params.options?.requesterUserLanguageReference,
     });
     try {
       const titleSource = placement && buildDashboardSessionTitleSource({ message: params.task });
@@ -472,7 +488,7 @@ export async function maybeSpawnVisibleSession(params: {
         // sessions.create persists the group under the legacy wire field `category`.
         ...(group ? { category: group } : {}),
         model: resolvedModelRef,
-        ...(placement ? { titleSource } : { task: taskMessage }),
+        ...(placement ? { titleSource } : params.task?.trim() ? { task: taskMessage } : {}),
         timeoutMs:
           runTimeoutSeconds === 0
             ? 0
@@ -538,7 +554,7 @@ export async function maybeSpawnVisibleSession(params: {
           }),
         cleanupGateway,
       );
-    if (placement && childSessionKey && response.sessionId) {
+    if (placement && params.task?.trim() && childSessionKey && response.sessionId) {
       response = {
         ...response,
         ...(await startVisibleCloudSession({
@@ -595,79 +611,82 @@ export async function maybeSpawnVisibleSession(params: {
         expectedSessionId: response.sessionId,
         expectedLifecycleRevision: response.entry?.lifecycleRevision,
       });
-    if (placement && (response.runStarted !== true || !runId)) {
-      return {
-        status: "error",
-        childSessionKey,
-        sessionId: response.sessionId,
-        ...(runId ? { runId } : {}),
-        initialTaskStatus: response.initialTaskStatus ?? "not-sent",
-        ...(response.placement ? { placement: response.placement } : {}),
-        error: `${runError}. Child kept for placement recovery. Inspect this child before retrying; do not spawn a replacement.`,
-      };
-    }
-    if (response.runStarted !== true || !runId) {
-      return {
-        status: "error",
-        error: `${runError}. ${await cleanupCreatedSession()}`,
-        childSessionKey,
-      };
-    }
-    try {
-      if (placement) {
-        params.options?.assertActive?.();
-      }
-      await (params.options?.registerRun ?? registerSubagentRun)(
-        {
-          runId,
-          requesterTurnRunId: params.options?.requesterTurnRunId,
+    const hasInitialTask = Boolean(params.task?.trim());
+    if (hasInitialTask) {
+      if (placement && (response.runStarted !== true || !runId)) {
+        return {
+          status: "error",
           childSessionKey,
-          controllerSessionKey: ownership.controllerSessionKey,
-          requesterSessionKey: ownership.completionRequesterSessionKey,
-          completionRequesterSessionId,
-          completionRequesterLifecycleRevision,
-          requesterOrigin: normalizeDeliveryContext({
-            channel: params.options?.agentChannel,
-            accountId: params.options?.agentAccountId,
-            to:
-              params.options?.currentMessagingTarget ??
-              params.options?.currentChannelId ??
-              params.options?.agentTo,
-            threadId: params.options?.currentThreadTs ?? params.options?.agentThreadId,
-          }),
-          requesterDisplayKey: ownership.completionRequesterDisplayKey,
-          task: params.task,
-          taskName: params.taskName,
-          agentId: targetAgentId,
-          requesterAgentId,
-          cleanup: "keep",
-          label: params.label || undefined,
-          runTimeoutSeconds,
-          expectsCompletionMessage: params.expectsCompletionMessage,
-          spawnMode: "run",
-        },
-        withExecRequestOwners(
-          {
-            assertCurrent: () => {
-              params.options?.signal?.throwIfAborted();
-              params.options?.assertActive?.();
-            },
-          },
-          !placement && params.runtime === "subagent" && params.options
-            ? readExecRequestOwners(params.options)
-            : undefined,
-        ),
-      );
-    } catch (error) {
-      if (placement) {
-        await terminateCloudRun(childSessionKey, runId);
+          sessionId: response.sessionId,
+          ...(runId ? { runId } : {}),
+          initialTaskStatus: response.initialTaskStatus ?? "not-sent",
+          ...(response.placement ? { placement: response.placement } : {}),
+          error: `${runError}. Child kept for placement recovery. Inspect this child before retrying; do not spawn a replacement.`,
+        };
       }
-      return {
-        status: "error",
-        error: `Visible run registration failed: ${summarizeVisibleSessionSpawnError(error)}. ${placement ? "Cloud child kept; inspect its run before retrying." : await cleanupCreatedSession()}`,
-        childSessionKey,
-        runId,
-      };
+      if (response.runStarted !== true || !runId) {
+        return {
+          status: "error",
+          error: `${runError}. ${await cleanupCreatedSession()}`,
+          childSessionKey,
+        };
+      }
+      try {
+        if (placement) {
+          params.options?.assertActive?.();
+        }
+        await (params.options?.registerRun ?? registerSubagentRun)(
+          {
+            runId,
+            requesterTurnRunId: params.options?.requesterTurnRunId,
+            childSessionKey,
+            controllerSessionKey: ownership.controllerSessionKey,
+            requesterSessionKey: ownership.completionRequesterSessionKey,
+            completionRequesterSessionId,
+            completionRequesterLifecycleRevision,
+            requesterOrigin: normalizeDeliveryContext({
+              channel: params.options?.agentChannel,
+              accountId: params.options?.agentAccountId,
+              to:
+                params.options?.currentMessagingTarget ??
+                params.options?.currentChannelId ??
+                params.options?.agentTo,
+              threadId: params.options?.currentThreadTs ?? params.options?.agentThreadId,
+            }),
+            requesterDisplayKey: ownership.completionRequesterDisplayKey,
+            task: params.task,
+            taskName: params.taskName,
+            agentId: targetAgentId,
+            requesterAgentId,
+            cleanup: "keep",
+            label: params.label || undefined,
+            runTimeoutSeconds,
+            expectsCompletionMessage: params.expectsCompletionMessage,
+            spawnMode: "run",
+          },
+          withExecRequestOwners(
+            {
+              assertCurrent: () => {
+                params.options?.signal?.throwIfAborted();
+                params.options?.assertActive?.();
+              },
+            },
+            !placement && params.runtime === "subagent" && params.options
+              ? readExecRequestOwners(params.options)
+              : undefined,
+          ),
+        );
+      } catch (error) {
+        if (placement) {
+          await terminateCloudRun(childSessionKey, runId);
+        }
+        return {
+          status: "error",
+          error: `Visible run registration failed: ${summarizeVisibleSessionSpawnError(error)}. ${placement ? "Cloud child kept; inspect its run before retrying." : await cleanupCreatedSession()}`,
+          childSessionKey,
+          runId,
+        };
+      }
     }
     recordSessionParticipantBestEffort({
       promptedAt,
@@ -681,10 +700,12 @@ export async function maybeSpawnVisibleSession(params: {
       sessionKey: childSessionKey,
       fallbackAgentId: targetAgentId,
     });
+    const effectiveTargetAgent = targetAgent ?? params.requestedAgentId;
     return {
       status: "accepted",
       childSessionKey,
-      runId,
+      ...(runId ? { runId } : {}),
+      ...(effectiveTargetAgent ? { targetAgent: effectiveTargetAgent } : {}),
       mode: "run",
       expectsCompletionMessage: params.expectsCompletionMessage,
       cleanup: "keep",

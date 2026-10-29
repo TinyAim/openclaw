@@ -85,9 +85,18 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
    * Manually compact the session context.
    * Aborts current agent operation first.
    */
-  async compact(customInstructions?: string): Promise<CompactionResult> {
+  async compact(
+    customInstructions?: string,
+    options?: { historyMode?: "preserve_recent" | "summary_only" },
+  ): Promise<CompactionResult> {
     return await this.runWithSessionWriteSettlement(async () => {
-      const outcome = await this.compactWithSessionWriteSettlement(customInstructions, "none");
+      const outcome = await this.compactWithSessionWriteSettlement(
+        customInstructions,
+        "none",
+        undefined,
+        undefined,
+        options?.historyMode,
+      );
       if (outcome.status === "skipped") {
         throw new Error(outcome.reason);
       }
@@ -116,6 +125,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     summaryOutputPolicy: SummaryOutputPolicy = "none",
     requestState?: CompactionRequestState,
     constraints?: AutomaticCompactionOptions,
+    historyMode?: "preserve_recent" | "summary_only",
   ): Promise<SettledCompactionWorkOutcome> {
     this.disconnectFromAgent();
     await this.abort();
@@ -131,6 +141,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
         outcome = await this.runCompactionWork({
           itemId,
           customInstructions,
+          historyMode,
           mode: "manual",
           summaryOutputPolicy,
           requestState,
@@ -212,6 +223,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     requestFromEntryId?: string;
     pendingUserEntryId?: string;
     onSummaryReady?: () => void;
+    historyMode?: "preserve_recent" | "summary_only";
   }): Promise<CompactionWorkOutcome> {
     const isManual = options.mode === "manual";
     const assertContextReplacementActive = this.assertContextReplacementActive;
@@ -269,7 +281,16 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
         ? requestBudget.fixedTokens + requestBudget.pendingTokens + retention.maxTokens
         : undefined;
     let preparation: CompactionPreparation | undefined;
-    if (isManual && !options.requestState && !requestBudget && pendingEntryIndex < 0) {
+    if (options.historyMode === "summary_only") {
+      if (!isManual || options.requestState || requestBudget || pendingEntryIndex >= 0) {
+        throw new Error("Summary-only compaction requires idle manual maintenance.");
+      }
+      preparation = unwrapCoreResult(
+        prepareCompaction(pathEntries, options.settings, undefined, {
+          summaryOnlyBoundaryId: options.itemId,
+        }),
+      );
+    } else if (isManual && !options.requestState && !requestBudget && pendingEntryIndex < 0) {
       const manualPreflight = preflightManualSessionCompaction(pathEntries, options.settings);
       if (!manualPreflight.compactable) {
         throw new Error(manualPreflight.reason);
@@ -422,6 +443,9 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
     // Custom hooks may choose a different retained boundary. Validate their
     // complete result before commit, without modifying an already audited artifact.
     const { firstKeptEntryId } = completedCompaction;
+    if (options.historyMode === "summary_only" && firstKeptEntryId !== options.itemId) {
+      throw new Error("Summary-only compaction must retain only its new summary boundary.");
+    }
     const firstKeptIndex = pathEntries.findIndex((entry) => entry.id === firstKeptEntryId);
     if (pendingEntryIndex >= 0 && (firstKeptIndex < 0 || firstKeptIndex > pendingEntryIndex)) {
       throw new Error("Compaction must retain the unprocessed pending user request.");

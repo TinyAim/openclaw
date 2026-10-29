@@ -128,13 +128,15 @@ async function resolveScopedSessionAccessAsync(
 /** Minimal session row metadata needed to evaluate ownership and cross-agent access. */
 export type SessionVisibilityRow = SessionVisibilityDecisionRow;
 
-/** Resolve configured session-tool visibility, defaulting invalid or missing values to all. */
+/** Resolve configured session-tool visibility, defaulting invalid or missing values to tree. */
 export function resolveSessionToolsVisibility(cfg: OpenClawConfig): SessionToolsVisibility {
   const value = normalizeLowercaseStringOrEmpty(cfg.tools?.sessions?.visibility);
   if (value === "self" || value === "tree" || value === "agent" || value === "all") {
     return value;
   }
-  return "all";
+  // Wisclaw managed agents keep the pre-2026.8.2 narrow default. Explicit
+  // `agent` / `all` remain available when operators set them.
+  return "tree";
 }
 
 /** Resolve visibility after applying sandbox clamps for spawned-session-only agents. */

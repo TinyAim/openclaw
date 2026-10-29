@@ -93,6 +93,11 @@ async function dispatchSubagentGateway(
     getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
   // A closed owner still requires in-process rejection, never a new socket route.
   const hasInProcessGateway = gatewayContextResolver !== undefined || hasInProcessGatewayContext();
+  if (authorization?.disableModelFallbacks && !hasInProcessGateway) {
+    throw new Error(
+      "Inherited subagent model requires a trusted in-process Gateway to preserve its fallback policy",
+    );
+  }
   const needsOutOfProcessModelOverrideAuth = allowModelOverride && !hasInProcessGateway;
   const scopes =
     params.scopes ??
@@ -155,6 +160,9 @@ async function dispatchSubagentGateway(
             expectFinal: request.expectFinal,
             sessionMutationCommitGuard: assertDispatchCurrent,
             ...(allowModelOverride ? { allowSyntheticModelOverride: true } : {}),
+            ...(authorization?.disableModelFallbacks
+              ? { disableModelFallbacks: true as const }
+              : {}),
             ...(options?.agentRunTracking ? { agentRunTracking: options.agentRunTracking } : {}),
             ...(gatewayContextResolver ? { resolveGatewayContext: gatewayContextResolver } : {}),
             ...(forceSyntheticClient ? { forceSyntheticClient: true } : {}),

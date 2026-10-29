@@ -148,12 +148,18 @@ export async function resolveSubagentChildPlan(params: {
   // a later turn and cannot represent one-shot overrides.
   const callerThinkingRaw =
     params.ctx.requesterThinkingLevel ?? requesterPreferences?.thinkingLevel;
+  const requesterModelRef =
+    params.ctx.requesterModelRef ??
+    (params.ctx.requesterModel
+      ? `${params.ctx.requesterModel.provider}/${params.ctx.requesterModel.model}`
+      : undefined);
   const modelPlan = await resolveSubagentModelAndThinkingPlan({
     cfg: params.cfg,
     targetAgentId: params.targetAgentId,
     requesterAgentConfig,
     targetAgentConfig,
     modelOverride: params.request.model,
+    requesterModelRef,
     thinkingOverrideRaw: params.request.thinking,
     callerThinkingRaw,
     inheritedModel:
@@ -209,9 +215,15 @@ export async function resolveSubagentChildPlan(params: {
       modelPlan.initialSessionPatch.fastMode = fastMode;
     }
   }
-  const launchAuthorization: SubagentLaunchAuthorization | undefined = params.request.model?.trim()
-    ? { modelOverride: modelPlan.modelRef }
-    : undefined;
+  const launchAuthorization: SubagentLaunchAuthorization | undefined =
+    params.request.model?.trim() || requesterModelRef?.trim()
+      ? {
+          modelOverride: modelPlan.modelRef,
+          ...(!params.request.model?.trim() && requesterModelRef?.trim()
+            ? { disableModelFallbacks: true as const }
+            : {}),
+        }
+      : undefined;
   return {
     ok: true as const,
     resolved: {

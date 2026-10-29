@@ -210,4 +210,83 @@ describe("sessions_spawn visible work receipts", () => {
       });
     },
   );
+  it.each([undefined, "openai/gpt-5.6-luna"])(
+    "retains active model and language with explicit override %s",
+    async (override) => {
+      const callGateway = vi.fn(async () => ({
+        key: "agent:main:dashboard:child",
+        sessionId: "child",
+        runStarted: true,
+        runId: "visible-run",
+      }));
+      const registerRun = vi.fn();
+      const tool = createSessionsSpawnTool({
+        agentSessionKey: "agent:main:main",
+        requesterModelRef: "openai/gpt-5.4",
+        requesterUserLanguageReference: "请核实模型并简短解释。",
+        callGateway: callGateway as never,
+        config: { agents: { defaults: { model: "openai/gpt-5.6-sol" } } },
+        countActiveRuns: () => 0,
+        registerRun,
+      });
+      const result = await tool.execute("visible-model", {
+        visible: true,
+        task: "Inspect model",
+        ...(override ? { model: override } : {}),
+      });
+      expect(result.details).toMatchObject({ status: "accepted" });
+      const [method, request, options] = callGateway.mock.calls[0] as unknown as [
+        string,
+        Record<string, unknown>,
+        Record<string, unknown> | undefined,
+      ];
+      expect(method).toBe("sessions.create");
+      expect(request.model).toBe(override ?? "openai/gpt-5.4");
+      expect(request.task).toContain("请核实模型并简短解释。");
+      expect(options?.disableModelFallbacks).toBe(override ? undefined : true);
+      expect(registerRun).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("creates an empty visible session without an initial run restriction", async () => {
+    const callGateway = vi.fn(async () => ({
+      key: "agent:main:dashboard:empty",
+      sessionId: "empty",
+    }));
+    const registerRun = vi.fn();
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      requesterModelRef: "openai/gpt-5.4",
+      callGateway: callGateway as never,
+      countActiveRuns: () => 0,
+      registerRun,
+    });
+    const result = await tool.execute("empty-visible", { visible: true, task: "" });
+    expect(result.details).toMatchObject({ status: "accepted" });
+    const [, request, options] = callGateway.mock.calls[0] as unknown as [
+      string,
+      Record<string, unknown>,
+      Record<string, unknown> | undefined,
+    ];
+    expect(request).not.toHaveProperty("task");
+    expect(options?.disableModelFallbacks).toBeUndefined();
+    expect(registerRun).not.toHaveBeenCalled();
+  });
+
+  it("passes active model and frozen language to a hidden child", async () => {
+    const tool = createSessionsSpawnTool({
+      agentSessionKey: "agent:main:main",
+      requesterModelRef: "openai/gpt-5.4",
+      requesterUserLanguageReference: "请简短说明。",
+      countActiveRuns: () => 0,
+    });
+    await tool.execute("hidden-model", { task: "Inspect model" });
+    expect(hoisted.spawnSubagentDirectMock).toHaveBeenCalledWith(
+      expect.objectContaining({ task: "Inspect model" }),
+      expect.objectContaining({
+        requesterModelRef: "openai/gpt-5.4",
+        requesterUserLanguageReference: "请简短说明。",
+      }),
+    );
+  });
 });

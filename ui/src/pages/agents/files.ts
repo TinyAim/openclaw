@@ -184,7 +184,8 @@ async function requestAgentFile(
       if (
         err instanceof GatewayRequestError &&
         isRecord(err.details) &&
-        err.details.type === "agent_file_conflict"
+        (err.details.type === "agent_file_conflict" ||
+          err.details.type === "workspace_file_conditional_write_conflict")
       ) {
         state.agentFileConflict = name;
       }

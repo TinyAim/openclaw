@@ -69,6 +69,9 @@ import {
   readStoreChildSessionLinks,
   type SessionChildLink,
   resolveSessionChildOwners,
+  resolveProjectableCompactionCheckpoints,
+  resolveLatestCompactionCheckpoint,
+  buildCompactionCheckpointPreview,
 } from "./session-utils-core.js";
 import {
   resolveGatewaySessionDisplayName,
@@ -438,6 +441,7 @@ export function projectSessionRowChildLinks(links: readonly SessionChildLink[] |
 
 export function materializeSessionRow(input: ReturnType<typeof readSessionRowInputs>["inputs"]) {
   const { cfg, key, entry } = input;
+  const checkpoints = resolveProjectableCompactionCheckpoints(entry, key);
   const observerDigest =
     entry?.observerDigest &&
     // Strictly newer: a run end and restart can share a millisecond, and the
@@ -491,6 +495,12 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     createdAt: entry?.createdAt,
     forkSource: entry?.forkSource,
     previousSessionId: entry?.previousSessionId,
+    compactionCheckpointCount: Array.isArray(entry?.compactionCheckpoints)
+      ? checkpoints.length
+      : undefined,
+    latestCompactionCheckpoint: buildCompactionCheckpointPreview(
+      resolveLatestCompactionCheckpoint(checkpoints),
+    ),
     kind: resolveGatewaySessionKind(key, entry),
     label: entry?.label,
     autoLabel: entry?.autoLabel,

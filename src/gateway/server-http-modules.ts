@@ -51,3 +51,16 @@ export const getPluginRouteRuntimeScopesModule = createLazyRuntimeModule(
 export const getNativeHookRelayModule = createLazyRuntimeModule(
   () => import("./native-hook-relay-http.js"),
 );
+
+export const getMediaGenRuntimeHttpModule = createLazyRuntimeModule(
+  () => import("./media-gen-runtime-http.js"),
+);
+export const getMediaStudioSpatialReferenceHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-reference-render-http.js"),
+);
+export const getMediaStudioSpatialEnvironmentPanoramaHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-environment-render-http.js"),
+);
+export const getMediaStudioSpatialEnvironmentDepthMeshHttpModule = createLazyRuntimeModule(
+  () => import("./media-studio-spatial-depth-mesh-render-http.js"),
+);

@@ -68,6 +68,9 @@ export type GatewayClient = Pick<
     /** Trusted built-in agent tool caller; never accepted from Gateway wire params. */
     agentToolCaller?: TrustedAgentToolCaller;
     allowModelOverride?: boolean;
+    /** Restrict-only in-process run policy; absent from public RPC input. */
+    disableModelFallbacks?: true;
+    approvalRuntime?: boolean;
     cronRunContinuation?: boolean;
     pluginRuntimeOwnerId?: string;
     /** Host-attested session provenance for a trusted official plugin node invocation. */

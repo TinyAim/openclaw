@@ -13,6 +13,12 @@ import type {
 } from "./session-accessor.sqlite-lifecycle-types.js";
 import type { ParentForkSourceTranscript } from "./session-accessor.sqlite-parent-fork.js";
 import type {
+  CheckpointPreparation,
+  CheckpointPreparationInput,
+  CheckpointWorkerMutation,
+  CheckpointCandidate,
+} from "./session-compaction-checkpoint.worker.js";
+import type {
   SessionMessageCutIntent,
   SessionMessageCutResult,
 } from "./session-message-cut.types.js";
@@ -41,6 +47,14 @@ type IncognitoReclamationPlan = LifecycleArtifactCleanupPlan & {
 
 /** Checked operations only; lifecycle hooks and companion mutations remain on the host. */
 export type IncognitoLifecycleOperations = {
+  "session.lifecycle.checkpoint.prepare": {
+    input: CheckpointPreparationInput;
+    output: CheckpointPreparation;
+  };
+  "session.lifecycle.checkpoint.commit": {
+    input: CheckpointWorkerMutation & { target?: IncognitoLifecycleEntry };
+    output: { result: CheckpointCandidate["result"]; entry?: SessionEntry };
+  };
   "session.lifecycle.maintenance": {
     input: { plan: LifecycleArtifactCleanupPlan };
     output: Extract<SqliteSessionReclamationResult, { kind: "maintenance-finalize" }>["value"];
@@ -107,6 +121,7 @@ export function isIncognitoLifecycleCommand(command: {
 
 export function isIncognitoLifecycleWrite(type: keyof IncognitoLifecycleOperations): boolean {
   return (
+    type !== "session.lifecycle.checkpoint.prepare" &&
     type !== "session.lifecycle.reclaim.prepare" &&
     type !== "session.lifecycle.fork.prepare" &&
     type !== "session.lifecycle.parentFork.prepare" &&
@@ -139,6 +154,10 @@ export function incognitoLifecycleKeys(
   identity: Readonly<SqliteWorkerEphemeralTarget>,
 ): string[] {
   switch (command.type) {
+    case "session.lifecycle.checkpoint.prepare":
+      return [command.input.sourceKey];
+    case "session.lifecycle.checkpoint.commit":
+      return [...new Set([command.input.sourceKey, command.input.targetKey])];
     case "session.lifecycle.maintenance":
       return command.input.plan.entries.map(({ sessionKey }) => sessionKey);
     case "session.lifecycle.messageCut":

@@ -1,9 +1,19 @@
+import { randomUUID } from "node:crypto";
 import {
   preserveCompactionReplayWindow,
   resolveCompactionReplayEligibility,
 } from "@openclaw/ai/transports";
 import { formatSqliteSessionFileMarker } from "../../config/sessions/legacy-sqlite-marker.js";
-import { captureOwnedTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
+import {
+  captureSqliteCompactionCheckpoint,
+  persistSqliteCompactionCheckpoint,
+} from "../../config/sessions/session-accessor.sqlite-checkpoint.js";
+import { isNativeIncognitoCheckpointCaptureForTarget } from "../../config/sessions/session-checkpoint-native-incognito.js";
+import {
+  captureOwnedTranscriptWriteAssertion,
+  withOwnedSessionTranscriptWriterFence,
+} from "../../config/sessions/transcript-write-context.js";
+import { SESSION_TOTAL_TOKENS_VERSION } from "../../config/sessions/types.js";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
 import { resolveDiagnosticModelContentCapturePolicy } from "../../infra/diagnostic-llm-content.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -420,6 +430,55 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         }
 
         const compactStartedAt = Date.now();
+        const checkpointTarget = withOwnedSessionTranscriptWriterFence<
+          typeof sessionTarget & {
+            expectedOwner?: {
+              lifecycleRevision: string | undefined;
+              activeWriterRunId: string | undefined;
+            };
+            expectedLifecycleRevision?: string;
+            expectedWriterRunId?: string;
+          }
+        >(sessionTarget);
+        const checkpointExpectedState = checkpointTarget.expectedOwner
+          ? { sessionId: sessionTarget.sessionId, ...checkpointTarget.expectedOwner }
+          : checkpointTarget.expectedWriterRunId !== undefined
+            ? {
+                sessionId: sessionTarget.sessionId,
+                lifecycleRevision: checkpointTarget.expectedLifecycleRevision,
+                activeWriterRunId: checkpointTarget.expectedWriterRunId,
+              }
+            : undefined;
+        const hostCheckpoint = accountingRecorder?.nativeIncognitoCheckpoint;
+        const deferNativeCheckpointToHost =
+          hostCheckpoint?.deferToHost === true &&
+          isNativeIncognitoCheckpointCaptureForTarget(hostCheckpoint.before, sessionTarget) &&
+          (!checkpointExpectedState ||
+            (hostCheckpoint.before.sessionId === checkpointExpectedState.sessionId &&
+              hostCheckpoint.before.lifecycleRevision ===
+                checkpointExpectedState.lifecycleRevision &&
+              (!Object.hasOwn(checkpointExpectedState, "activeWriterRunId") ||
+                hostCheckpoint.before.activeWriterRunId ===
+                  checkpointExpectedState.activeWriterRunId)));
+        let checkpointBefore: Awaited<ReturnType<typeof captureSqliteCompactionCheckpoint>> =
+          deferNativeCheckpointToHost ? hostCheckpoint!.before : null;
+        if (!memoryTranscript && !deferNativeCheckpointToHost) {
+          try {
+            checkpointBefore = await captureSqliteCompactionCheckpoint({
+              ...sessionTarget,
+              expectedState: checkpointExpectedState,
+              assertActive,
+            });
+          } catch (error) {
+            assertActive();
+            log.warn(`checkpoint capture unavailable: ${formatErrorMessage(error)}`);
+          }
+        }
+        if (params.historyMode === "summary_only" && !checkpointBefore) {
+          throw new Error(
+            "Summary-only recovery requires a retained persistent checkpoint before model dispatch.",
+          );
+        }
         // Setup completed: give the first provider request a full safety window.
         params.compactionTimeoutReset?.();
         let serverTokensAfter: number | undefined;
@@ -448,29 +507,30 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             compactionKind: "server-endpoint",
           });
         };
-        const serverResult = params.transcriptBytePreflightAuthority
-          ? undefined
-          : await attemptServerEndpointCompaction({
-              trigger,
-              streamFn: session.agent.streamFn,
-              model: effectiveModel,
-              context: { systemPrompt: systemPromptText, messages: session.messages },
-              sessionManager,
-              extraParams: effectiveExtraParams,
-              requestBudget: accountingRecorder?.requestBudget,
-              customInstructions: params.customInstructions,
-              config: params.config,
-              onUsage: recordUsage,
-              onCompactionCommitted: recordServerCompaction,
-              assertActive,
-              requestOptions: {
-                apiKey: transportApiKey,
-                sessionId: params.sessionId,
-                authProfileId: runtimePlan.auth.forwardedAuthProfileId,
-                timeoutMs: compactionTimeoutMs,
-                signal: params.abortSignal,
-              },
-            });
+        const serverResult =
+          params.transcriptBytePreflightAuthority || params.historyMode === "summary_only"
+            ? undefined
+            : await attemptServerEndpointCompaction({
+                trigger,
+                streamFn: session.agent.streamFn,
+                model: effectiveModel,
+                context: { systemPrompt: systemPromptText, messages: session.messages },
+                sessionManager,
+                extraParams: effectiveExtraParams,
+                requestBudget: accountingRecorder?.requestBudget,
+                customInstructions: params.customInstructions,
+                config: params.config,
+                onUsage: recordUsage,
+                onCompactionCommitted: recordServerCompaction,
+                assertActive,
+                requestOptions: {
+                  apiKey: transportApiKey,
+                  sessionId: params.sessionId,
+                  authProfileId: runtimePlan.auth.forwardedAuthProfileId,
+                  timeoutMs: compactionTimeoutMs,
+                  signal: params.abortSignal,
+                },
+              });
         const activeSession = session;
         let clientResult: Awaited<ReturnType<typeof activeSession.compact>> | undefined;
         let summaryTimedOut = false;
@@ -490,7 +550,11 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
                 if (trigger === "manual") {
                   return {
                     status: "completed" as const,
-                    result: await activeSession.compact(params.customInstructions),
+                    result: params.historyMode
+                      ? await activeSession.compact(params.customInstructions, {
+                          historyMode: params.historyMode,
+                        })
+                      : await activeSession.compact(params.customInstructions),
                   };
                 }
                 return activeSession[agentSessionAutomaticCompaction](
@@ -595,6 +659,83 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
             assertActive,
           });
         }
+        let checkpointRetained = false;
+        if (!memoryTranscript && checkpointBefore && clientResult && !deferNativeCheckpointToHost) {
+          try {
+            const checkpointAfter = await captureSqliteCompactionCheckpoint({
+              ...sessionTarget,
+              expectedState: checkpointExpectedState,
+              assertActive,
+            });
+            if (
+              checkpointAfter &&
+              checkpointAfter.sessionId === checkpointBefore.sessionId &&
+              checkpointAfter.lifecycleRevision === checkpointBefore.lifecycleRevision &&
+              checkpointAfter.activeWriterRunId === checkpointBefore.activeWriterRunId
+            ) {
+              const reason =
+                trigger === "manual"
+                  ? "manual"
+                  : trigger === "overflow"
+                    ? "overflow-retry"
+                    : "auto-threshold";
+              const stored = await persistSqliteCompactionCheckpoint({
+                source: checkpointBefore,
+                ...sessionTarget,
+                assertActive,
+                expectedState: {
+                  sessionId: checkpointBefore.sessionId,
+                  lifecycleRevision: checkpointBefore.lifecycleRevision,
+                  activeWriterRunId: checkpointBefore.activeWriterRunId,
+                },
+                checkpoint: {
+                  checkpointId: randomUUID(),
+                  sessionKey: sessionTarget.sessionKey,
+                  sessionId: checkpointBefore.sessionId,
+                  createdAt: compactStartedAt,
+                  reason,
+                  tokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+                  ...(typeof tokensBefore === "number" &&
+                  Number.isSafeInteger(tokensBefore) &&
+                  tokensBefore >= 0
+                    ? { tokensBefore }
+                    : {}),
+                  ...(typeof tokensAfter === "number" &&
+                  Number.isSafeInteger(tokensAfter) &&
+                  tokensAfter >= 0
+                    ? { tokensAfter }
+                    : {}),
+                  ...(clientResult.summary.trim() ? { summary: clientResult.summary.trim() } : {}),
+                  ...(clientResult.firstKeptEntryId
+                    ? { firstKeptEntryId: clientResult.firstKeptEntryId }
+                    : {}),
+                  preCompaction: {
+                    sessionId: checkpointBefore.sessionId,
+                    leafId: checkpointBefore.leafId,
+                  },
+                  postCompaction: {
+                    sessionId: checkpointAfter.sessionId,
+                    leafId: checkpointAfter.leafId,
+                  },
+                },
+              });
+              checkpointRetained = stored.status === "stored";
+              if (!checkpointRetained)
+                log.warn(`checkpoint persistence unavailable: ${stored.status}`);
+            }
+          } catch (error) {
+            assertActive();
+            log.warn(`checkpoint persistence unavailable: ${formatErrorMessage(error)}`);
+          }
+        }
+        if (
+          params.historyMode === "summary_only" &&
+          !checkpointRetained &&
+          !deferNativeCheckpointToHost
+        )
+          throw new Error(
+            "Summary-only checkpoint retention is unconfirmed; reconcile before retry.",
+          );
         const postMetrics = diagEnabled ? summarizeCompactionMessages(session.messages) : undefined;
         if (preMetrics && postMetrics) {
           log.debug(

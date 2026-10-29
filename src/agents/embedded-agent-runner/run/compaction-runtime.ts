@@ -1,11 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { acknowledgeReplySessionTransition } from "../../../auto-reply/reply/reply-run-registry.state.js";
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
+import {
+  captureSqliteCompactionCheckpoint,
+  persistSqliteCompactionCheckpoint,
+} from "../../../config/sessions/session-accessor.sqlite-checkpoint.js";
+import { hasExistingNativeIncognitoCheckpointOwner } from "../../../config/sessions/session-checkpoint-native-incognito.js";
 import { captureSessionEntrySourceAssertion } from "../../../config/sessions/session-entry-source-authority.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import {
   withOwnedSessionTranscriptWrites,
   SessionTranscriptWriterClaimReboundError,
 } from "../../../config/sessions/transcript-write-context.js";
+import { SESSION_TOTAL_TOKENS_VERSION } from "../../../config/sessions/types.js";
 import type { buildContextEngineRuntimeSettings } from "../../../context-engine/runtime-settings.js";
 import {
   resolveCompactionSuccessorTranscript,
@@ -177,6 +184,21 @@ export async function compactEmbeddedRunForRecovery(
     runtimeContext,
     runtimeSettings,
   };
+  const nativeCheckpointStartedAt = Date.now();
+  const nativeCheckpointBefore =
+    runParams.sessionPersistence !== "detached" &&
+    !owner.sessionManager &&
+    hasExistingNativeIncognitoCheckpointOwner(activeSession.target)
+      ? await captureSqliteCompactionCheckpoint({
+          ...activeSession.target,
+          expectedState: {
+            sessionId: activeSession.id,
+            lifecycleRevision: activeSession.target.expectedLifecycleRevision,
+            activeWriterRunId: activeSession.target.expectedWriterRunId,
+          },
+          assertActive: owner.assertActive,
+        })
+      : null;
   let result: CompactionResult;
   try {
     result = await compactContextEngineWithSafetyTimeout(
@@ -186,6 +208,14 @@ export async function compactEmbeddedRunForRecovery(
           owner.withTranscriptWrites(backendParams.abortSignal, () => {
             if (backendParams.runtimeContext) {
               attachCompactionAccountingRecorder(backendParams.runtimeContext, {
+                ...(nativeCheckpointBefore
+                  ? {
+                      nativeIncognitoCheckpoint: {
+                        before: nativeCheckpointBefore,
+                        deferToHost: true as const,
+                      },
+                    }
+                  : {}),
                 requestBudget: input.state.compactionRequestBudget,
                 requestFromEntryId,
                 pendingRequestState:
@@ -262,11 +292,72 @@ export async function compactEmbeddedRunForRecovery(
     owner.sessionManager &&
     sameTarget &&
     (target?.threadId === undefined || target.threadId === activeSession.target.threadId);
+  let checkpointAccepted: AcceptedCompactionSuccessor | undefined;
   const previousSessionId =
     result.compacted && !retainMemoryTranscript
-      ? await input.adoptCompactionTranscript(result, sameTarget ? undefined : recordTokensAfter)
+      ? await input.adoptCompactionTranscript(result, (accepted) => {
+          checkpointAccepted = accepted;
+          if (!sameTarget) recordTokensAfter();
+        })
       : undefined;
   input.assertRecoveryActive();
+  if (nativeCheckpointBefore && result.compacted) {
+    // This is the actual Host adoption receipt, including its admitted successor transition.
+    // The native memory owner must remain outside the backend's owned transcript frame.
+    const accepted = checkpointAccepted;
+    if (!accepted) throw new Error("Native compaction checkpoint has no Host acceptance receipt");
+    const currentOwner = input.prepareRecoveryOwner();
+    currentOwner.assertActive();
+    const after = await captureSqliteCompactionCheckpoint({
+      ...accepted.sessionTarget,
+      expectedState: {
+        sessionId: accepted.entry.sessionId,
+        lifecycleRevision: accepted.entry.lifecycleRevision,
+        activeWriterRunId: accepted.entry.activeWriterRunId,
+      },
+      assertActive: currentOwner.assertActive,
+    });
+    if (!after) throw new Error("Host-accepted native compaction checkpoint boundary unavailable");
+    const transition =
+      nativeCheckpointBefore.sessionId !== after.sessionId
+        ? accepted.admissionTransition
+        : undefined;
+    if (nativeCheckpointBefore.sessionId !== after.sessionId && !transition)
+      throw new Error("Native compaction successor has no Host admission transition");
+    const measured = (value: number | undefined) =>
+      typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+    const stored = await persistSqliteCompactionCheckpoint({
+      ...accepted.sessionTarget,
+      source: nativeCheckpointBefore,
+      expectedState: after,
+      assertActive: currentOwner.assertActive,
+      ...(transition ? { predecessor: { captured: nativeCheckpointBefore, transition } } : {}),
+      checkpoint: {
+        checkpointId: randomUUID(),
+        sessionKey: accepted.sessionTarget.sessionKey,
+        sessionId: after.sessionId,
+        createdAt: nativeCheckpointStartedAt,
+        reason: recovery.trigger === "overflow" ? "overflow-retry" : "auto-threshold",
+        tokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+        tokensBefore: measured(result.result?.tokensBefore),
+        tokensAfter: measured(result.result?.tokensAfter),
+        ...(result.result?.summary?.trim() ? { summary: result.result.summary.trim() } : {}),
+        ...(result.result?.firstKeptEntryId
+          ? { firstKeptEntryId: result.result.firstKeptEntryId }
+          : {}),
+        preCompaction: {
+          sessionId: nativeCheckpointBefore.sessionId,
+          leafId: nativeCheckpointBefore.leafId,
+        },
+        postCompaction: { sessionId: after.sessionId, leafId: after.leafId },
+      },
+    });
+    if (stored.status !== "stored")
+      throw new Error(
+        `Native compaction checkpoint retention is unconfirmed (${stored.status}); reconcile before retry`,
+      );
+    currentOwner.assertActive();
+  }
   if (result.compacted && observedCompactions === 0) {
     declarePromptHistoryRewrite({ ...promptCacheIdentity, reason: "compaction" });
   }
@@ -456,7 +547,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
   });
   const adoptCompactionTranscript = async (
     compactResult: CompactionResult,
-    onAccepted?: () => void,
+    onAccepted?: (accepted?: AcceptedCompactionSuccessor) => void,
   ): Promise<string | undefined> => {
     assertRecoveryActive();
     const currentTarget = getPreparedTarget();
@@ -490,7 +581,7 @@ export function createEmbeddedRunCompactionRuntime(input: {
     const writerFence = sessionPromptState.sessionWriterFence;
     const recordAccepted = (accepted: AcceptedCompactionSuccessor) => {
       sessionPromptState.recordCommittedCompactionSuccessor(accepted);
-      onAccepted?.();
+      onAccepted?.(accepted);
     };
     const accepted = await acceptCompactionSuccessor({
       config: params.config,

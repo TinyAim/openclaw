@@ -3,6 +3,15 @@ import { createQueueTestRun } from "../queue.test-helpers.js";
 import { resolveFollowupDeliveryStorageKey } from "./delivery-context.js";
 
 describe("followup delivery context", () => {
+  it("keeps an inherited initial run separate from the next ordinary turn", () => {
+    const initial = createQueueTestRun({ prompt: "initial task" });
+    initial.run.disableModelFallbacks = true;
+    const next = createQueueTestRun({ prompt: "ordinary followup" });
+    expect(resolveFollowupDeliveryStorageKey(initial)).not.toBe(
+      resolveFollowupDeliveryStorageKey(next),
+    );
+    expect(next.run.disableModelFallbacks).toBeUndefined();
+  });
   it("separates runs with different gateway client capabilities", () => {
     const withoutCaps = createQueueTestRun({ prompt: "without caps" });
     const withInlineWidgets = createQueueTestRun({ prompt: "with inline widgets" });

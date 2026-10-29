@@ -12,6 +12,8 @@ export type GenerateImageParams = Omit<ImageGenerationRequest, "provider" | "mod
   /** Resolution inferred from reference images; omitted for incompatible fallback models. */
   inferredResolution?: ImageGenerationResolution;
   autoProviderFallback?: boolean;
+  /** Frozen product plans reject normalized or ignored output options before Provider I/O. */
+  requireExactOutput?: boolean;
 };
 
 export type GenerateImageRuntimeResult = Omit<ImageGenerationResult, "model"> & {

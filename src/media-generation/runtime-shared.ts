@@ -48,6 +48,7 @@ export async function runMediaGenerationCandidates<TProvider extends object, TRe
     autoProviderFallback?: boolean;
   };
   capability: "image" | "music" | "video";
+  candidates?: ParsedProviderModelRef[];
   listProviders: (cfg?: OpenClawConfig) => CapabilityProviderCandidate[];
   getProviderEnvVars?: typeof getProviderEnvVarsCore;
   getProvider: (providerId: string) => TProvider | undefined;
@@ -59,12 +60,14 @@ export async function runMediaGenerationCandidates<TProvider extends object, TRe
     | Promise<PreparedMediaGenerationCandidate<TResult>>;
   onFailure?: (attempt: FallbackAttempt) => void;
 }): Promise<TResult> {
-  const candidates = resolveCapabilityModelCandidates({
-    ...params.request,
-    modelConfig: params.request.cfg.agents?.defaults?.mediaModels?.[params.capability],
-    parseModelRef: parseGenerationModelRef,
-    listProviders: params.listProviders,
-  });
+  const candidates =
+    params.candidates ??
+    resolveCapabilityModelCandidates({
+      ...params.request,
+      modelConfig: params.request.cfg.agents?.defaults?.mediaModels?.[params.capability],
+      parseModelRef: parseGenerationModelRef,
+      listProviders: params.listProviders,
+    });
   if (candidates.length === 0) {
     throw new Error(
       buildNoCapabilityModelConfiguredMessage({

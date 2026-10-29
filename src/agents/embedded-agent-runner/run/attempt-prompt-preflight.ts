@@ -1,6 +1,7 @@
 import { CompactionReplayRefreshRequiredError } from "@openclaw/ai/transports";
 import type { AssembleResult, ContextEngine } from "../../../context-engine/types.js";
 import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outcome.js";
+import { DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR } from "../../agent-settings.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -38,6 +39,19 @@ type PreflightRecoveryBudgetSnapshot = Pick<
   MidTurnPrecheckRequest,
   "estimatedPromptTokens" | "promptBudgetBeforeReserve" | "overflowTokens"
 >;
+
+/** History compaction cannot reclaim the current fixed system and user input. */
+export class UnreclaimablePromptBudgetError extends Error {
+  constructor(estimatedFixedTokens: number, promptBudget: number) {
+    super(
+      `Estimated prompt management budget exceeded: fixed system and current input require ` +
+        `${estimatedFixedTokens} estimated tokens, above the ${promptBudget} token input budget. ` +
+        `Shorten the current input or system instructions, or raise the contextTokens management budget. ` +
+        `History compaction cannot reclaim this input; this estimate is not a provider token measurement.`,
+    );
+    this.name = "UnreclaimablePromptBudgetError";
+  }
+}
 
 // Carries the measured prompt budget into the outer recovery loop. The synthetic
 // precheck error is only a routing signal, so compaction engines need these
@@ -171,6 +185,39 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
   if (input.state.skipPromptSubmission) {
     return { ...input.state };
   }
+  // The current fixed prompt cannot be reclaimed by compacting history.
+  const fixedAdmissionReserveTokens = Math.min(
+    input.reserveTokens,
+    DEFAULT_AGENT_COMPACTION_RESERVE_TOKENS_FLOOR,
+  );
+  const fixedPromptPressure = shouldPreemptivelyCompactBeforePrompt({
+    messages: [],
+    systemPrompt: input.systemPrompt,
+    prompt: input.promptForPrecheck,
+    contextTokenBudget: input.contextTokenBudget,
+    reserveTokens: fixedAdmissionReserveTokens,
+    honorExplicitReserveTokens: false,
+  });
+  if (fixedPromptPressure.route !== "fits") {
+    return {
+      ...input.state,
+      contextBudgetStatus: buildPrePromptContextBudgetStatus({
+        result: { ...fixedPromptPressure, shouldCompact: false },
+        provider: attempt.provider,
+        modelId: attempt.modelId,
+        messageCount: input.sessionMessageCount,
+        contextTokenBudget: input.contextTokenBudget,
+        reserveTokens: input.reserveTokens,
+        ...(attempt.sessionId ? { sessionId: attempt.sessionId } : {}),
+      }),
+      promptError: new UnreclaimablePromptBudgetError(
+        fixedPromptPressure.estimatedPromptTokens,
+        fixedPromptPressure.promptBudgetBeforeReserve,
+      ),
+      promptErrorSource: "precheck",
+      skipPromptSubmission: true,
+    };
+  }
   if ((input.pendingInputTokens ?? 0) >= input.contextTokenBudget) {
     return {
       ...input.state,
@@ -180,6 +227,18 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
       skipPromptSubmission: true,
     };
   }
+  const compactionCfg = attempt.config?.agents?.defaults?.compaction;
+  const honorExplicitReserveTokens = Boolean(
+    compactionCfg?.enabled !== false &&
+    ((typeof compactionCfg?.thresholdRatio === "number" &&
+      Number.isFinite(compactionCfg.thresholdRatio) &&
+      compactionCfg.thresholdRatio > 0 &&
+      compactionCfg.thresholdRatio < 1) ||
+      (typeof compactionCfg?.thresholdTokens === "number" &&
+        Number.isFinite(compactionCfg.thresholdTokens) &&
+        compactionCfg.thresholdTokens > 0 &&
+        compactionCfg.thresholdTokens < input.contextTokenBudget)),
+  );
   let preemptiveCompaction: ReturnType<typeof shouldPreemptivelyCompactBeforePrompt>;
   try {
     preemptiveCompaction = shouldPreemptivelyCompactBeforePrompt({
@@ -189,6 +248,7 @@ export async function prepareEmbeddedAttemptPromptPreflight(input: {
       prompt: input.promptForPrecheck,
       contextTokenBudget: input.contextTokenBudget,
       reserveTokens: input.reserveTokens,
+      honorExplicitReserveTokens,
       toolResultMaxChars: input.toolResultMaxChars,
       ...(typeof input.toolSchemaTokens === "number"
         ? { toolSchemaTokens: input.toolSchemaTokens }

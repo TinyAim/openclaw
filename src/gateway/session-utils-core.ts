@@ -9,6 +9,11 @@ import {
   shouldKeepSubagentRunChildLink,
 } from "../agents/subagents/registry/subagent-run-liveness.js";
 import { isTerminalSessionStatus, type SessionEntry } from "../config/sessions.js";
+import { readSessionCompactionCheckpoint } from "../config/sessions/session-accessor.sqlite-checkpoint.js";
+import {
+  collectSessionEntryLookupKeys,
+  normalizeStoreSessionKey,
+} from "../config/sessions/store-entry.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import {
@@ -21,6 +26,7 @@ import {
   createSessionRowModelCacheKey,
   type SessionListRowContext,
 } from "./session-utils-contracts.js";
+import type { GatewaySessionRow } from "./session-utils.types.js";
 
 export function matchesSessionArchiveFilter(
   entry: Pick<SessionEntry, "archivedAt">,
@@ -250,4 +256,40 @@ export function readStoreChildSessionLinks(params: {
     }
   }
   return children.length ? children : undefined;
+}
+
+/** Preserve the released checkpoint read projection using the checkpoint owner's validator. */
+export function resolveProjectableCompactionCheckpoints(
+  entry?: Pick<SessionEntry, "compactionCheckpoints"> | null,
+  sessionKey?: string,
+) {
+  if (!entry || !Array.isArray(entry.compactionCheckpoints)) return [];
+  const allowed = sessionKey ? collectSessionEntryLookupKeys(sessionKey) : undefined;
+  return entry.compactionCheckpoints.flatMap((raw) => {
+    if (!raw || typeof raw.checkpointId !== "string") return [];
+    const checkpoint = readSessionCompactionCheckpoint(entry, raw.checkpointId);
+    return checkpoint &&
+      (!allowed || allowed.includes(normalizeStoreSessionKey(checkpoint.sessionKey)))
+      ? [checkpoint]
+      : [];
+  });
+}
+export function resolveLatestCompactionCheckpoint(
+  checkpoints: ReturnType<typeof resolveProjectableCompactionCheckpoints>,
+) {
+  return checkpoints.reduce<(typeof checkpoints)[number] | undefined>(
+    (latest, item) => (!latest || item.createdAt > latest.createdAt ? item : latest),
+    undefined,
+  );
+}
+export function buildCompactionCheckpointPreview(
+  checkpoint: ReturnType<typeof resolveLatestCompactionCheckpoint>,
+): GatewaySessionRow["latestCompactionCheckpoint"] {
+  return checkpoint
+    ? {
+        checkpointId: checkpoint.checkpointId,
+        createdAt: checkpoint.createdAt,
+        reason: checkpoint.reason,
+      }
+    : undefined;
 }

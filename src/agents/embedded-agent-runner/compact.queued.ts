@@ -52,6 +52,7 @@ import {
   resolveCompactionContextTokenBudget,
 } from "./compaction-runtime-context.js";
 import {
+  assertSummaryOnlyCompactionSupported,
   prepareCompactionHarnessAuth,
   projectCodexHostTranscriptBytePreflightConfig,
   resolveCompactionRuntimeSelection,
@@ -298,6 +299,11 @@ async function compactEmbeddedAgentSessionImpl(
       selectedHarnessRuntime: resolveSessionPinnedHarnessId(inputParams.sessionEntry),
     };
     const runtimeSelection = resolveCompactionRuntimeSelection(requestedSelection);
+    assertSummaryOnlyCompactionSupported({
+      ...inputParams,
+      harnessRuntime: runtimeSelection.selectedHarnessRuntime,
+      provider: runtimeSelection.provider,
+    });
     // Native control operations reuse the backend's existing authenticated session.
     // Run them before generic model preparation so subscription-only CLI sessions do
     // not incorrectly require an OpenClaw model API credential.
@@ -373,6 +379,12 @@ async function compactEmbeddedAgentSessionImpl(
         }),
       );
       assertQueuedCompactionPreparationActive(admittedParams, host);
+      if (
+        admittedParams.historyMode === "summary_only" &&
+        resolveContextEngineOwnerPluginId(contextEngine)
+      ) {
+        throw new Error("summary_only compaction is unsupported by a plugin-owned context engine.");
+      }
       const params = admittedParams;
       const agentDir = params.agentDir;
       const preparedModelRuntime = lease.snapshot;
@@ -456,6 +468,12 @@ async function compactEmbeddedAgentSessionImpl(
       }
       const preparedHarnessRuntime =
         preparedAuth?.selectedPreparedHarness.id ?? selectedHarnessRuntime;
+      assertSummaryOnlyCompactionSupported({
+        ...params,
+        harnessRuntime: preparedHarnessRuntime,
+        provider: ceProvider,
+        contextEngineId: contextEngine.info.id,
+      });
       const transcriptBytePreflightAuthority =
         preparedAuth && host.transcriptBytePreflightHarness === preparedHarnessRuntime
           ? resolveTranscriptBytePreflightAuthority(preparedAuth.selectedPreparedHarness)

@@ -248,6 +248,7 @@ export function createGatewayInstanceRuntime(
         const needsDedicatedPrincipal = Boolean(
           dispatchOptions.allowModelOverride === true ||
           dispatchOptions.allowSyntheticModelOverride === true ||
+          dispatchOptions.disableModelFallbacks === true ||
           dispatchOptions.allowSyntheticCronRunContinuation === true ||
           dispatchOptions.internalDeliveryMediaUrls ||
           dispatchOptions.runtimeContextFragments ||
@@ -268,6 +269,7 @@ export function createGatewayInstanceRuntime(
                 allowModelOverride:
                   dispatchOptions.allowModelOverride === true ||
                   dispatchOptions.allowSyntheticModelOverride === true,
+                disableModelFallbacks: dispatchOptions.disableModelFallbacks,
                 cronRunContinuation: dispatchOptions.allowSyntheticCronRunContinuation === true,
                 internalDeliveryMediaUrls: dispatchOptions.internalDeliveryMediaUrls,
                 runtimeContextFragments: dispatchOptions.runtimeContextFragments,

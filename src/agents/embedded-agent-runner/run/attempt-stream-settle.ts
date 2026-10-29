@@ -386,6 +386,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
   providerPromptState: {
     state: ProviderPromptState;
     effectiveContextTokenBudget: number;
+    expectedExtraSystemPrompt?: string;
     recordEvent?: (type: string, data?: Record<string, unknown>) => void;
   };
 }) {

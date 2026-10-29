@@ -30,6 +30,10 @@ import { formatLegacySqliteSessionMarkerForScope } from "./session-accessor.sqli
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import {
+  prepareCompactionCheckpoint,
+  mutateCompactionCheckpointInTransaction,
+} from "./session-compaction-checkpoint.worker.js";
+import {
   incognitoLifecycleKeys,
   type IncognitoLifecycleEntry,
   type IncognitoLifecycleOperations,
@@ -96,6 +100,40 @@ export function createIncognitoLifecycleWorker(
     execute(command: Command) {
       const keys = incognitoLifecycleKeys(command, identity);
       switch (command.type) {
+        case "session.lifecycle.checkpoint.prepare":
+          return {
+            value: prepareCompactionCheckpoint(command.input, { open: () => database }),
+            keys,
+          };
+        case "session.lifecycle.checkpoint.commit": {
+          const input = command.input;
+          if (
+            ("legacySource" in input && input.legacySource) ||
+            (input.kind === "persist" && [...input.witnesses].length)
+          )
+            throw new Error("Incognito checkpoint cannot consume disk snapshots");
+          const value = write(
+            keys,
+            () => {
+              if (input.target) assertEntry(input.target);
+              const result = withSqliteSessionDeletionWorkerParticipant(
+                () => {},
+                () =>
+                  mutateCompactionCheckpointInTransaction(database, {
+                    ...input,
+                    scope: {
+                      ...input.scope,
+                      path: database.path,
+                      databaseAgentId: database.agentId,
+                    },
+                  }),
+              );
+              return { result, entry: readExactSessionEntryRow(database, input.targetKey)?.entry };
+            },
+            true,
+          );
+          return { value, keys };
+        }
         case "session.lifecycle.maintenance": {
           const { plan } = command.input;
           const materializedPlans = materialize(plan.deletePlans);

@@ -385,6 +385,13 @@ export function withSessionTranscriptWriteAssertion<T>(
   );
 }
 
+/** Released native SDK compatibility cannot borrow an admitted transcript worker's context. */
+export function assertNoOwnedSessionTranscriptWriteContextForNativeCompatibility(): void {
+  if (ownedTranscriptWriteContext.getStore()) {
+    throw new SessionTranscriptWriterClaimReboundError();
+  }
+}
+
 /** Runs detached work without retaining an attempt-owned transcript context. */
 export function runWithoutOwnedSessionTranscriptWrites<T>(run: () => T): T {
   return ownedTranscriptWriteContext.exit(() => runWithCliHistoryWriter(undefined, run));

@@ -680,7 +680,8 @@ export function createIncognitoSessionFacts(
             signal,
             captureIncognitoLifecycleSettlement(captured.input, captureLifecycle),
             false,
-            captured.type === "session.lifecycle.messageCut" ||
+            captured.type === "session.lifecycle.checkpoint.commit" ||
+              captured.type === "session.lifecycle.messageCut" ||
               captured.type === "session.lifecycle.maintenance"
               ? incognitoEntryPublication<Key>(captured.type)
               : undefined,

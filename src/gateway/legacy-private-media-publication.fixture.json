@@ -1,0 +1,46 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Frozen media publication"
+    }
+  ],
+  "openclawDisplayContent": [
+    {
+      "type": "text",
+      "text": "Frozen media publication"
+    },
+    {
+      "type": "image",
+      "artifactId": "artifact_managed_image_56e46ea3-8a30-4d57-b969-6e4c8fe7895c",
+      "url": "/api/chat/media/outgoing/agent%3Amain%3Awebchat%3Adm%3Alegacy-media/56e46ea3-8a30-4d57-b969-6e4c8fe7895c/full",
+      "openUrl": "/api/chat/media/outgoing/agent%3Amain%3Awebchat%3Adm%3Alegacy-media/56e46ea3-8a30-4d57-b969-6e4c8fe7895c/full",
+      "alt": "fixture.png",
+      "mimeType": "image/png",
+      "width": 1,
+      "height": 1,
+      "sizeBytes": 68
+    }
+  ],
+  "api": "openclaw-transcript",
+  "provider": "openclaw",
+  "model": "delivery-mirror",
+  "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+    }
+  },
+  "stopReason": "stop",
+  "timestamp": 1793181317076,
+  "idempotencyKey": "legacy-media-fixture-reply"
+}

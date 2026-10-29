@@ -1,4 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
+import {
+  spawn,
+  type ChildProcessWithoutNullStreams,
+  type Serializable,
+  type SpawnOptions,
+} from "node:child_process";
 import type { Writable } from "node:stream";
 import {
   spawnWindowsJobChild,
@@ -95,10 +100,33 @@ type ChildAdapter = SpawnProcessAdapter<NodeJS.Signals | null> &
 type WorkerChildAdapter = ChildAdapter & {
   closeStartGate?: () => void;
   openStartGate?: () => Promise<void>;
+  sendWorkerMessage?: (message: unknown) => Promise<void>;
 };
 export type AwaitedStdoutChildAdapter = WorkerChildAdapter & AwaitedStdoutConsumer;
 
 const WORKER_START_MESSAGE = { type: "openclaw-worker-start-v1" } as const;
+const WORKER_READY_MESSAGE_TYPE = "openclaw-worker-ready-v1";
+const WORKER_STARTED_MESSAGE_TYPE = "openclaw-worker-started-v1";
+
+function isWorkerReadyMessage(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    (value as { type?: unknown }).type === WORKER_READY_MESSAGE_TYPE
+  );
+}
+
+function isWorkerStartedMessage(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length === 1 &&
+    (value as { type?: unknown }).type === WORKER_STARTED_MESSAGE_TYPE
+  );
+}
 
 type ChildAdapterInput = ProcessAdapterConstruction & {
   /** Retain a local tree owner independently of Gateway service markers. */
@@ -107,6 +135,8 @@ type ChildAdapterInput = ProcessAdapterConstruction & {
   windowsShell?: true;
   /** Own a separately signalable tree whose private IPC channel gates worker startup. */
   ownedWorker?: true;
+  /** Wait for this worker's private ready message before opening its start gate. */
+  workerStartHandshake?: true;
   /** Preserve the supplied environment exactly by skipping environment-mutating spawn wrappers. */
   exactEnv?: true;
   onWorkerMessage?: (message: unknown) => void;
@@ -301,8 +331,53 @@ export async function createChildAdapter(
 
   const child = spawned.child as ChildProcessWithoutNullStreams;
   const events = createProcessAdapterEvents();
-  if (params.onWorkerMessage) {
+  const workerReady = params.workerStartHandshake ? createDeferredCore<void>() : undefined;
+  const workerStarted = params.workerStartHandshake ? createDeferredCore<void>() : undefined;
+  let workerReadySettled = false;
+  let workerStartedSettled = false;
+  const resolveWorkerReady = () => {
+    if (!workerReady || workerReadySettled) {
+      return;
+    }
+    workerReadySettled = true;
+    workerReady.resolve();
+  };
+  const rejectWorkerReady = (error: Error) => {
+    if (!workerReady || workerReadySettled) {
+      return;
+    }
+    workerReadySettled = true;
+    workerReady.reject(error);
+  };
+  const resolveWorkerStarted = () => {
+    if (!workerStarted || workerStartedSettled) {
+      return;
+    }
+    workerStartedSettled = true;
+    workerStarted.resolve();
+  };
+  const rejectWorkerStarted = (error: Error) => {
+    if (!workerStarted || workerStartedSettled) {
+      return;
+    }
+    workerStartedSettled = true;
+    workerStarted.reject(error);
+  };
+  const rejectWorkerHandshake = (error: Error) => {
+    rejectWorkerReady(error);
+    rejectWorkerStarted(error);
+  };
+  // Readiness failures are returned through openStartGate; this eager handler
+  // prevents a child exit before that call from becoming an unhandled rejection.
+  void workerReady?.promise.catch(() => undefined);
+  void workerStarted?.promise.catch(() => undefined);
+  if (params.onWorkerMessage || workerReady) {
     child.on("message", (message) => {
+      if (isWorkerReadyMessage(message)) {
+        resolveWorkerReady();
+      } else if (isWorkerStartedMessage(message)) {
+        resolveWorkerStarted();
+      }
       try {
         if (!windowsJob?.isControlMessage(message)) {
           params.onWorkerMessage?.(message);
@@ -492,17 +567,20 @@ export async function createChildAdapter(
   // Worker IPC failures close authority; ordinary post-spawn errors are nonterminal.
   child.on("error", (error) => {
     events.emitError(error, "process");
+    rejectWorkerHandshake(toErrorObject(error, "worker lifecycle handshake failed"));
     if (params.ownedWorker || error instanceof SpawnBrokerError) {
       rejectPendingWait(error);
     }
   });
   child.once("exit", (code, signal) => {
+    rejectWorkerHandshake(new Error("worker lifecycle handshake not completed before exit"));
     childExitState = { code, signal };
     events.emitExit(code, signal);
     scheduleForcedWindowsCloseSettlement();
     maybeSettleAfterExit();
   });
   child.once("close", (code, signal) => {
+    rejectWorkerHandshake(new Error("worker lifecycle handshake not completed before close"));
     childCloseState = { code, signal };
     childExitState ??= childCloseState;
     if (isWindowsHardKillSettlementBlocked()) {
@@ -629,6 +707,7 @@ export async function createChildAdapter(
     if (params.ownedWorker !== undefined) {
       disconnectWorkerIpc();
     }
+    rejectWorkerHandshake(new Error("worker lifecycle handshake disposed"));
     for (const unsubscribe of outputUnsubscribers.splice(0)) {
       unsubscribe();
     }
@@ -641,7 +720,49 @@ export async function createChildAdapter(
     events.clear();
   };
 
-  let startGateOpened = false;
+  let startGatePromise: Promise<void> | undefined;
+  const openStartGate = params.ownedWorker
+    ? () => {
+        startGatePromise ??= (async () => {
+          await workerReady?.promise;
+          await new Promise<void>((resolve, reject) => {
+            if (!child.connected) {
+              reject(new Error("worker lifecycle IPC channel closed before startup"));
+              return;
+            }
+            try {
+              child.send(WORKER_START_MESSAGE, (error) => {
+                if (error) {
+                  reject(error);
+                  return;
+                }
+                resolve();
+              });
+            } catch (error) {
+              reject(toErrorObject(error, "worker lifecycle IPC send failed"));
+            }
+          });
+          await workerStarted?.promise;
+        })();
+        return startGatePromise;
+      }
+    : undefined;
+
+  const sendWorkerMessage = params.ownedWorker
+    ? async (message: unknown) => {
+        if (!child.connected) {
+          throw new Error("worker lifecycle IPC channel closed");
+        }
+        await new Promise<void>((resolve, reject) => {
+          try {
+            child.send(message as Serializable, (error) => (error ? reject(error) : resolve()));
+          } catch (error) {
+            reject(toErrorObject(error, "worker lifecycle IPC send failed"));
+          }
+        });
+      }
+    : undefined;
+
   const adapter: WorkerChildAdapter = {
     get pid() {
       return windowsJob?.commandPid ?? child.pid;
@@ -673,31 +794,8 @@ export async function createChildAdapter(
     kill,
     dispose,
     closeStartGate: params.ownedWorker ? disconnectWorkerIpc : undefined,
-    openStartGate: params.ownedWorker
-      ? async () => {
-          if (startGateOpened) {
-            return;
-          }
-          startGateOpened = true;
-          await new Promise<void>((resolve, reject) => {
-            if (!child.connected) {
-              reject(new Error("worker lifecycle IPC channel closed before startup"));
-              return;
-            }
-            try {
-              child.send(WORKER_START_MESSAGE, (error) => {
-                if (error) {
-                  reject(error);
-                  return;
-                }
-                resolve();
-              });
-            } catch (error) {
-              reject(toErrorObject(error, "worker lifecycle IPC send failed"));
-            }
-          });
-        }
-      : undefined,
+    openStartGate,
+    sendWorkerMessage,
   };
   if (!windowsCleanup) {
     params.onSpawnCleanup?.(adapter.waitForExtinction?.() ?? cleanup.promise);

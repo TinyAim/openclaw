@@ -321,6 +321,9 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 changes.forEach((change) => emitSessionsChanged(context, change)),
               replyOptions: {
                 [REPLY_ADMISSION_TICKET]: replyAdmissionTicket,
+                ...(client?.internal?.disableModelFallbacks
+                  ? { disableModelFallbacks: true as const }
+                  : {}),
                 prepareAssistantTranscriptMessage: replyDispatch.prepareAssistantTranscriptMessage,
                 ...(isInternalSourceReplyChannel(ctx)
                   ? { resolveReplyDelivery: replyDispatch.resolveReplyDelivery }

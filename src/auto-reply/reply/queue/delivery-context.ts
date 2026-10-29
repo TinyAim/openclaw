@@ -124,6 +124,7 @@ export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
     normalizeOptionalString(execution.runtimePolicySessionKey ?? execution.sessionKey) ?? "",
     execution.provider,
     execution.model,
+    execution.disableModelFallbacks === true,
     execution.messageProvider ?? "",
     JSON.stringify([...new Set(execution.clientCaps ?? [])].toSorted()),
     stableStringify(execution.toolBindings ?? null),

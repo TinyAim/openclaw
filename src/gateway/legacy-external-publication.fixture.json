@@ -1,0 +1,29 @@
+{
+  "role": "assistant",
+  "content": [
+    {
+      "type": "text",
+      "text": "Frozen external publication"
+    }
+  ],
+  "api": "openclaw-transcript",
+  "provider": "openclaw",
+  "model": "delivery-mirror",
+  "usage": {
+    "input": 0,
+    "output": 0,
+    "cacheRead": 0,
+    "cacheWrite": 0,
+    "totalTokens": 0,
+    "cost": {
+      "input": 0,
+      "output": 0,
+      "cacheRead": 0,
+      "cacheWrite": 0,
+      "total": 0
+    }
+  },
+  "stopReason": "stop",
+  "timestamp": 1793180240845,
+  "idempotencyKey": "legacy-external-reply"
+}

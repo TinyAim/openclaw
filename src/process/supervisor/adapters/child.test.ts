@@ -114,6 +114,21 @@ it("creates owned worker groups without fallback and gates startup through IPC",
   expect(disconnectMock).toHaveBeenCalledOnce();
 });
 
+it("waits for opted-in worker readiness before opening the private start gate", async () => {
+  const { child, adapter, sendMock } = await setup({
+    ownedWorker: true,
+    workerStartHandshake: true,
+  });
+  const opening = adapter.openStartGate?.();
+  expect(sendMock).not.toHaveBeenCalled();
+  child.emit("message", { type: "openclaw-worker-ready-v1" });
+  await Promise.resolve();
+  expect(sendMock).toHaveBeenCalledWith({ type: "openclaw-worker-start-v1" }, expect.any(Function));
+  child.emit("message", { type: "openclaw-worker-started-v1" });
+  await opening;
+  adapter.dispose();
+});
+
 it("joins worker exit, closed pipes and the queued IPC disconnect", async () => {
   vi.useFakeTimers();
   setPlatform("darwin");

@@ -415,6 +415,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   try {
     const toolsRaw = await constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
     return {
+      restoreRequesterUserLanguageReference: toolRunContext.restoreRequesterUserLanguageReference,
       toolHookContext: {
         agentId: params.setup.sessionAgentId,
         config: attempt.config,

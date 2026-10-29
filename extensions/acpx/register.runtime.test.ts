@@ -3,7 +3,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const { runtimeRegistry } = vi.hoisted(() => ({
-  runtimeRegistry: new Map<string, { runtime: unknown }>(),
+  runtimeRegistry: new Map<string, { runtime: unknown; healthy?: () => boolean }>(),
 }));
 
 type BackendLifecycle = {
@@ -57,7 +57,7 @@ const { realRuntime, realServiceStartMock, realServiceStopMock, createRealServic
 
 vi.mock("openclaw/plugin-sdk/acp-runtime-backend", () => ({
   getAcpRuntimeBackend: (id: string) => runtimeRegistry.get(id),
-  registerAcpRuntimeBackend: (entry: { id: string; runtime: unknown }) => {
+  registerAcpRuntimeBackend: (entry: { id: string; runtime: unknown; healthy?: () => boolean }) => {
     runtimeRegistry.set(entry.id, entry);
   },
   unregisterAcpRuntimeBackend: (id: string) => {
@@ -117,6 +117,7 @@ describe("acpx register runtime service", () => {
       ensureSession(input: { sessionKey: string; agent: string; mode: string }): Promise<unknown>;
     };
     expect(deferredRuntime).toBeTruthy();
+    expect(runtimeRegistry.get("acpx")?.healthy?.()).toBe(true);
     expect(createRealServiceMock).not.toHaveBeenCalled();
     expect(realServiceStartMock).not.toHaveBeenCalled();
 

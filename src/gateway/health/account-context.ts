@@ -93,6 +93,7 @@ export async function resolveHealthAccountContext(params: {
     diagnostics.push(
       `${params.plugin.id}:${params.accountId}: failed to evaluate enabled state (${formatErrorMessage(error)}).`,
     );
+    enabled = false;
   }
   let configured = asBoolean(asNullableRecord(account)?.configured) ?? true;
   try {
@@ -106,6 +107,7 @@ export async function resolveHealthAccountContext(params: {
     diagnostics.push(
       `${params.plugin.id}:${params.accountId}: failed to evaluate configured state (${formatErrorMessage(error)}).`,
     );
+    configured = false;
   }
 
   return {

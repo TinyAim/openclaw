@@ -91,21 +91,22 @@ describe("prepareEmbeddedAttemptPromptExecution", () => {
 
     const result = await prepareEmbeddedAttemptPromptExecution(input);
 
-    expect(hoisted.detectAndLoadPromptImages).toHaveBeenCalledWith({
-      prompt: "inspect image.png",
-      workspaceDir: "/tmp/workspace",
-      agentWorkspaceDir: "/agent/workspace",
-      model: input.attempt.model,
-      existingImages: input.attempt.images,
-      imageOrder: ["inline"],
-      maxBytes: 1_234,
-      maxDimensionPx: 2048,
-      workspaceOnly: true,
-      sandbox: {
-        root: "/sandbox/workspace",
-        bridge: input.sandbox?.fsBridge,
-      },
-    });
+    expect(hoisted.detectAndLoadPromptImages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "inspect image.png",
+        workspaceDir: "/tmp/workspace",
+        model: input.attempt.model,
+        existingImages: input.attempt.images,
+        imageOrder: ["inline"],
+        maxBytes: 1_234,
+        maxDimensionPx: 2048,
+        workspaceOnly: true,
+        sandbox: {
+          root: "/sandbox/workspace",
+          bridge: input.sandbox?.fsBridge,
+        },
+      }),
+    );
     expect(result).toEqual({
       images: [{ type: "image", data: "loaded", mimeType: "image/png" }],
       imageFactIndexes: [null],
@@ -126,7 +127,7 @@ describe("prepareEmbeddedAttemptPromptExecution", () => {
     );
   });
 
-  it("reports failed hydration without consuming the embedded attempt fact", async () => {
+  it("rejects failed current-image hydration without consuming the embedded attempt fact", async () => {
     const base = createInput();
     const media = [{ path: "/tmp/missing.png", contentType: "image/png" }];
     const input = createInput({ attempt: { ...base.attempt, media } });
@@ -139,9 +140,9 @@ describe("prepareEmbeddedAttemptPromptExecution", () => {
       skippedCount: 1,
     });
 
-    const result = await prepareEmbeddedAttemptPromptExecution(input);
-
-    expect(result.failedMediaCount).toBe(1);
+    await expect(prepareEmbeddedAttemptPromptExecution(input)).rejects.toMatchObject({
+      code: "IMAGE_INPUT_UNAVAILABLE",
+    });
     expect(input.attempt.media).toBe(media);
   });
 

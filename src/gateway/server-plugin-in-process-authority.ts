@@ -419,6 +419,7 @@ export function resolveInProcessGatewayDispatch(
       ? { authenticatedUserProfile: operatorAuthority.authenticatedUserProfile }
       : {}),
     allowModelOverride: options?.allowSyntheticModelOverride === true,
+    disableModelFallbacks: options?.disableModelFallbacks,
     agentToolCaller: options?.agentToolCaller,
     agentRunTracking: options?.agentRunTracking,
     ...(operatorRoleActor ? { operatorRoleActor } : {}),

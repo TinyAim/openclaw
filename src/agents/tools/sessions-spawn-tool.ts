@@ -150,7 +150,11 @@ function createSessionsSpawnToolSchema(params: {
 }) {
   const spawnModes = params.threadAvailable ? SUBAGENT_SPAWN_MODES : (["run"] as const);
   const schema = {
-    task: Type.String(),
+    task: Type.Optional(
+      Type.String({
+        description: "Task for background subagents; optional for an empty visible session.",
+      }),
+    ),
     user: requesterProfileSchema(),
     taskName: Type.Optional(
       Type.String({
@@ -414,7 +418,8 @@ export function createSessionsSpawnTool(
             `sessions_spawn does not support "${unsupportedTimeoutParam}". Use "runTimeoutSeconds" for a per-run timeout.`,
           );
         }
-        const task = readToolStringParam(params, "task", { required: true });
+        const isVisible = params.visible === true;
+        const task = readToolStringParam(params, "task", { required: !isVisible }) ?? "";
         const runTimeoutSeconds = readNonNegativeIntegerParam(params, "runTimeoutSeconds");
         const taskNameResult = normalizeSubagentTaskName(params.taskName);
         if (taskNameResult.error) {
@@ -466,6 +471,8 @@ export function createSessionsSpawnTool(
               ? { ...result, role: requestedAgentId }
               : result,
           );
+        const requesterUserLanguageReference =
+          opts?.getRequesterUserLanguageReference?.() ?? opts?.requesterUserLanguageReference;
         const expectedParentSessionKey = opts?.agentSessionKey?.trim();
         if (opts?.expectedParentSessionId && !expectedParentSessionKey) {
           throw new Error("Exact parent session access requires a session key");
@@ -484,6 +491,7 @@ export function createSessionsSpawnTool(
             options: withExecRequestOwners(
               {
                 ...opts,
+                requesterUserLanguageReference,
                 onSpawnEffectsStart,
                 assertActive,
                 signal: executionSignal,
@@ -660,6 +668,8 @@ export function createSessionsSpawnTool(
                 ...inheritedSpawnContext(),
                 requesterThinkingLevel: opts?.requesterThinkingLevel,
                 requesterModel: opts?.requesterModel,
+                requesterModelRef: opts?.requesterModelRef,
+                requesterUserLanguageReference,
                 currentMessagingTarget: opts?.currentMessagingTarget ?? opts?.currentChannelId,
                 agentGroupId: opts?.agentGroupId,
                 agentGroupChannel: opts?.agentGroupChannel,

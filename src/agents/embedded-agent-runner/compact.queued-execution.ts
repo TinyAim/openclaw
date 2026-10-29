@@ -1,8 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   loadSessionEntry,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
+import {
+  captureSqliteCompactionCheckpoint,
+  persistSqliteCompactionCheckpoint,
+  type CapturedSqliteCompactionCheckpoint,
+} from "../../config/sessions/session-accessor.sqlite-checkpoint.js";
+import { hasExistingNativeIncognitoCheckpointOwner } from "../../config/sessions/session-checkpoint-native-incognito.js";
 import { projectPublicSessionEntry } from "../../config/sessions/session-entry-projection.js";
 import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import {
@@ -13,6 +20,7 @@ import {
   withOwnedSessionTranscriptWrites,
   type OwnedSessionTranscriptWriteContext,
 } from "../../config/sessions/transcript-write-context.js";
+import { SESSION_TOTAL_TOKENS_VERSION } from "../../config/sessions/types.js";
 import {
   resolveCompactionSuccessorTranscript,
   type ContextEngine,
@@ -274,6 +282,9 @@ export async function executeQueuedContextEngineCompaction(input: {
       // Fire before_compaction / after_compaction hooks here so plugin subscribers
       // are notified regardless of which engine is active.
       const engineOwnsCompaction = contextEngine.info.ownsCompaction === true;
+      const nativeIncognitoCheckpoint = hasExistingNativeIncognitoCheckpointOwner(runtimeTarget);
+      const checkpointStartedAt = Date.now();
+      let checkpointBefore: CapturedSqliteCompactionCheckpoint | null = null;
       if (engineOwnsCompaction || contextEngine.info.id !== "legacy") {
         // Plugin compaction and hooks can use the released synchronous transcript reader.
         const { restoreSessionColdTranscript } =
@@ -281,6 +292,15 @@ export async function executeQueuedContextEngineCompaction(input: {
         await restoreSessionColdTranscript(runtimeTarget, assertCallerActive);
       }
       await assertActive();
+      if (nativeIncognitoCheckpoint || engineOwnsCompaction || contextEngine.info.id !== "legacy") {
+        // Host captures its original exact writer; plugins never supply this checkpoint authority.
+        checkpointBefore = await captureSqliteCompactionCheckpoint({
+          ...runtimeTarget,
+          expectedState: expectedEntry,
+          assertActive: assertCallerActive,
+        });
+        await assertActive();
+      }
       const hookRunner = engineOwnsCompaction ? getGlobalHookRunner() : null;
       const hookSessionKey = runtimeTarget.sessionKey;
       const { sessionAgentId } = resolveSessionAgentIds({
@@ -333,6 +353,14 @@ export async function executeQueuedContextEngineCompaction(input: {
           compact: async (backendParams) => {
             if (backendParams.runtimeContext) {
               attachCompactionAccountingRecorder(backendParams.runtimeContext, {
+                ...(nativeIncognitoCheckpoint && checkpointBefore
+                  ? {
+                      nativeIncognitoCheckpoint: {
+                        before: checkpointBefore,
+                        deferToHost: true as const,
+                      },
+                    }
+                  : {}),
                 requestBudget: host.requestBudget,
                 pendingUserEntryId: host.pendingUserEntryId,
                 recordCompaction: (receipt) => {
@@ -380,6 +408,7 @@ export async function executeQueuedContextEngineCompaction(input: {
               params.trigger === "manual",
             runtimeContext: {
               ...runtimeContext,
+              ...(params.historyMode ? { historyMode: params.historyMode } : {}),
               forceReason:
                 params.forcePreflight === true || params.preflightRequired === true
                   ? "preflight_required"
@@ -402,7 +431,11 @@ export async function executeQueuedContextEngineCompaction(input: {
         );
         result = buildCompactionFailureResult(formatErrorMessage(compactErr));
       }
-      if (committedCompaction && (!result.ok || !result.compacted)) {
+      if (
+        committedCompaction &&
+        params.historyMode !== "summary_only" &&
+        (!result.ok || !result.compacted)
+      ) {
         // The stock writer committed before a hook or cancellation failed. Retain
         // that fact without adopting successor fields from the failed result.
         result = {
@@ -424,6 +457,7 @@ export async function executeQueuedContextEngineCompaction(input: {
         sessionFile: params.sessionFile,
         sessionTarget: runtimeTarget,
       };
+      let acceptedCheckpointOwner: AcceptedCompactionSuccessor | undefined;
       let tokensAfter = result.result?.tokensAfter;
       if (result.ok && result.compacted) {
         const proposed = resolveCompactionSuccessorTranscript(result);
@@ -438,7 +472,7 @@ export async function executeQueuedContextEngineCompaction(input: {
         // belongs to that identity only after the host accepts it.
         tokensAfter = sameTarget ? result.result?.tokensAfter : undefined;
         try {
-          successor = await acceptCompactionSuccessor({
+          const accepted = await acceptCompactionSuccessor({
             config: params.config,
             currentSessionFile: params.sessionFile,
             currentTarget: runtimeTarget,
@@ -454,6 +488,8 @@ export async function executeQueuedContextEngineCompaction(input: {
               host.onCommitted?.(accepted);
             },
           });
+          successor = accepted;
+          acceptedCheckpointOwner = accepted;
           tokensAfter = result.result?.tokensAfter;
           if (!committedCompaction) {
             declarePromptHistoryRewrite({ ...runtimeTarget, reason: "compaction" });
@@ -462,6 +498,91 @@ export async function executeQueuedContextEngineCompaction(input: {
           if (!params.abortSignal?.aborted) {
             throw error;
           }
+        }
+      }
+      if (checkpointBefore && acceptedCheckpointOwner && result.ok && result.compacted) {
+        try {
+          const accepted = acceptedCheckpointOwner;
+          const checkpointContext = await createTranscriptWriteContext(accepted.sessionTarget, {
+            sessionId: accepted.entry.sessionId,
+            lifecycleRevision: accepted.entry.lifecycleRevision,
+            activeWriterRunId: accepted.entry.activeWriterRunId,
+          });
+          const retainCheckpoint = async () => {
+            const after = await captureSqliteCompactionCheckpoint({
+              ...accepted.sessionTarget,
+              expectedState: {
+                sessionId: accepted.entry.sessionId,
+                lifecycleRevision: accepted.entry.lifecycleRevision,
+                activeWriterRunId: accepted.entry.activeWriterRunId,
+              },
+              assertActive: checkpointContext.assertCommitAllowed,
+            });
+            if (!after)
+              throw new Error(
+                "Host-accepted compaction checkpoint boundary is unavailable; reconcile before retry",
+              );
+            const predecessor =
+              checkpointBefore.sessionId !== after.sessionId
+                ? accepted.admissionTransition
+                : undefined;
+            if (checkpointBefore.sessionId !== after.sessionId && !predecessor)
+              throw new Error("Compaction successor has no host-committed admission transition");
+            const measured = (value: number | undefined) =>
+              typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+                ? value
+                : undefined;
+            const stored = await persistSqliteCompactionCheckpoint({
+              source: checkpointBefore!,
+              ...accepted.sessionTarget,
+              expectedState: after,
+              assertActive: checkpointContext.assertCommitAllowed,
+              ...(predecessor
+                ? { predecessor: { captured: checkpointBefore!, transition: predecessor } }
+                : {}),
+              checkpoint: {
+                checkpointId: randomUUID(),
+                sessionKey: runtimeTarget.sessionKey,
+                sessionId: after.sessionId,
+                createdAt: checkpointStartedAt,
+                reason:
+                  params.trigger === "manual"
+                    ? "manual"
+                    : params.trigger === "overflow"
+                      ? "overflow-retry"
+                      : "auto-threshold",
+                tokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+                tokensBefore: measured(result.result?.tokensBefore),
+                tokensAfter: measured(tokensAfter),
+                ...(result.result?.summary?.trim()
+                  ? { summary: result.result.summary.trim() }
+                  : {}),
+                ...(result.result?.firstKeptEntryId
+                  ? { firstKeptEntryId: result.result.firstKeptEntryId }
+                  : {}),
+                preCompaction: {
+                  sessionId: checkpointBefore!.sessionId,
+                  leafId: checkpointBefore!.leafId,
+                },
+                postCompaction: { sessionId: after.sessionId, leafId: after.leafId },
+              },
+            });
+            if (stored.status !== "stored")
+              throw new Error(
+                `Host compaction checkpoint retention is unconfirmed (${stored.status}); reconcile before retry`,
+              );
+          };
+          // The admitted native memory owner stays outside every owned transcript frame.
+          // A foreground outer frame refuses here; it is never cleared or hidden.
+          if (nativeIncognitoCheckpoint) await retainCheckpoint();
+          else await withOwnedSessionTranscriptWrites(checkpointContext, retainCheckpoint);
+        } catch (error) {
+          // Preserve the committed compaction receipt; a failed checkpoint is not permission to replay it.
+          log.warn(
+            `host compaction checkpoint retention unavailable: ${formatErrorMessage(error)}`,
+          );
+          if (params.historyMode === "summary_only")
+            return buildCompactionFailureResult(formatErrorMessage(error));
         }
       }
       const compactionKind: "context-engine" | "server-endpoint" =

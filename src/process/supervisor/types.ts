@@ -43,6 +43,13 @@ export type ManagedRun = {
   cancel: (reason?: TerminationReason) => void;
   /** Stop every decoded, raw, captured, and output-clock update for this run. */
   detachOutput?: () => void;
+  /**
+   * Opens the private IPC start gate for an explicitly deferred owned worker.
+   * Ordinary children never expose this capability.
+   */
+  openStartGate?: () => Promise<void>;
+  /** Private trusted-owner control channel for an explicitly owned worker. */
+  sendWorkerMessage?: (message: unknown) => Promise<void>;
 };
 
 export type ManagedRunStdin = {
@@ -101,6 +108,9 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   readonly cleanupResult?: ProcessCleanupResult;
   kill: (signal?: NodeJS.Signals) => void;
   dispose: () => void;
+  closeStartGate?: () => void;
+  openStartGate?: () => Promise<void>;
+  sendWorkerMessage?: (message: unknown) => Promise<void>;
 };
 
 /** Observe output before joining startup and private-input delivery. */
@@ -154,6 +164,14 @@ type SpawnChildInput = SpawnBaseInput & {
   secretInput?: SpawnSecretInput;
   onStdoutRaw?: (chunk: Buffer) => void;
   onStderrRaw?: (chunk: Buffer) => void;
+  /** Run in a private IPC-owned process tree rather than as an ordinary child. */
+  ownedWorker?: true;
+  /** Let the caller durably record the exact worker identity before it starts work. */
+  deferWorkerStart?: true;
+  /** Require this private owned-worker protocol: worker-ready before the start gate. */
+  workerStartHandshake?: true;
+  /** Private worker lifecycle diagnostics; never a public protocol surface. */
+  onWorkerMessage?: (message: unknown) => void;
 };
 
 type SpawnPtyInput = SpawnBaseInput & {

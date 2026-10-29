@@ -318,7 +318,10 @@ describe("buildConfiguredAgentSystemPrompt", () => {
         ...fixedEmbeddedPromptInputs(),
         promptMode,
       });
-      expect(prompt).toContain("You are a personal assistant running inside OpenClaw.");
+      expect(prompt).toContain("You are an agent running inside OpenClaw.");
+      expect(prompt).toContain(
+        "Follow your assigned role and responsibilities in the current agent instructions and conversation context.",
+      );
       if (promptMode === "none") {
         expect(prompt).not.toContain("Fixture");
         expect(prompt).not.toContain("## Tooling");
@@ -328,6 +331,45 @@ describe("buildConfiguredAgentSystemPrompt", () => {
         expect(prompt).toContain("Working directory: /tmp/openclaw-prompt-project");
       }
       expect(prompt.includes("- direct-alias: fixture/direct")).toBe(promptMode === "full");
+    },
+  );
+
+  it.each(["full", "minimal"] as const)(
+    "keeps assigned role instructions and current role context in %s mode",
+    (promptMode) => {
+      const roleInstructions =
+        "You are the continuity and setting steward. Preserve character identity and approved canon.";
+      const currentRoleContext =
+        "Current recipient role: continuity and setting steward. Lead capability replies with continuity duties and deliverables.";
+      const prompt = buildConfiguredAgentSystemPrompt({
+        ...fixedEmbeddedPromptInputs(),
+        promptMode,
+        contextFiles: [{ path: "AGENTS.md", content: roleInstructions }],
+        extraSystemPrompt: currentRoleContext,
+      });
+
+      expect(prompt).toContain(roleInstructions);
+      expect(prompt).toContain(currentRoleContext);
+      expect(prompt).not.toContain("You are a personal assistant running inside OpenClaw.");
+      expect(prompt).toContain(
+        "The AGENTS.md Tools section guides usage; it never grants availability.",
+      );
+    },
+  );
+
+  it.each(["full", "minimal", "none"] as const)(
+    "does not invent a personal or specialist role when none is supplied in %s mode",
+    (promptMode) => {
+      const prompt = buildConfiguredAgentSystemPrompt({
+        ...fixedEmbeddedPromptInputs(),
+        promptMode,
+        contextFiles: [],
+        extraSystemPrompt: undefined,
+      });
+
+      expect(prompt).toMatch(/^You are an agent running inside OpenClaw\./);
+      expect(prompt).not.toContain("You are a personal assistant");
+      expect(prompt).not.toContain("continuity and setting steward");
     },
   );
 

@@ -237,6 +237,9 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.viewers.set", "sessions-subscriptions", "operator.read", "2026.7"],
   ["sessions.preview", "sessions-read", "operator.read", "<=2026.7"],
   ["sessions.describe", "sessions-read", "operator.read", "<=2026.7", { lifetime: "observation" }],
+  ["sessions.compaction.branch", "sessions-compaction-checkpoints", "operator.write", "<=2026.7"],
+  ["sessions.compaction.restore", "sessions-compaction-checkpoints", "operator.admin", "<=2026.7"],
+  ["sessions.compaction.list", "sessions-compaction-queries", "operator.read", "<=2026.7"],
   ["sessions.branches.list", "sessions-rewind", "operator.read", "<=2026.7"],
   ["sessions.branches.switch", "sessions-rewind", "operator.admin", "<=2026.7"],
   ["sessions.rewind", "sessions-rewind", "operator.admin", "<=2026.7"],
@@ -722,4 +725,10 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["skills.workshop.changes", "skills", "operator.read", "2026.9"],
   ["skills.workshop.archive", "skills", "operator.admin", "2026.9"],
   ["skills.workshop.restore", "skills", "operator.admin", "2026.9"],
+  // Wisclaw operator-plane collaboration. Append so older advertised indices stay stable.
+  ["subagents.capabilities", "subagents", "operator.read", "2026.8"],
+  ["subagents.list", "subagents", "operator.read", "2026.8"],
+  ["subagents.get", "subagents", "operator.read", "2026.8"],
+  ["subagents.spawn", "subagents", "operator.admin", "2026.8"],
+  ["subagents.kill", "subagents", "operator.admin", "2026.8"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

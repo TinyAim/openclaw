@@ -72,6 +72,7 @@ import {
   loadAgentPurgeOperations,
   loadAgentMaintenanceFinalizationOperations,
   loadAgentNativeBindingOperations,
+  loadAgentCheckpointOperations,
   loadAgentMessageCutOperations,
   prepareAgentNativeBindingOperation,
   loadAgentTrajectoryOperations,
@@ -439,6 +440,7 @@ function openAgentDatabaseBackend(
     "session.maintenance.finalize": loadAgentMaintenanceFinalizationOperations,
     "session.maintenance.size": loadAgentMaintenanceFinalizationOperations,
     "session.nativeBindings.delete": loadAgentNativeBindingOperations,
+    "session.checkpoint.commit": loadAgentCheckpointOperations,
     "session.messageCut.commit": loadAgentMessageCutOperations,
     "trajectory.events.append": loadAgentTrajectoryOperations,
     "trajectory.retention.begin": loadAgentTrajectoryOperations,
@@ -589,7 +591,8 @@ function openAgentDatabaseBackend(
       const nativeBindings =
         command.type === "session.nativeBindings.delete"
           ? command.input
-          : command.type === "session.messageCut.commit"
+          : command.type === "session.messageCut.commit" ||
+              command.type === "session.checkpoint.commit"
             ? command.input.nativeBindings
             : command.type === "session.agentPurge.commit" ||
                 command.type === "session.maintenance.finalize"

@@ -378,6 +378,11 @@ export async function loadAgentMaintenanceFinalizationOperations() {
   } satisfies Handlers;
 }
 
+export async function loadAgentCheckpointOperations() {
+  const kernel = await import("../config/sessions/session-compaction-checkpoint.worker.js");
+  return { "session.checkpoint.commit": kernel.commitCompactionCheckpoint } satisfies Handlers;
+}
+
 export async function loadAgentMessageCutOperations() {
   const kernel = await import("../config/sessions/session-message-cut.worker.js");
   return { "session.messageCut.commit": kernel.commitSessionMessageCut } satisfies Handlers;
@@ -698,6 +703,7 @@ export type RegisteredAgentWorkerOperations = WorkerOperations<
     Awaited<ReturnType<typeof loadAgentPurgeOperations>> &
     Awaited<ReturnType<typeof loadAgentMaintenanceFinalizationOperations>> &
     Awaited<ReturnType<typeof loadAgentNativeBindingOperations>> &
+    Awaited<ReturnType<typeof loadAgentCheckpointOperations>> &
     Awaited<ReturnType<typeof loadAgentMessageCutOperations>> &
     Awaited<ReturnType<typeof loadAgentRestartRecoveryOperations>> &
     Awaited<ReturnType<typeof loadAgentTrajectoryOperations>> &

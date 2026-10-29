@@ -15,6 +15,7 @@ export const AgentsFileEntrySchema = closedObject({
   size: Type.Optional(Type.Integer({ minimum: 0 })),
   updatedAtMs: Type.Optional(Type.Integer({ minimum: 0 })),
   hash: Type.Optional(Sha256String),
+  contentHash: Type.Optional(Sha256String),
   content: Type.Optional(Type.String()),
 });
 
@@ -49,7 +50,7 @@ export const AgentsFilesSetParamsSchema = Object.assign(
     agentId: NonEmptyString,
     name: NonEmptyString,
     content: Type.String(),
-    expectedHash: Type.Optional(Sha256String),
+    expectedHash: Type.Optional(Type.Union([Sha256String, Type.Null()])),
     expectedMissing: Type.Optional(Type.Literal(true)),
   }),
   { not: { required: ["expectedHash", "expectedMissing"] } },

@@ -18,6 +18,12 @@ export const SESSIONS_SPAWN_SESSION_SCHEMA = {
         "Persistent sidebar session only when the user requests a separate session or needs to revisit and steer it independently. Internal QA/coding/review/test workers: omit or false. Subagent runtime only; default run mode and empty attachments accepted; no thread/thinking/lightContext or attachment staging.",
     }),
   ),
+  targetAgent: Type.Optional(
+    Type.String({
+      description:
+        "Optional target agent or role name for a visible session; omit when not specified.",
+    }),
+  ),
   group: Type.Optional(
     Type.String({
       description:

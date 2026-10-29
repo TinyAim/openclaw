@@ -54,6 +54,26 @@ export type SessionChatType = ChatType;
 export type PersistedSessionRunStatus = Exclude<SessionRunStatus, "running" | "queued">;
 export const SESSION_TOTAL_TOKENS_VERSION = 1 as const;
 
+export type SessionCompactionCheckpointReason =
+  | "manual"
+  | "auto-threshold"
+  | "overflow-retry"
+  | "timeout-retry";
+export type SessionCompactionCheckpoint = {
+  checkpointId: string;
+  sessionKey: string;
+  sessionId: string;
+  createdAt: number;
+  reason: SessionCompactionCheckpointReason;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  tokensVersion?: typeof SESSION_TOTAL_TOKENS_VERSION;
+  summary?: string;
+  firstKeptEntryId?: string;
+  preCompaction: { sessionId: string; sessionFile?: string; leafId?: string; entryId?: string };
+  postCompaction: { sessionId: string; sessionFile?: string; leafId?: string; entryId?: string };
+};
+
 export type SessionOrigin = {
   label?: string;
   provider?: string;
@@ -578,6 +598,7 @@ type SessionEntryCore = SessionRestartRecoveryState &
     contextTokensSource?: "runtime" | "runtime-configured" | "resolved" | "resolved-v1";
     contextBudgetStatus?: SessionContextBudgetStatus;
     compactionCount?: number;
+    compactionCheckpoints?: SessionCompactionCheckpoint[];
     memoryFlush?: MemoryFlushState;
     cliSessionIds?: Record<string, string>;
     cliSessionBindings?: Record<string, CliSessionBinding>;

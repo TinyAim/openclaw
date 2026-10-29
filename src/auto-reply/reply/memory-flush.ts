@@ -37,14 +37,41 @@ export function estimatePromptTokensForMemoryFlush(prompt?: string): number | un
   return tokens === undefined ? undefined : Math.ceil(tokens);
 }
 
+/** Resolves the blocking threshold using the selected reserve, optional ratio/token cap, and server floor. */
 export function resolveCompactionThreshold(params: {
   contextWindowTokens: number;
   reserveTokensFloor: number;
   minimumThresholdTokens?: number;
+  thresholdRatio?: number;
+  thresholdTokens?: number;
 }): number {
   const contextWindow = Math.max(1, Math.floor(params.contextWindowTokens));
   const reserveTokens = Math.max(0, Math.floor(params.reserveTokensFloor));
-  return Math.max(0, contextWindow - reserveTokens, Math.floor(params.minimumThresholdTokens ?? 0));
+  const minimumThreshold = Math.floor(params.minimumThresholdTokens ?? 0);
+  const hasEffectiveRatio =
+    typeof params.thresholdRatio === "number" &&
+    Number.isFinite(params.thresholdRatio) &&
+    params.thresholdRatio > 0 &&
+    params.thresholdRatio < 1;
+  const hasEffectiveTokenCap =
+    typeof params.thresholdTokens === "number" &&
+    Number.isFinite(params.thresholdTokens) &&
+    params.thresholdTokens > 0 &&
+    params.thresholdTokens < contextWindow;
+  if (!hasEffectiveRatio && !hasEffectiveTokenCap) {
+    return Math.max(0, contextWindow - reserveTokens, minimumThreshold);
+  }
+  let threshold = Math.max(1, contextWindow - 1);
+  if (hasEffectiveRatio) {
+    threshold = Math.min(
+      threshold,
+      Math.max(1, Math.floor(contextWindow * params.thresholdRatio!)),
+    );
+  }
+  if (hasEffectiveTokenCap) {
+    threshold = Math.min(threshold, Math.max(1, Math.floor(params.thresholdTokens!)));
+  }
+  return Math.max(threshold, minimumThreshold);
 }
 
 export function resolveResponsesServerCompactionThreshold(params: {

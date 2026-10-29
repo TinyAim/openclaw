@@ -209,6 +209,21 @@ describe("agent defaults schema", () => {
     ).toBe(false);
   });
 
+  it("validates Wisclaw proactive compaction thresholds on the current base schema", () => {
+    expect(
+      AgentDefaultsSchema.parse({ compaction: { thresholdRatio: 0.75, thresholdTokens: 4096 } })
+        ?.compaction,
+    ).toMatchObject({ thresholdRatio: 0.75, thresholdTokens: 4096 });
+    for (const compaction of [
+      { thresholdRatio: 0 },
+      { thresholdRatio: 1 },
+      { thresholdTokens: 0 },
+      { thresholdTokens: 1.5 },
+    ]) {
+      expect(() => AgentDefaultsSchema.parse({ compaction })).toThrow();
+    }
+  });
+
   it("accepts compaction.enabled so auto-compaction can be turned off", () => {
     expect(AgentDefaultsSchema.parse({ compaction: { enabled: false } })?.compaction?.enabled).toBe(
       false,

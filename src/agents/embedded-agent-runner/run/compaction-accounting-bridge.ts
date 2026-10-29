@@ -1,4 +1,5 @@
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
+import type { CapturedSqliteCompactionCheckpoint } from "../../../config/sessions/session-accessor.sqlite-checkpoint.js";
 import type { ContextEngineRuntimeContext } from "../../../context-engine/types.js";
 import type { CompactionRequestConstraints } from "../../sessions/compaction/request-budget.js";
 import type { SessionManager } from "../../sessions/session-manager.js";
@@ -19,6 +20,8 @@ type CompactionAccountingRecorder = CompactionRequestConstraints & {
     sessionTarget: SessionTranscriptRuntimeTarget;
     assertActive: () => void;
   };
+  /** Host pre-capture; this marks deferred work, never confirmed checkpoint retention. */
+  nativeIncognitoCheckpoint?: { before: CapturedSqliteCompactionCheckpoint; deferToHost: true };
   recordUsage?: (usage: NormalizedUsage) => void;
   recordCompaction?: (receipt: CompactionAccountingReceipt) => void;
 };

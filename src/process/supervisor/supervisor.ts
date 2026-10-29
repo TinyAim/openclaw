@@ -366,6 +366,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
     };
 
     try {
+      if (input.mode === "child" && input.deferWorkerStart && !input.ownedWorker) {
+        throw new Error("deferred worker start requires owned worker supervision");
+      }
       // Reserve the join before construction: a timeout result does not release
       // resources acquired later, or hide cleanup when readiness rejects after spawn.
       const cleanup = createDeferredCore<ProcessExtinctionResult>();
@@ -410,6 +413,9 @@ export function createProcessSupervisor(): ProcessSupervisor & {
                 input: input.input,
                 stdinMode: input.stdinMode,
                 secretInput: input.secretInput,
+                ownedWorker: input.ownedWorker,
+                workerStartHandshake: input.workerStartHandshake,
+                onWorkerMessage: input.onWorkerMessage,
               });
       const nativeExtinctionPromise = startupPromise
         .then(
@@ -631,8 +637,20 @@ export function createProcessSupervisor(): ProcessSupervisor & {
           requestCancel(reason);
         },
         detachOutput,
+        ...(input.mode === "child" && input.ownedWorker && input.deferWorkerStart
+          ? { openStartGate: async () => await adapter.openStartGate?.() }
+          : {}),
+        ...(input.mode === "child" && input.ownedWorker
+          ? {
+              sendWorkerMessage: async (message: unknown) =>
+                await adapter.sendWorkerMessage?.(message),
+            }
+          : {}),
       };
 
+      if (input.mode === "child" && input.ownedWorker && !input.deferWorkerStart) {
+        await adapter.openStartGate?.();
+      }
       if (forcedReason) {
         managedRun.cancel(forcedReason);
       }

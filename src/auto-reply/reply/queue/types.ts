@@ -268,6 +268,8 @@ export type FollowupRun = {
     provider: string;
     model: string;
     requestedRouteResolution?: ModelFallbackRouteResolution;
+    /** Host-owned restriction for this queued run, not a session preference. */
+    disableModelFallbacks?: true;
     hasSessionModelOverride?: boolean;
     modelOverrideSource?: "auto" | "user";
     hasAutoFallbackProvenance?: boolean;

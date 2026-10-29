@@ -27,6 +27,7 @@ export function createSyntheticPluginRuntimeClient(
     Pick<
       NonNullable<RuntimeClient["internal"]>,
       | "allowModelOverride"
+      | "disableModelFallbacks"
       | "agentToolCaller"
       | "agentRunTracking"
       | "operatorRoleActor"
@@ -75,6 +76,7 @@ export function createSyntheticPluginRuntimeClient(
       ...(params?.sessionCreation ? { sessionCreation: params.sessionCreation } : {}),
       ...(params?.agentToolCaller ? { agentToolCaller: params.agentToolCaller } : {}),
       allowModelOverride: params?.allowModelOverride === true,
+      ...(params?.disableModelFallbacks ? { disableModelFallbacks: true } : {}),
       ...(params?.agentRunTracking ? { agentRunTracking: params.agentRunTracking } : {}),
       ...(params?.cronRunContinuation === true ? { cronRunContinuation: true } : {}),
       ...(params?.runtimeContextFragments

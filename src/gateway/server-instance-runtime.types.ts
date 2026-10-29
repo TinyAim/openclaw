@@ -16,6 +16,7 @@ export type GatewayInstanceAgentDispatchOptions = {
   assertAdmissionCurrent?: () => void;
   allowModelOverride?: boolean;
   allowSyntheticModelOverride?: boolean;
+  disableModelFallbacks?: true;
   allowSyntheticCronRunContinuation?: boolean;
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
   expectFinal?: boolean;

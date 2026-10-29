@@ -74,6 +74,10 @@ import {
 import type { ControlUiRootState } from "./server-control-ui-root.js";
 import {
   getNativeHookRelayModule,
+  getMediaGenRuntimeHttpModule,
+  getMediaStudioSpatialReferenceHttpModule,
+  getMediaStudioSpatialEnvironmentPanoramaHttpModule,
+  getMediaStudioSpatialEnvironmentDepthMeshHttpModule,
   getControlUiModule,
   getControlUiPluginAssetsModule,
   getCanvasServeModule,
@@ -144,6 +148,11 @@ export function createGatewayHttpServer(opts: {
   getResolvedAuth?: () => ResolvedGatewayAuth;
   /** Optional rate limiter for auth brute-force protection. */
   rateLimiter?: AuthRateLimiter;
+  mediaGenRuntimeExecutor?: import("./media-gen-runtime-http.js").MediaGenRuntimeHttpExecutor;
+  mediaGenRuntimeImageExecutor?: import("./media-gen-runtime/image-http.js").ImageRouteExecutor;
+  spatialReferenceRuntimeExecutor?: import("./media-studio-spatial-reference-render-http.js").MediaStudioSpatialReferenceRenderHttpExecutor;
+  spatialEnvironmentPanoramaRuntimeExecutor?: import("./media-studio-spatial-environment-render-http.js").SpatialEnvironmentPanoramaRuntimeExecutor;
+  spatialEnvironmentDepthMeshRuntimeExecutor?: import("./media-studio-spatial-depth-mesh-render-http.js").SpatialEnvironmentDepthMeshRuntimeExecutor;
   /** Strict limiter for the public join-code exchange, including loopback. */
   joinRateLimiter?: AuthRateLimiter;
   /** Authenticator/dispatcher for the reserved node worker bundle namespace. */
@@ -560,6 +569,52 @@ export function createGatewayHttpServer(opts: {
             ...operatorAuth(),
             config: openAiChatCompletionsConfig,
           }),
+      );
+      addAdmittedStage(Boolean(opts.spatialReferenceRuntimeExecutor), async () =>
+        opts.spatialReferenceRuntimeExecutor
+          ? (
+              await getMediaStudioSpatialReferenceHttpModule()
+            ).handleMediaStudioSpatialReferenceRenderHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialReferenceRuntimeExecutor,
+            })
+          : false,
+      );
+      addAdmittedStage(Boolean(opts.spatialEnvironmentPanoramaRuntimeExecutor), async () =>
+        opts.spatialEnvironmentPanoramaRuntimeExecutor
+          ? (
+              await getMediaStudioSpatialEnvironmentPanoramaHttpModule()
+            ).handleMediaStudioSpatialEnvironmentPanoramaHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialEnvironmentPanoramaRuntimeExecutor,
+            })
+          : false,
+      );
+      addAdmittedStage(Boolean(opts.spatialEnvironmentDepthMeshRuntimeExecutor), async () =>
+        opts.spatialEnvironmentDepthMeshRuntimeExecutor
+          ? (
+              await getMediaStudioSpatialEnvironmentDepthMeshHttpModule()
+            ).handleMediaStudioSpatialEnvironmentDepthMeshHttpRequest(req, res, {
+              ...routeAuth,
+              executor: opts.spatialEnvironmentDepthMeshRuntimeExecutor,
+            })
+          : false,
+      );
+      addAdmittedStage(true, async () =>
+        (await getMediaGenRuntimeHttpModule()).handleMediaGenRuntimeHttpRequest(req, res, {
+          ...routeAuth,
+          executor: opts.mediaGenRuntimeExecutor,
+        }),
+      );
+      addAdmittedStage(Boolean(opts.mediaGenRuntimeImageExecutor), async () =>
+        (await import("./media-gen-runtime/image-http.js")).handleMediaGenRuntimeImageHttpRequest(
+          req,
+          res,
+          {
+            ...routeAuth,
+            executor: opts.mediaGenRuntimeImageExecutor,
+          },
+        ),
       );
       const approvalDocument = isControlUiApprovalDocumentPath({
         basePath: controlUiBasePath,

@@ -228,6 +228,17 @@ describe("validateWakeParams", () => {
   });
 });
 
+describe("chat durable outcome admission", () => {
+  it("accepts booleans and rejects nonboolean wire values", () => {
+    const base = { sessionKey: "agent:main:main", message: "hello", idempotencyKey: "run-1" };
+    expectAccepted(protocol.validateChatSendParams, [
+      { ...base, durableOutcome: true },
+      { ...base, durableOutcome: false },
+    ]);
+    expectRejected(protocol.validateChatSendParams, [{ ...base, durableOutcome: "yes" }]);
+  });
+});
+
 describe("validateNodePresenceActivityPayload", () => {
   it("accepts bounded input idle time", () => {
     expectAccepted(validateNodePresenceActivityPayload, [

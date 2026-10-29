@@ -398,6 +398,8 @@ interface CompactionRetentionBudget {
 interface CompactionRetentionConstraints {
   /** The run's source input; later internal updates do not replace its human ask. */
   requestFromEntryId?: string;
+  /** Manual recovery summarizes the whole active window into this new boundary. */
+  summaryOnlyBoundaryId?: string;
   /** An admitted, unprocessed user remains intact even before its budget is prepared. */
   preserveFromEntryId?: string;
   budget?: CompactionRetentionBudget;
@@ -595,6 +597,8 @@ export async function generateSummary(
 }
 
 export interface CompactionPreparation {
+  /** Per-call manual recovery; ordinary and automatic retention stay unchanged. */
+  historyMode?: "summary_only";
   /** Remaining foreground summary tokens, independent of the summarizer's context window. */
   summaryTokenBudget?: number;
   /** Entry id where retained history starts. */
@@ -626,10 +630,25 @@ export function prepareCompaction(
   constraints?: CompactionRetentionConstraints,
 ): Result<CompactionPreparation | undefined, CompactionError> {
   const lastEntry = pathEntries.at(-1);
+  const summaryOnlyBoundaryId = constraints?.summaryOnlyBoundaryId;
+  if (
+    summaryOnlyBoundaryId &&
+    (requestState ||
+      constraints?.budget ||
+      constraints?.preserveFromEntryId ||
+      constraints?.requestFromEntryId)
+  ) {
+    return err(
+      new CompactionError(
+        "invalid_session",
+        "Summary-only compaction cannot consume pending foreground work.",
+      ),
+    );
+  }
   if (
     !lastEntry ||
     lastEntry.type === "reset" ||
-    (lastEntry.type === "compaction" && lastEntry.fromHook)
+    (lastEntry.type === "compaction" && lastEntry.fromHook && !summaryOnlyBoundaryId)
   ) {
     // Safeguard-owned compactions are anti-loop boundaries for the current turn.
     return ok(undefined);
@@ -694,6 +713,33 @@ export function prepareCompaction(
     : undefined;
   const contextUsage = estimateContextTokens(contextMessages);
   const tokensBefore = contextUsage.tokens;
+  if (summaryOnlyBoundaryId) {
+    // The latest summary is passed separately; never reload raw history behind it.
+    const messagesToSummarize = contextMessages.filter(
+      (message) => message.role !== "compactionSummary",
+    );
+    const fileOps = createFileOps();
+    if (prevBoundaryIndex >= 0) {
+      const prevCompaction = effectiveEntries[prevBoundaryIndex];
+      if (prevCompaction?.type === "compaction" && !prevCompaction.fromHook) {
+        const details = parseCompactionDetails(prevCompaction.details);
+        if (details) mergeSummaryFileOperations(fileOps, details);
+      }
+    }
+    for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
+    return ok({
+      historyMode: "summary_only",
+      firstKeptEntryId: summaryOnlyBoundaryId,
+      messagesToSummarize,
+      turnPrefixMessages: [],
+      isSplitTurn: false,
+      tokensBefore,
+      previousSummary,
+      previousSummaryDetails,
+      fileOps,
+      settings,
+    });
+  }
   const totalEstimatedTokens = contextMessages.reduce(
     (total, message) => total + estimateTokens(message),
     0,
@@ -860,8 +906,9 @@ export async function compact(
       summaryPrompt,
     );
   const summarizeTurnPrefix = isSplitTurn && turnPrefixMessages.length > 0;
+  const refreshPreviousSummary = Boolean(previousSummary?.trim() && customInstructions?.trim());
   const historyResult =
-    messagesToSummarize.length > 0 || !summarizeTurnPrefix
+    messagesToSummarize.length > 0 || !summarizeTurnPrefix || refreshPreviousSummary
       ? await summarize(messagesToSummarize, previousSummary)
       : ok<string, CompactionError>(
           stripPreviousCompactionMetadata(

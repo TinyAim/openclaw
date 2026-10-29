@@ -131,6 +131,8 @@ export const AgentDefaultsBaseSchema = z.strictObject({
     .strictObject({
       /** Enable embedded proactive auto-compaction. Default: true. */
       enabled: z.boolean().optional(),
+      thresholdRatio: z.number().gt(0).lt(1).optional(),
+      thresholdTokens: z.number().int().positive().optional(),
       mode: z.union([z.literal("default"), z.literal("safeguard")]).optional(),
       /**
        * Id of a registered compaction provider plugin.

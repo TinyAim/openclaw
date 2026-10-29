@@ -231,6 +231,10 @@ export async function detectAndLoadPromptImages(
     existingImageFactIndexes?: readonly ImageFactIndex[];
     imageOrder?: PromptImageOrderEntry[];
     mediaImageLayout?: MediaImageLayout;
+    prepareCurrentMedia?: (
+      media: readonly MediaFact[],
+      missingImageFactIndexes: ReadonlySet<number>,
+    ) => Promise<readonly MediaFact[]>;
   },
 ): Promise<{
   images: ImageContent[];
@@ -253,20 +257,19 @@ export async function detectAndLoadPromptImages(
   // initial message. Resolve without persisting before choosing image ownership.
   const message = await params.userTurnTranscriptRecorder?.resolveMessage();
   const recordedMedia = message ? readPersistedMediaFacts(message) : undefined;
-  const media = normalizeMediaFacts(
+  const sourceMedia = normalizeMediaFacts(
     recordedMedia ? applyRunHydrationSuppression(recordedMedia, params.media) : params.media,
   );
   const mediaImageLayout =
     (message ? readPersistedMediaImageLayout(message) : undefined) ?? params.mediaImageLayout;
   const suppressed = new Set([
     ...(mediaImageLayout?.suppressedFactIndexes ?? []),
-    ...media.flatMap((fact, index) => (fact.hydrationSuppressed === true ? [index] : [])),
+    ...sourceMedia.flatMap((fact, index) => (fact.hydrationSuppressed === true ? [index] : [])),
   ]);
-  const imageFactIndexes = media.flatMap((fact, factIndex) =>
+  const imageFactIndexes = sourceMedia.flatMap((fact, factIndex) =>
     isImageMediaFact(fact) && !suppressed.has(factIndex) ? [factIndex] : [],
   );
-  const refs = media.map(mediaFactToImageRef).filter((ref): ref is MediaImageRef => Boolean(ref));
-  const refsByFact = new Map(refs.map((ref) => [ref.factIndex, ref]));
+
   const inferredSlots = (() => {
     if (params.imageOrder?.length === imageFactIndexes.length) {
       return params.imageOrder.map((kind, index) => ({
@@ -287,8 +290,8 @@ export async function detectAndLoadPromptImages(
     return imageFactIndexes.map((factIndex, imageIndex) => ({
       factIndex,
       kind:
-        !media[factIndex]?.path &&
-        !media[factIndex]?.url &&
+        !sourceMedia[factIndex]?.path &&
+        !sourceMedia[factIndex]?.url &&
         imageIndex < (params.existingImages?.length ?? 0)
           ? ("inline" as const)
           : ("offloaded" as const),
@@ -327,6 +330,24 @@ export async function detectAndLoadPromptImages(
           : -1;
     return index >= 0 ? unusedExisting.splice(index, 1)[0] : undefined;
   };
+  const plannedSlots = slots.map((slot) => ({
+    slot,
+    existing: takeExisting(slot.factIndex, slot.kind === "inline"),
+  }));
+  const missingImageFactIndexes = new Set(
+    plannedSlots.flatMap(({ slot, existing }) =>
+      !existing && slot.factIndex !== undefined ? [slot.factIndex] : [],
+    ),
+  );
+  const media = params.prepareCurrentMedia
+    ? normalizeMediaFacts(await params.prepareCurrentMedia(sourceMedia, missingImageFactIndexes))
+    : sourceMedia;
+  if (message && params.prepareCurrentMedia) {
+    // Runtime aliases retain canonical transcript bytes and original Artifact facts.
+    attachRuntimePromptMediaFacts(message, media, params.imageOrder);
+  }
+  const refs = media.map(mediaFactToImageRef).filter((ref): ref is MediaImageRef => Boolean(ref));
+  const refsByFact = new Map(refs.map((ref) => [ref.factIndex, ref]));
   const attachmentRefs = slots.flatMap((slot) =>
     slot.kind === "offloaded" && slot.factIndex !== undefined
       ? (refsByFact.get(slot.factIndex) ?? [])
@@ -373,8 +394,7 @@ export async function detectAndLoadPromptImages(
     return image;
   };
   const promptImages: PromptImageEntry[] = [];
-  for (const slot of slots) {
-    const existing = takeExisting(slot.factIndex, slot.kind === "inline");
+  for (const { slot, existing } of plannedSlots) {
     if (existing) {
       promptImages.push(existing);
       continue;

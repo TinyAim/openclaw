@@ -480,6 +480,8 @@ function buildCoreDistEntries(): Record<string, string> {
     "agents/tool-images.runtime": "src/agents/tool-images.runtime.ts",
     "config/sessions/session-transcript-reconcile":
       "src/config/sessions/session-transcript-reconcile.ts",
+    "gateway/media-studio-spatial-reference-runtime/v2-renderer.worker":
+      "src/gateway/media-studio-spatial-reference-runtime/v2-renderer.worker.ts",
     ...runtimeProcessBuildEntries,
     ...runtimeProcessDeclarationEntries,
     "acp/control-plane/manager": "src/acp/control-plane/manager.ts",

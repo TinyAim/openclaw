@@ -23,9 +23,9 @@ Goals:
 
 <Note>
 **Cost note:** each sub-agent has its own context and token usage by
-default. For heavy or repetitive tasks, set a cheaper model for sub-agents
-and keep your main agent on a higher-quality model via
-`agents.defaults.subagents.model` or per-agent overrides. When a child
+default. For heavy or repetitive tasks, an explicit `sessions_spawn.model` can select a
+different model. Configured subagent defaults apply when the caller has no
+active model to inherit. When a child
 genuinely needs the requester's current transcript, spawn it with
 `context: "fork"`. Thread-bound subagent sessions default to
 `context: "fork"` because they branch the current conversation into a

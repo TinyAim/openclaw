@@ -471,6 +471,9 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
                 agentId: ingressAgentId,
                 provider: prepared.effectiveProviderOverride,
                 model: prepared.effectiveModelOverride,
+                ...(params.client?.internal?.disableModelFallbacks
+                  ? { modelFallbacksOverride: [] }
+                  : {}),
                 to: params.delivery.resolvedTo,
                 sessionId: params.resolvedSessionId,
                 sessionKey: params.resolvedSessionKey,

@@ -31,10 +31,10 @@ type LeafControlSelection = {
 };
 
 export class SessionManagerEntries extends SessionManagerAppend {
-  private createEntry<T extends { type: SessionEntry["type"] }>(data: T) {
+  private createEntry<T extends { type: SessionEntry["type"] }>(data: T, id?: string) {
     return {
       ...data,
-      id: generateSessionEntryId(),
+      id: id ?? generateSessionEntryId(),
       parentId: this.appendParentId,
       timestamp: new Date().toISOString(),
     };
@@ -49,16 +49,19 @@ export class SessionManagerEntries extends SessionManagerAppend {
     metadata?: CompactionEntry["__openclaw"],
     tokensAfter?: number,
   ): Promise<string> {
-    const entry: CompactionEntry = this.createEntry({
-      type: "compaction",
-      summary,
-      firstKeptEntryId,
-      tokensBefore,
-      ...(tokensAfter !== undefined ? { tokensAfter } : {}),
-      details,
-      fromHook,
-      ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
-    });
+    const entry: CompactionEntry = this.createEntry(
+      {
+        type: "compaction",
+        summary,
+        firstKeptEntryId,
+        tokensBefore,
+        ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+        details,
+        fromHook,
+        ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
+      },
+      metadata?.itemId === firstKeptEntryId ? metadata?.itemId : undefined,
+    );
     await this.appendEntryAsync(entry, {
       invalidateSerializedPrefixCache: fromHook === true || details !== undefined,
     });
@@ -76,16 +79,20 @@ export class SessionManagerEntries extends SessionManagerAppend {
     tokensAfter?: number,
   ): string {
     prepareSessionManagerSync("appendCompaction", this.persistenceTarget, this);
-    const entry: CompactionEntry = this.createEntry({
-      type: "compaction",
-      summary,
-      firstKeptEntryId,
-      tokensBefore,
-      ...(tokensAfter !== undefined ? { tokensAfter } : {}),
-      details,
-      fromHook,
-      ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
-    });
+    const entry: CompactionEntry = this.createEntry(
+      {
+        type: "compaction",
+
+        summary,
+        firstKeptEntryId,
+        tokensBefore,
+        ...(tokensAfter !== undefined ? { tokensAfter } : {}),
+        details,
+        fromHook,
+        ...(metadata?.runId || metadata?.itemId ? { __openclaw: metadata } : {}),
+      },
+      metadata?.itemId === firstKeptEntryId ? metadata?.itemId : undefined,
+    );
     this.appendEntry(entry, {
       invalidateSerializedPrefixCache: fromHook === true || details !== undefined,
     });

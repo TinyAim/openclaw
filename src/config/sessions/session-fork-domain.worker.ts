@@ -4,6 +4,10 @@ import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js"
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
+import {
+  prepareCompactionCheckpoint,
+  commitCompactionCheckpoint,
+} from "./session-compaction-checkpoint.worker.js";
 import { createSessionWorkerOperationContext } from "./session-entry-patch.worker.js";
 import { commitSessionForkMessageCut } from "./session-message-cut.worker.js";
 import type { SessionForkOperations } from "./session-parent-fork.types.js";
@@ -35,6 +39,10 @@ export function bindSqliteWorkerBackend(
   return {
     execute(command) {
       switch (command.type) {
+        case "session.checkpoint.prepare":
+          return prepareCompactionCheckpoint(command.input, context);
+        case "session.checkpoint.commit":
+          return commitCompactionCheckpoint(command.input, context);
         case "session.parentFork.prepare":
           return prepareParentForkEntry(command.input, context);
         case "session.parentFork.source":

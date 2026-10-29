@@ -26,6 +26,7 @@ import { log } from "../logger.js";
 import type { EmbeddedAgentRunResult, TraceAttempt } from "../types.js";
 import type { createUsageAccumulator } from "../usage-accumulator.js";
 import type { NormalizedEmbeddedRunAttempt } from "./attempt-normalization.js";
+import { UnreclaimablePromptBudgetError } from "./attempt-prompt-preflight.js";
 import {
   hasAsyncActivity,
   hasAttemptTerminalState,
@@ -297,6 +298,21 @@ export async function recoverEmbeddedRunAttempt(input: {
     };
   };
 
+  if (promptErrorSource === "precheck" && promptError instanceof UnreclaimablePromptBudgetError) {
+    setTerminalLifecycleMeta({ replayInvalid: true, livenessState: "blocked" });
+    return {
+      action: "complete" as const,
+      result: buildEmbeddedRunBlockedResult({
+        text: promptError.message,
+        errorKind: "context_overflow",
+        errorMessage: promptError.message,
+        durationMs: Date.now() - runInput.startedAtMs,
+        agentMeta: buildAttemptErrorMeta(),
+        attempt,
+        replayInvalid: true,
+      }),
+    };
+  }
   if (promptErrorSource === "hook:before_agent_run" && !terminalInterrupted) {
     recordRecoveryDecision("rejected", "hook_block");
     return completeBlocked("hook_block", formatErrorMessage(promptError));

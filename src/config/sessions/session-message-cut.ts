@@ -5,6 +5,7 @@ import {
 } from "../../infra/sqlite-worker-identity.js";
 import { invalidateSessionBranchCache } from "./session-accessor.sqlite-branches.js";
 import {
+  assertPreparedSessionDeletionNotMixed,
   captureNativeSessionWorkerDeletion,
   hasPreparedNativeSessionDeletion,
   withSqliteSessionContextReset,
@@ -120,6 +121,7 @@ export async function mutateSessionHistoryInWorker(
       intent.mode === "fork" ? undefined : captureNativeSessionWorkerDeletion(entries);
     // Released opaque SDK hooks retain their synchronous transaction visibility.
     if (intent.mode !== "fork" && hasPreparedNativeSessionDeletion() && !captured) {
+      assertPreparedSessionDeletionNotMixed();
       return native(preparedIntent, assertHeld);
     }
     const operation: Omit<

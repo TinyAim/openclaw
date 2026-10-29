@@ -7,10 +7,13 @@ import { HumanMentionsSchema } from "./human-mentions.js";
 import { ChatAttachmentsSchema } from "./logs-chat.js";
 import { PluginJsonValueSchema } from "./plugins.js";
 import { NonEmptyString, SessionLabelString } from "./primitives.js";
+import { SessionsCompactParamsSchema } from "./sessions-compact.js";
 import { SessionsRecoverParamsSchema, SessionsRecoverResultSchema } from "./sessions-recover.js";
 import { SessionOwnerSchema } from "./sessions-row.js";
 
 export * from "./sessions-create.js";
+export { SessionsCompactParamsSchema };
+export * from "./sessions-compaction-checkpoints.js";
 export * from "./sessions-involvement.js";
 export * from "./sessions-activity-summary.js";
 export {
@@ -596,12 +599,6 @@ export const SessionsGroupsMutationResultSchema = closedObject({
   groups: Type.Array(SessionGroupSchema),
   sectionOrder: Type.Optional(Type.Array(SidebarSectionIdString)),
   updatedSessions: Type.Optional(Type.Integer({ minimum: 0 })),
-});
-
-export const SessionsCompactParamsSchema = closedObject({
-  key: NonEmptyString,
-  agentId: Type.Optional(NonEmptyString),
-  maxLines: Type.Optional(Type.Integer({ minimum: 1 })),
 });
 
 /** Repoints a session to the active-path state before one persisted user message. */

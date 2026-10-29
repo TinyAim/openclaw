@@ -43,6 +43,7 @@ import { createChatAbortContext } from "../server-methods/chat.abort.test-helper
 import * as sessionChange from "../server-methods/session-change-event.js";
 import { prepareSessionLifecycleDrain } from "../server-methods/sessions-lifecycle-drain.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
+import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import * as agentHandlerHelpers from "./agent-handler-helpers.js";
@@ -223,6 +224,20 @@ describe("startAgentRunExecution Gateway ownership", () => {
   beforeEach(() => {
     dispatchAgentRunFromGateway.mockReset();
     agentCommand.mockReset();
+  });
+
+  it.each([false, true])("preserves the per-run fallback restriction=%s", async (restricted) => {
+    const execution = createExecution();
+    execution.params.client = createSyntheticPluginRuntimeClient(
+      restricted ? { disableModelFallbacks: true } : {},
+    );
+    const completion = startAgentRunExecution(execution.params);
+    await vi.waitFor(() => expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce());
+    const dispatch = dispatchAgentRunFromGateway.mock.calls[0]?.[0];
+    expect(dispatch?.ingressOpts.modelFallbacksOverride).toEqual(restricted ? [] : undefined);
+    expect(dispatch?.ingressOpts).not.toHaveProperty("modelSelectionLocked");
+    dispatch?.cleanupAbortController();
+    await completion;
   });
 
   it.each(["success", "startup failure", "cleanup failure", "completed cleanup failure"] as const)(

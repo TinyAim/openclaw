@@ -146,6 +146,27 @@ vi.mock("./web-tools.js", () => ({
 import { createOpenClawTools } from "../openclaw-tools.js";
 
 describe("createOpenClawTools sessions_spawn session-key selection", () => {
+  it("freezes each active attempt model and user reference for native delegation", () => {
+    const first = {
+      modelProvider: "openai",
+      modelId: "gpt-5.4",
+      requesterUserLanguageReference: "请保留用户本轮的语言要求。",
+    };
+    createOpenClawTools(first);
+    first.modelId = "gpt-5.6-sol";
+    first.requesterUserLanguageReference = "Now answer in English.";
+    createOpenClawTools(first);
+    expect(
+      mocks.spawnToolOptions.mock.calls.map(([options]) => ({
+        model: options.requesterModelRef,
+        reference: options.requesterUserLanguageReference,
+      })),
+    ).toEqual([
+      { model: "openai/gpt-5.4", reference: "请保留用户本轮的语言要求。" },
+      { model: "openai/gpt-5.6-sol", reference: "Now answer in English." },
+    ]);
+  });
+
   beforeEach(() => {
     mocks.spawnToolOptions.mockClear();
     mocks.sendToolOptions.mockClear();

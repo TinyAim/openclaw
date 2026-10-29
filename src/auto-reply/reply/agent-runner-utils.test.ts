@@ -42,6 +42,7 @@ const {
   revokeMessageActionTurnCapability,
 } = await import("../../gateway/message-action-turn-capability.js");
 const { setChannelSourceTurnId } = await import("./source-turn-id.js");
+const { resolveModelFallbackOptions } = await import("./agent-runner-run-params.js");
 
 function makeRun(overrides: Partial<FollowupRun["run"]> = {}): FollowupRun["run"] {
   return {
@@ -171,6 +172,30 @@ describe("agent-runner-utils", () => {
         revokeMessageActionTurnCapability(token);
       }
     });
+  });
+
+  it("limits fallback for an inherited run while the next ordinary turn keeps its policy", async () => {
+    hoisted.resolveModelFallbackAvailabilityMock.mockReturnValue({
+      kind: "active",
+      source: "inherited",
+      models: ["other/model"],
+    });
+    const config = makeRun().config;
+    for (const disabled of [true, false]) {
+      const run = makeRun({ config, disableModelFallbacks: disabled, modelOverrideSource: "auto" });
+      const expected = disabled ? [] : undefined;
+      expect(resolveModelFallbackOptions(run).fallbacksOverride).toEqual(expected);
+      const embedded = await buildEmbeddedRunExecutionParams({
+        run,
+        sessionCtx: {},
+        hasRepliedRef: undefined,
+        provider: "openai",
+        model: "gpt-4.1-mini",
+        runId: "run-1",
+      });
+      expect(embedded.modelFallbacksOverride).toEqual(expected);
+    }
+    expect(config).not.toHaveProperty("disableModelFallbacks");
   });
 
   it("uses the queued conversation policy snapshot", async () => {

@@ -7,6 +7,11 @@ import type {
   ForkSessionFromParentTranscriptParams,
   ForkSessionFromParentTranscriptResult,
 } from "./session-accessor.types.js";
+import type {
+  CheckpointPreparation,
+  CheckpointPreparationInput,
+  CheckpointWorkerMutation,
+} from "./session-compaction-checkpoint.worker.js";
 import type { SessionEntryPatchReceipt } from "./session-entry-patch.types.js";
 import type { SessionMessageCutIntent } from "./session-message-cut.types.js";
 import type { SessionEntry } from "./types.js";
@@ -56,6 +61,14 @@ export type SessionForkMessageCutCommit = {
 };
 
 export type SessionForkOperations = {
+  "session.checkpoint.prepare": {
+    input: CheckpointPreparationInput;
+    output: CheckpointPreparation;
+  };
+  "session.checkpoint.commit": {
+    input: CheckpointWorkerMutation;
+    output: SessionEntryPatchReceipt;
+  };
   "session.parentFork.prepare": {
     input: ParentForkEntryParams;
     output: ParentForkEntryPreparation;

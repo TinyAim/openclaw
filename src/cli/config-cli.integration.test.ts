@@ -4,6 +4,7 @@ import path from "node:path";
 import JSON5 from "json5";
 import { describe, expect, it, vi } from "vitest";
 import { withEnvAsync } from "../test-utils/env.js";
+import { VERSION } from "../version.js";
 import {
   createTestRuntime,
   useConfigCliIntegrationHarness,
@@ -494,6 +495,93 @@ describe("config cli integration", () => {
     });
   });
 
+  it("authored model reads preserve omitted fields, params and array order through an exact input CAS", async () => {
+    const models = [
+      { id: "other", name: "Other", params: { unknown: { order: [3, 1, 2] } } },
+      { id: "selected", name: "Selected", input: ["text"], contextWindow: 32768 },
+    ];
+    const before = {
+      meta: {
+        lastTouchedVersion: VERSION,
+        migrations: { modelPolicyAllowlist: true, utilityModelSeparation: true },
+      },
+      models: {
+        providers: {
+          "manual-provider": {
+            baseUrl: "https://example.invalid/v1",
+            api: "openai-completions",
+            apiKey: { source: "env", provider: "default", id: "AUTHORED_TEST_API_KEY" },
+            models,
+          },
+        },
+      },
+    };
+    await withFile(
+      "openclaw-config-cli-authored-models-",
+      JSON.stringify(before),
+      async ({ configPath }) => {
+        const modelsPath = 'models.providers["manual-provider"].models';
+        const authored = createTestRuntime();
+        await runConfigGet({
+          path: modelsPath,
+          json: true,
+          authored: true,
+          runtime: authored.runtime,
+        });
+        const read = JSON.parse(authored.logs[0]!);
+        expect(read).toEqual(models);
+        expect(read[0]).not.toHaveProperty("input");
+        expect(read[1]).not.toHaveProperty("maxTokens");
+        expect(read[1]).not.toHaveProperty("cost");
+        const normal = createTestRuntime();
+        await runConfigGet({ path: modelsPath, json: true, runtime: normal.runtime });
+        expect(JSON.parse(normal.logs[0]!)[0]).toHaveProperty("input", ["text"]);
+        const nextModels = read.map((entry: Record<string, unknown>, index: number) =>
+          index === 1 ? { ...entry, input: ["text", "image"] } : entry,
+        );
+        const write = createTestRuntime();
+        await runConfigSet({
+          path: modelsPath,
+          value: JSON.stringify(nextModels),
+          cliOptions: { strictJson: true, replace: true, expectCurrentJson: JSON.stringify(read) },
+          runtime: write.runtime,
+        });
+        expect(write.errors).toEqual([]);
+        expect(JSON5.parse(fs.readFileSync(configPath, "utf8"))).toEqual({
+          ...before,
+          models: {
+            providers: {
+              "manual-provider": {
+                ...before.models.providers["manual-provider"],
+                models: nextModels,
+              },
+            },
+          },
+        });
+      },
+    );
+  });
+
+  it("authored reads retain the same SecretRef redaction and never mutate bytes", async () => {
+    const raw =
+      '{ channels: { discord: { enabled: false, token: { source: "env", provider: "default", id: "AUTHORED_PRIVATE_SECRET" } } } }\n';
+    await withFile("openclaw-config-cli-authored-redaction-", raw, async ({ configPath }) => {
+      const output = createTestRuntime();
+      await runConfigGet({
+        path: "channels.discord.token",
+        json: true,
+        authored: true,
+        runtime: output.runtime,
+      });
+      expect(JSON.parse(output.logs[0]!)).toEqual({
+        source: "env",
+        provider: "default",
+        id: REDACTED_SENTINEL,
+      });
+      expect(output.logs.join("\n")).not.toContain("AUTHORED_PRIVATE_SECRET");
+      expect(fs.readFileSync(configPath, "utf8")).toBe(raw);
+    });
+  });
   it("redacts SecretRef ids and plugin-only sensitive fields in JSON/text order", async () => {
     const secretRefId = "CONFIG_GET_TEST_TOKEN";
     const schemaOnlySecrets = ["first-private-route", "second-private-route"];

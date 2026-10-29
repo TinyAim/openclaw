@@ -89,6 +89,7 @@ async function startRealService(
               id: ACPX_BACKEND_ID,
               ...backend,
               runtime: deferredRuntime,
+              healthy: backend.healthy ?? (() => true),
             });
           }
           publishedRuntime = backend.runtime;
@@ -199,7 +200,11 @@ export function createAcpxRuntimeService(
         await state.realService?.promote(ctx, assertCurrent);
         assertCurrent();
         state.published = true;
-        registerAcpRuntimeBackend({ id: ACPX_BACKEND_ID, runtime: state.ownedRuntime });
+        registerAcpRuntimeBackend({
+          id: ACPX_BACKEND_ID,
+          runtime: state.ownedRuntime,
+          healthy: () => true,
+        });
         return;
       }
       state.published = true;
@@ -211,6 +216,7 @@ export function createAcpxRuntimeService(
       registerAcpRuntimeBackend({
         id: ACPX_BACKEND_ID,
         runtime: deferredRuntime,
+        healthy: () => true,
       });
       ctx.logger.info("embedded acpx runtime backend registered lazily");
     },

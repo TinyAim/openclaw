@@ -194,6 +194,13 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
   resources.getUserTranscriptContexts =
     preparedSessionManager.userMessageBoundary.getUserTranscriptContexts;
 
+  toolBase.restoreRequesterUserLanguageReference(
+    sessionManager
+      .getBranch()
+      .slice(-128)
+      .flatMap((entry) => (entry.type === "message" ? [entry.message] : [])),
+  );
+
   const state: EmbeddedAttemptSessionRuntimeState = {
     currentTurnImageFailureCount: 0,
     prePromptMessageCount: 0,
@@ -340,6 +347,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     codeModeControlsEnabled: codeModeControlsEnabledForRun,
     providerPromptState: {
       state: getProviderPromptState(attempt.runId),
+      expectedExtraSystemPrompt: attempt.extraSystemPrompt,
       effectiveContextTokenBudget: Math.max(
         1,
         Math.floor(

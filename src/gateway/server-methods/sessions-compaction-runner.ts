@@ -1,4 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { buildSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import { resolveCompactionInstructions } from "../../agents/agent-hooks/compaction-instructions.js";
 import { resolveAgentWorkspaceDir } from "../../agents/agent-scope.js";
 import { compactEmbeddedAgentSession } from "../../agents/embedded-agent.js";
 import { resolveManualCompactionCliTarget } from "../../agents/session-runtime-compat.js";
@@ -27,12 +29,17 @@ type GatewaySessionCompactionParams = {
   sessionKey: string;
   sessionStoreKey: string;
   storePath: string;
+  customInstructions?: string;
+  historyMode?: "preserve_recent" | "summary_only";
 };
 
-/** Returns only definitive legacy-runtime no-op verdicts; other runtimes decide for themselves. */
-export async function preflightGatewaySessionCompaction(
-  params: GatewaySessionCompactionParams,
-): Promise<{ reason: "Already compacted" | "Nothing to compact (session too small)" } | undefined> {
+export class SessionCompactionHistoryModeUnsupportedError extends Error {
+  constructor() {
+    super("summary_only compaction is unsupported by the selected runtime or compaction owner.");
+  }
+}
+
+function usesLegacyOpenClawCompaction(params: GatewaySessionCompactionParams): boolean {
   const resolvedModel = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
   const persistedRuntime = resolveManualCompactionCliTarget({
     provider: resolvedModel.provider,
@@ -40,10 +47,27 @@ export async function preflightGatewaySessionCompaction(
     cfg: params.cfg,
   }).agentHarnessId;
   const contextEngine = params.cfg.plugins?.slots?.contextEngine?.trim();
+  return (
+    (!persistedRuntime || persistedRuntime === "openclaw") &&
+    (!contextEngine || contextEngine === "legacy")
+  );
+}
+
+function assertGatewayHistoryModeSupported(params: GatewaySessionCompactionParams): void {
   if (
-    (persistedRuntime && persistedRuntime !== "openclaw") ||
-    (contextEngine && contextEngine !== "legacy")
+    params.historyMode === "summary_only" &&
+    (!usesLegacyOpenClawCompaction(params) || params.cfg.agents?.defaults?.compaction?.provider)
   ) {
+    throw new SessionCompactionHistoryModeUnsupportedError();
+  }
+}
+
+/** Returns only definitive legacy-runtime no-op verdicts; other runtimes decide for themselves. */
+export async function preflightGatewaySessionCompaction(
+  params: GatewaySessionCompactionParams,
+): Promise<{ reason: "Already compacted" | "Nothing to compact (session too small)" } | undefined> {
+  assertGatewayHistoryModeSupported(params);
+  if (params.historyMode === "summary_only" || !usesLegacyOpenClawCompaction(params)) {
     return undefined;
   }
   try {
@@ -73,7 +97,9 @@ export async function runGatewaySessionCompaction(
   params: GatewaySessionCompactionParams,
   host: Parameters<typeof compactEmbeddedAgentSession>[1],
 ): Promise<Awaited<ReturnType<typeof compactEmbeddedAgentSession>>> {
-  // The lifecycle owner already selected and revalidated this exact current window.
+  assertGatewayHistoryModeSupported(params);
+  const customInstructions = normalizeOptionalString(params.customInstructions);
+  // Lifecycle owner selected and revalidated this exact current window.
   const transcriptTarget = {
     agentId: params.agentId,
     sessionId: params.sessionId,
@@ -94,7 +120,7 @@ export async function runGatewaySessionCompaction(
   });
   const primaryConversation = await resolveCurrentSessionPrimaryConversation(transcriptTarget);
   params.abortSignal?.throwIfAborted();
-  return await compactEmbeddedAgentSession(
+  const result = await compactEmbeddedAgentSession(
     {
       abortSignal: params.abortSignal,
       contextEngineAgentId: params.agentId,
@@ -134,7 +160,53 @@ export async function runGatewaySessionCompaction(
         defaultLevel: "off",
       },
       trigger: "manual",
+      ...(params.historyMode ? { historyMode: params.historyMode } : {}),
+      ...(customInstructions
+        ? { customInstructions: resolveCompactionInstructions(customInstructions, undefined) }
+        : {}),
     },
     host,
   );
+  return await confirmGatewaySessionCompactionHistoryMode(params, result);
+}
+
+/** Re-read at the terminal lifecycle fence before promising summary-only context. */
+export async function confirmGatewaySessionCompactionHistoryMode(
+  params: Pick<
+    GatewaySessionCompactionParams,
+    "agentId" | "sessionId" | "sessionStoreKey" | "storePath" | "historyMode"
+  >,
+  result: Awaited<ReturnType<typeof compactEmbeddedAgentSession>>,
+): Promise<Awaited<ReturnType<typeof compactEmbeddedAgentSession>>> {
+  if (params.historyMode !== "summary_only" || !result.ok || !result.compacted) {
+    return result;
+  }
+  const events = await loadTranscriptEvents({
+    agentId: params.agentId,
+    sessionId: params.sessionId,
+    sessionKey: params.sessionStoreKey,
+    storePath: params.storePath,
+  });
+  const tree = scanSessionTranscriptTree(events);
+  const branch = selectSessionTranscriptTreePathNodes(tree, tree.leafId)
+    .map((node) => node.entry)
+    .filter(isIndexedSessionEntry);
+  const leaf = branch.at(-1);
+  const messages = buildSessionContext(branch).messages;
+  if (
+    !result.result?.summary ||
+    !result.result.firstKeptEntryId ||
+    leaf?.type !== "compaction" ||
+    leaf.id !== leaf.firstKeptEntryId ||
+    leaf.id !== result.result.firstKeptEntryId ||
+    leaf.summary !== result.result.summary ||
+    messages.length !== 1 ||
+    messages[0]?.role !== "compactionSummary" ||
+    (result.result.sessionId && result.result.sessionId !== params.sessionId)
+  ) {
+    throw new Error(
+      "summary_only outcome is unconfirmed; reconcile the retained checkpoint before retry.",
+    );
+  }
+  return { ...result, historyMode: "summary_only" };
 }

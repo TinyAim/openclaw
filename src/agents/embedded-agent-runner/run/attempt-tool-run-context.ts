@@ -5,6 +5,10 @@ import {
   type DiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
 import type { EmbeddedRunTrigger } from "../../run-trigger.js";
+import {
+  resolveSubagentUserLanguageReference,
+  restoreSubagentUserLanguageReference,
+} from "../../subagents/spawn/subagent-user-language.js";
 import { mergeForcedEmbeddedAttemptToolsAllow } from "./attempt-tool-construction-plan.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
@@ -50,6 +54,11 @@ export function buildEmbeddedAttemptToolRunContext(
   params: AttemptToolRunFacts & {
     model?: Pick<EmbeddedRunAttemptParams["model"], "provider" | "id">;
     thinkLevel?: ThinkLevel;
+    prompt?: string;
+    transcriptPrompt?: string;
+    inputProvenance?: RunEmbeddedAgentParams["inputProvenance"];
+    currentInboundEventKind?: RunEmbeddedAgentParams["currentInboundEventKind"];
+    internalEvents?: RunEmbeddedAgentParams["internalEvents"];
     trigger?: EmbeddedRunTrigger;
     continuesConversation?: boolean;
     jobId?: string;
@@ -66,6 +75,8 @@ export function buildEmbeddedAttemptToolRunContext(
   },
 ) {
   const { currentInboundAudio, replyOperation } = params;
+  let requesterUserLanguageReference = resolveSubagentUserLanguageReference(params);
+  const spawnedBy = params.spawnedBy;
   // Collector output is mandatory result transport, even on a narrowed tool surface.
   const runtimeToolAllowlist = mergeForcedEmbeddedAttemptToolsAllow(params.toolsAllow, {
     forceMessageTool: params.forceMessageTool,
@@ -108,6 +119,19 @@ export function buildEmbeddedAttemptToolRunContext(
     requesterModel: params.model
       ? { provider: params.model.provider, model: params.model.id }
       : undefined,
+    requesterModelRef: params.model ? `${params.model.provider}/${params.model.id}` : undefined,
+    requesterUserLanguageReference,
+    getRequesterUserLanguageReference: () => requesterUserLanguageReference,
+    restoreRequesterUserLanguageReference: (
+      messages: Parameters<typeof restoreSubagentUserLanguageReference>[0],
+    ) => {
+      if (params.trigger === "user" && params.currentInboundEventKind !== "room_event") {
+        requesterUserLanguageReference ??= restoreSubagentUserLanguageReference(
+          messages,
+          spawnedBy,
+        );
+      }
+    },
     trigger: params.trigger,
     continuesConversation: params.continuesConversation,
     jobId: params.jobId,

@@ -46,6 +46,8 @@ export type OpenClawCodingToolsOptions = {
   sandbox?: SandboxContext | null;
   sessionKey?: string;
   requesterThinkingLevel?: ThinkLevel;
+  requesterUserLanguageReference?: string;
+  getRequesterUserLanguageReference?: () => string | undefined;
   requesterModel?: SpawnedToolContext["requesterModel"];
   /** Exact admitted run instance for lifecycle-bound subprocess capabilities. */
   operationalRunInstance?: OperationalRunInstanceRef;

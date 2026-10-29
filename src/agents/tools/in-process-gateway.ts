@@ -47,6 +47,8 @@ import { callGatewayTool } from "./gateway.js";
 
 type InProcessGatewayCallOptions = {
   onExecution?: (execution: Promise<void>) => void;
+  /** Restrict this trusted launch only; never serialize into public RPC params. */
+  disableModelFallbacks?: true;
   resolveGatewayContext?: GatewayContextResolver;
   sessionMutationCommitGuard?: () => void;
   signal?: AbortSignal;
@@ -216,6 +218,7 @@ async function callAgentToolGatewayRequestBound<T>(
   positional?: {
     sessionCreation?: TrustedSessionCreation;
     onExecution?: (execution: Promise<void>) => void;
+    disableModelFallbacks?: true;
     fallback: (
       scopes: ReturnType<typeof resolveLeastPrivilegeOperatorScopesForMethod>,
     ) => Promise<T>;
@@ -249,6 +252,9 @@ async function callAgentToolGatewayRequestBound<T>(
     }
     if (getGatewayToolCallerIdentity()?.operatorAuthority) {
       throw new Error("operator run authority requires its admitted Gateway");
+    }
+    if (positional?.disableModelFallbacks) {
+      throw new Error("inherited model fallback policy requires in-process Gateway dispatch");
     }
     if (positional) {
       return await runBoundInProcessGatewayCall(
@@ -325,6 +331,7 @@ async function callAgentToolGatewayRequestBound<T>(
     ...(request.agentToolCaller ? { agentToolCaller: request.agentToolCaller } : {}),
     ...(positional?.sessionCreation ? { sessionCreation: positional.sessionCreation } : {}),
     ...(positional?.onExecution ? { onExecution: positional.onExecution } : {}),
+    ...(positional?.disableModelFallbacks ? { disableModelFallbacks: true as const } : {}),
     syntheticScopes: scopes,
     syntheticScopeMode,
     ...(request.expectFinal !== undefined ? { expectFinal: request.expectFinal } : {}),
@@ -437,7 +444,12 @@ async function callInProcessGatewayToolBound<T>(
     assertCallerCurrent,
     false,
     true,
-    { sessionCreation: options.sessionCreation, onExecution: options.onExecution, fallback },
+    {
+      sessionCreation: options.sessionCreation,
+      onExecution: options.onExecution,
+      disableModelFallbacks: options.disableModelFallbacks,
+      fallback,
+    },
   );
 }
 

@@ -1,0 +1,194 @@
+import type {
+  MediaGenRuntimeDispatch,
+  MediaGenRuntimeResult,
+  MediaGenRuntimeSpatialInputAcceptance,
+} from "../media-gen-runtime-http.js";
+import type { createMediaGenRuntimeFinalizer } from "./executor-finalize.js";
+import {
+  canceledRuntimeResult as canceled,
+  failedRuntimeResult as failed,
+} from "./executor-results.js";
+import type { MediaGenRuntimeVendor, MediaGenRuntimeVendorJob } from "./types.js";
+
+export type MediaGenRuntimeTrackedJob = {
+  vendor: MediaGenRuntimeVendor;
+  vendorJobId: string;
+  consentRef?: string;
+  consentRefs?: string[];
+  providerRequestDigest?: string;
+  /** Runtime-local cache of the exact sender acceptance for same-process recovery. */
+  spatialInputAcceptance?: MediaGenRuntimeSpatialInputAcceptance;
+};
+
+type ReconcileInput = {
+  dispatch: MediaGenRuntimeDispatch;
+  tracked?: MediaGenRuntimeTrackedJob;
+  fallbackVendor?: MediaGenRuntimeVendor;
+  finalize: ReturnType<typeof createMediaGenRuntimeFinalizer>;
+  remember(job: MediaGenRuntimeTrackedJob): void;
+  forget(): void;
+};
+
+function submissionUnknown(
+  dispatch: MediaGenRuntimeDispatch,
+  message: string,
+  runtimeJobId?: string,
+  providerRequestDigest?: string,
+): MediaGenRuntimeResult {
+  return {
+    taskId: dispatch.taskId,
+    workspaceId: dispatch.workspaceId,
+    correlationId: dispatch.correlationId,
+    status: "submission_unknown",
+    failureReason: "internal",
+    failureMessage: message,
+    ...(runtimeJobId ? { runtimeJobId } : {}),
+    ...(providerRequestDigest ? { providerRequestDigest } : {}),
+  };
+}
+
+function spatialAcceptance(
+  job: MediaGenRuntimeVendorJob,
+  tracked?: MediaGenRuntimeTrackedJob,
+): MediaGenRuntimeSpatialInputAcceptance | undefined {
+  return job.state === "processing" || job.state === "succeeded"
+    ? (job.spatialInputAcceptance ?? tracked?.spatialInputAcceptance)
+    : undefined;
+}
+
+/**
+ * Reconcile one already-created provider attempt. This path is intentionally
+ * create-free: absent or mismatched durable evidence fails closed and never
+ * falls through to vendor.submit.
+ */
+export async function reconcileMediaGenRuntimeJob(
+  input: ReconcileInput,
+): Promise<MediaGenRuntimeResult> {
+  const { dispatch, tracked } = input;
+  if (
+    tracked &&
+    ((dispatch.runtimeJobId && dispatch.runtimeJobId !== tracked.vendorJobId) ||
+      tracked.vendor.presetId !== dispatch.presetId)
+  ) {
+    return failed(
+      dispatch,
+      "internal",
+      "The runtime job binding did not match the requested task.",
+    );
+  }
+
+  const runtimeJobId = dispatch.runtimeJobId ?? tracked?.vendorJobId;
+  if (!runtimeJobId) {
+    return submissionUnknown(
+      dispatch,
+      "The runtime has no durable provider receipt to reconcile; create resend is prohibited.",
+    );
+  }
+  const vendor = tracked?.vendor ?? input.fallbackVendor;
+  if (!vendor) {
+    return failed(dispatch, "vendor_rejected", `unsupported preset ${dispatch.presetId}`);
+  }
+
+  let job: MediaGenRuntimeVendorJob;
+  try {
+    job = vendor.reconcile ? await vendor.reconcile(runtimeJobId) : await vendor.poll(runtimeJobId);
+  } catch {
+    return submissionUnknown(
+      dispatch,
+      "The existing provider attempt could not be reconciled.",
+      runtimeJobId,
+      tracked?.providerRequestDigest,
+    );
+  }
+  if ("vendorJobId" in job && job.vendorJobId !== undefined && job.vendorJobId !== runtimeJobId) {
+    return submissionUnknown(
+      dispatch,
+      "The provider returned a receipt for a different job; the original attempt remains unresolved.",
+      runtimeJobId,
+      tracked?.providerRequestDigest,
+    );
+  }
+  const providerRequestDigest = job.providerRequestDigest ?? tracked?.providerRequestDigest;
+  const acceptedSpatialInput = spatialAcceptance(job, tracked);
+  input.remember({
+    vendor,
+    vendorJobId: runtimeJobId,
+    ...(dispatch.consentRef || tracked?.consentRef
+      ? { consentRef: dispatch.consentRef ?? tracked?.consentRef }
+      : {}),
+    ...(dispatch.consentRefs || tracked?.consentRefs
+      ? { consentRefs: dispatch.consentRefs ?? tracked?.consentRefs }
+      : {}),
+    ...(providerRequestDigest ? { providerRequestDigest } : {}),
+    ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
+  });
+
+  if (job.state === "processing") {
+    return {
+      taskId: dispatch.taskId,
+      workspaceId: dispatch.workspaceId,
+      correlationId: dispatch.correlationId,
+      status: "processing",
+      runtimeJobId,
+      ...(providerRequestDigest ? { providerRequestDigest } : {}),
+      ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+      ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
+    };
+  }
+  if (job.state === "succeeded") {
+    const settled = await input.finalize(
+      dispatch,
+      job,
+      false,
+      dispatch.consentRef ?? tracked?.consentRef,
+      dispatch.consentRefs ?? tracked?.consentRefs,
+      providerRequestDigest,
+    );
+    return {
+      ...settled,
+      ...(acceptedSpatialInput ? { spatialInputAcceptance: acceptedSpatialInput } : {}),
+    };
+  }
+  if (job.state === "canceled") {
+    input.forget();
+    return {
+      ...canceled(
+        dispatch,
+        "The provider job was canceled.",
+        runtimeJobId,
+        { state: "confirmed", reasonCode: "runtime_confirmed" },
+        job.providerObservation,
+      ),
+      ...(providerRequestDigest ? { providerRequestDigest } : {}),
+    };
+  }
+  if (job.state === "submission_unknown") {
+    return {
+      taskId: dispatch.taskId,
+      workspaceId: dispatch.workspaceId,
+      correlationId: dispatch.correlationId,
+      status: "submission_unknown",
+      runtimeJobId,
+      failureReason: "internal",
+      failureMessage: job.message,
+      providerRequestDigest: job.providerRequestDigest,
+      ...(job.providerObservation ? { providerObservation: job.providerObservation } : {}),
+    };
+  }
+  if (job.retryDisposition === "replacement_allowed") {
+    input.forget();
+  }
+  return {
+    ...failed(
+      dispatch,
+      job.reason,
+      job.message,
+      undefined,
+      providerRequestDigest,
+      job.providerObservation,
+    ),
+    runtimeJobId,
+    retryDisposition:
+      job.retryDisposition === "replacement_allowed" ? "replacement_allowed" : "reconcile_only",
+  };
+}

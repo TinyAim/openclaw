@@ -99,6 +99,7 @@ it.each(admissionScenarios)(
       const connection = new AbortController();
       const hasCurrentClientAuthority = vi.fn(() => true);
       const client: GatewayClient = {
+        ...(closure === "removed" ? { internal: { disableModelFallbacks: true as const } } : {}),
         connId: "authoring-binding",
         connectionSignal: connection.signal,
         ...(dashboard && scenario !== "dashboard-unattested"
@@ -209,6 +210,9 @@ it.each(admissionScenarios)(
         options = await entered.promise;
         const dashboardRead = options.replyOptions?.dashboardReadAdmission;
         expect(Boolean(dashboardRead)).toBe(dashboardReadAllowed);
+        expect(options.replyOptions?.disableModelFallbacks).toBe(
+          closure === "removed" ? true : undefined,
+        );
         owned = observeDispatch.mock.calls.at(-1)?.[0];
         const prepared = options.replyOptions?.onSessionPrepared;
         const runStarted = options.replyOptions?.onAgentRunStart;

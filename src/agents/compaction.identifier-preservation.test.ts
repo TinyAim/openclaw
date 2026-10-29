@@ -69,8 +69,23 @@ describe("compaction identifier policy", () => {
     });
 
     expect(mockGenerateSummary).toHaveBeenCalledOnce();
-    expect(mockGenerateSummary.mock.calls[0]?.[6]).toBe(
-      "Additional focus:\nTrack release blockers.",
-    );
+    const instructions = mockGenerateSummary.mock.calls[0]?.[6];
+    expect(instructions).toContain("Additional focus:\nTrack release blockers.");
+    expect(instructions).toContain("Preserve confirmed facts as complete relationships");
+    expect(instructions).toContain("unknown instead of guessing");
+    expect(instructions).not.toContain("Preserve all opaque identifiers");
+  });
+  it("re-distills a prior summary with explicit custom format even without new messages", async () => {
+    await runSummary(0, {
+      previousSummary: "Approved color: amber.",
+      summaryPrompt: { kind: "custom", instructions: "Preserve current role and facts." },
+    });
+    expect(mockGenerateSummary).toHaveBeenCalledOnce();
+    expect(mockGenerateSummary.mock.calls[0]?.[0]).toEqual([]);
+    expect(mockGenerateSummary.mock.calls[0]?.[7]).toBe("Approved color: amber.");
+  });
+  it("does not call a model for an ordinary empty history", async () => {
+    await expect(runSummary(0)).resolves.toBe("No prior history.");
+    expect(mockGenerateSummary).not.toHaveBeenCalled();
   });
 });

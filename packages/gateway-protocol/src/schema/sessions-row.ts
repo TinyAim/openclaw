@@ -10,6 +10,7 @@ import {
   SessionParticipantIdentitySchema,
 } from "./session-participant.js";
 import { SessionActivitySummarySchema } from "./sessions-activity-summary.js";
+import { SessionCompactionCheckpointSchema } from "./sessions-compaction-checkpoints.js";
 import { SessionProviderReviewProjectionSchema } from "./sessions-provider-review.js";
 import { SessionSharingRoleSchema, SessionVisibilitySchema } from "./sessions-sharing-values.js";
 
@@ -253,6 +254,10 @@ export const SessionRowSchema = Type.Object(
       }),
     ),
     previousSessionId: Type.Optional(Type.String()),
+    compactionCheckpointCount: Type.Optional(Type.Integer({ minimum: 0 })),
+    latestCompactionCheckpoint: Type.Optional(
+      Type.Pick(SessionCompactionCheckpointSchema, ["checkpointId", "createdAt", "reason"]),
+    ),
     inputTokens: Type.Optional(Type.Number()),
     outputTokens: Type.Optional(Type.Number()),
     totalTokens: Type.Optional(Type.Number()),
