@@ -214,11 +214,23 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
         });
         assertSourceCurrent();
         assertInputCurrent?.();
+        const rawParams = params as Record<string, unknown>;
+        const cacheNamespace =
+          typeof rawParams.cacheNamespace === "string" && rawParams.cacheNamespace.trim()
+            ? rawParams.cacheNamespace.trim()
+            : typeof rawParams.scopeKeyHash === "string" && rawParams.scopeKeyHash.trim()
+              ? rawParams.scopeKeyHash.trim()
+              : client.connId;
+        const quote =
+          typeof rawParams.quote === "string" && rawParams.quote.trim()
+            ? rawParams.quote.trim()
+            : selectionContext;
         const result = await companion.ask({
           sessionKey: target.sessionKey,
           agentId: target.agentId,
           question,
-          ...(selectionContext ? { selectionContext } : {}),
+          ...(quote ? { selectionContext: quote } : {}),
+          cacheNamespace,
           ...(originalAttachments ? { attachments: originalAttachments } : {}),
           connId,
           assertSourceCurrent,
@@ -306,3 +318,6 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
     },
   ),
 };
+
+sessionCompanionHandlers["sessions.companion.askScoped"] =
+  sessionCompanionHandlers["sessions.companion.ask"]!;

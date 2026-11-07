@@ -352,8 +352,10 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
     agentId: string,
     signal: AbortSignal,
     assertSourceCurrent?: () => void,
+    cacheNamespace?: string,
   ): Promise<SessionCompanionThread> => {
-    const threadKey = sessionObserverScopeKey(sessionKey, agentId);
+    const baseThreadKey = sessionObserverScopeKey(sessionKey, agentId);
+    const threadKey = cacheNamespace ? `${cacheNamespace}::${baseThreadKey}` : baseThreadKey;
     const existing = params.threads.get(threadKey);
     const observerSnapshot = await params.sessionObserver.getCompanionSnapshotAsync(
       sessionKey,
@@ -409,6 +411,7 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
     sessionKey: string;
     question: string;
     selectionContext?: string;
+    cacheNamespace?: string;
     attachments?: ChatAttachment[];
     connId: string;
     operatorAuthority?: AdmittedRunOperatorAuthority;
@@ -434,7 +437,9 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
         ? AbortSignal.any([request.signal, request.operatorAuthority.signal])
         : request.operatorAuthority.signal
       : request.signal;
-    const threadKey = sessionObserverScopeKey(sessionKey, agentId);
+    const baseThreadKey = sessionObserverScopeKey(sessionKey, agentId);
+    const cacheNamespace = request.cacheNamespace?.trim();
+    const threadKey = cacheNamespace ? `${cacheNamespace}::${baseThreadKey}` : baseThreadKey;
     const existing = params.threads.get(threadKey);
     if (existing?.busy || activeAsks.has(threadKey)) {
       throw new SessionCompanionAskError("busy", "Side chat is answering another question.");
@@ -510,6 +515,7 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
         agentId,
         controller.signal,
         assertSourceCurrent,
+        cacheNamespace,
       );
       ownedThread = thread;
       if (controller.signal.aborted) {
