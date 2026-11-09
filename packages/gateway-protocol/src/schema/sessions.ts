@@ -149,6 +149,20 @@ export const SessionsCompanionAskParamsSchema = closedObject({
   attachments: Type.Optional(ChatAttachmentsSchema),
 });
 
+/** Wisclaw scoped observer route; never admits session mutation or writable tools. */
+export const SessionsCompanionAskScopedParamsSchema = closedObject({
+  ...SessionsCompanionAskParamsSchema.properties,
+  question: Type.String({ minLength: 1, maxLength: 32768 }),
+  quote: Type.Optional(Type.String({ maxLength: SESSION_COMPANION_SELECTION_CONTEXT_MAX_CHARS })),
+  model: Type.Optional(NonEmptyString),
+  provider: Type.Optional(NonEmptyString),
+  cacheNamespace: NonEmptyString,
+  scopeKeyHash: Type.Optional(NonEmptyString),
+  allowReadOnlyTools: Type.Literal(true),
+  mutateSessionHistory: Type.Literal(false),
+  correlationId: Type.Optional(NonEmptyString),
+});
+
 /** Companion answer returned only to the requesting operator. */
 export const SessionsCompanionAskResultSchema = closedObject({
   answer: Type.String({ minLength: 1, maxLength: 1200 }),
@@ -721,6 +735,9 @@ export type SessionsObserverVisibilityResult = Static<
   typeof SessionsObserverVisibilityResultSchema
 >;
 export type SessionCompanionExchange = Static<typeof SessionCompanionExchangeSchema>;
+export type SessionsCompanionAskScopedParams = Static<
+  typeof SessionsCompanionAskScopedParamsSchema
+>;
 export type SessionsCompanionAskParams = Static<typeof SessionsCompanionAskParamsSchema>;
 export type SessionsCompanionAskResult = Static<typeof SessionsCompanionAskResultSchema>;
 export type SessionsCompanionStateParams = Static<typeof SessionsCompanionStateParamsSchema>;

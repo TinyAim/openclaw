@@ -277,6 +277,7 @@ describe("session sharing policy", () => {
           "chat.startup",
           "chat.metadata",
           "sessions.companion.ask",
+          "sessions.companion.askScoped",
           "sessions.companion.state",
         ]) {
           expect(
@@ -457,6 +458,7 @@ describe("session sharing policy", () => {
         ["sessions.files.get", { sessionKey: foreignKey }],
         ["sessions.branches.list", { sessionKey: foreignKey }],
         ["sessions.companion.ask", { sessionKey: foreignKey }],
+        ["sessions.companion.askScoped", { sessionKey: foreignKey }],
         ["sessions.companion.reset", { sessionKey: foreignKey }],
         ["sessions.companion.state", { sessionKey: foreignKey }],
         ["artifacts.list", { sessionKey: foreignKey }],

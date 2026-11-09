@@ -247,6 +247,7 @@ export {
   SessionVisibilitySetParamsSchema,
   SessionVisibilitySetResultSchema,
   SessionsCompanionAskParamsSchema,
+  SessionsCompanionAskScopedParamsSchema,
   SessionsCompanionAskResultSchema,
   SessionsCompanionResetParamsSchema,
   SessionsCompanionResetResultSchema,

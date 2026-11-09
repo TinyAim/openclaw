@@ -46,6 +46,7 @@ const SESSION_TARGET_POLICY_BY_METHOD = new Map<string, SessionTargetPolicy>([
   // This changes a personal list preference, not the shared session.
   ["sessions.setInvolvement", { fields: ["key"], readOnly: true }],
   ["sessions.companion.ask", { fields: ["sessionKey"], readOnly: true }],
+  ["sessions.companion.askScoped", { fields: ["sessionKey"], readOnly: true }],
   ["sessions.companion.reset", { fields: ["sessionKey"], required: true }],
   ["sessions.companion.state", { fields: ["sessionKey"], readOnly: true }],
   ["sessions.compact", { fields: ["key"], required: true }],
@@ -112,6 +113,7 @@ const DIRECT_SESSION_READ_METHODS = new Set([
   "sessions.compaction.list",
   "sessions.branches.list",
   "sessions.companion.ask",
+  "sessions.companion.askScoped",
   "sessions.companion.state",
   "sessions.diff",
   "sessions.files.get",

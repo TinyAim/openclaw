@@ -31,6 +31,7 @@ function askRequest(
 
 function createHarness(overrides?: {
   scheduler?: GatewayScheduler;
+  resolveUtilityModelRef?: () => string | undefined;
   now?: () => number;
   currentSessionId?: () => string | undefined;
   readContext?: () => ReturnType<SessionCompanionContextReader["read"]>;
@@ -73,7 +74,7 @@ function createHarness(overrides?: {
     contextReader: { currentSessionId, read: readContext },
     getConfig: () => cfg,
     sessionObserver: { getCompanionSnapshotAsync: async () => getCompanionSnapshot() },
-    resolveUtilityModelRef: () => "openai/gpt-5.6-luna",
+    resolveUtilityModelRef: overrides?.resolveUtilityModelRef ?? (() => "openai/gpt-5.6-luna"),
     run,
     now: overrides?.now ?? (() => 100),
   };
@@ -86,6 +87,40 @@ afterEach(() => {
 });
 
 describe("session companion asks", () => {
+  it("uses an explicit scoped model even when no utility model is configured", async () => {
+    const harness = createHarness({ resolveUtilityModelRef: () => undefined });
+    try {
+      await expect(
+        harness.service.ask(
+          askRequest("hi", {
+            model: "gemma4:31b-cloud",
+            provider: "ollama",
+          }),
+        ),
+      ).resolves.toMatchObject({ answer: expect.any(String) });
+      expect(harness.run).toHaveBeenCalledWith(
+        expect.objectContaining({
+          modelRef: "ollama/gemma4:31b-cloud",
+          modelOverride: true,
+        }),
+      );
+    } finally {
+      harness.service.dispose();
+    }
+  });
+
+  it("retains the missing-utility refusal when no model override is supplied", async () => {
+    const harness = createHarness({ resolveUtilityModelRef: () => undefined });
+    try {
+      await expect(harness.service.ask(askRequest("hi"))).rejects.toMatchObject({
+        reason: "utility-model-unavailable",
+      });
+      expect(harness.run).not.toHaveBeenCalled();
+    } finally {
+      harness.service.dispose();
+    }
+  });
+
   it("answers with protected context, the operator question, and the read-only prompt", async () => {
     vi.useFakeTimers();
     const harness = createHarness();

@@ -59,6 +59,7 @@ type SessionCompanionRunParams = {
   cfg: OpenClawConfig;
   agentId: string;
   modelRef: string;
+  modelOverride?: boolean;
   sessionKey: string;
   workspaceDir: string;
   systemPrompt: string;
@@ -130,6 +131,7 @@ async function defaultRun(params: SessionCompanionRunParams): Promise<string> {
     cfg: params.cfg,
     agentId: params.agentId,
     modelRef: params.modelRef,
+    modelOverride: params.modelOverride,
     operatorAuthority: params.operatorAuthority,
   });
   const current = params.messages.at(-1);
@@ -411,6 +413,8 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
     sessionKey: string;
     question: string;
     selectionContext?: string;
+    model?: string;
+    provider?: string;
     cacheNamespace?: string;
     attachments?: ChatAttachment[];
     connId: string;
@@ -547,7 +551,19 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
         );
       }
       const cfg = params.getConfig();
-      const utilityModelRef = resolveUtilityModelRef({ cfg, agentId });
+      const requestedModel = request.model?.trim();
+      const requestedProvider = request.provider?.trim();
+      if (requestedProvider && !requestedModel) {
+        throw new SessionCompanionAskError(
+          "utility-model-unavailable",
+          "A model is required with a provider override.",
+        );
+      }
+      const utilityModelRef = requestedModel
+        ? requestedProvider
+          ? `${requestedProvider}/${requestedModel}`
+          : requestedModel
+        : resolveUtilityModelRef({ cfg, agentId });
       if (!utilityModelRef) {
         throw new SessionCompanionAskError(
           "utility-model-unavailable",
@@ -585,6 +601,7 @@ export function createSessionCompanionAskRuntime(params: SessionCompanionAskRunt
         cfg,
         agentId,
         modelRef: utilityModelRef,
+        ...(requestedModel ? { modelOverride: true } : {}),
         sessionKey,
         workspaceDir,
         systemPrompt: buildSessionCompanionSystemPrompt(sessionKey),

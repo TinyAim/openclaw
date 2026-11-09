@@ -731,4 +731,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["subagents.get", "subagents", "operator.read", "2026.8"],
   ["subagents.spawn", "subagents", "operator.admin", "2026.8"],
   ["subagents.kill", "subagents", "operator.admin", "2026.8"],
+  ["sessions.companion.askScoped", "session-companion-rpc", "operator.read", "2026.10"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

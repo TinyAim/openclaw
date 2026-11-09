@@ -363,6 +363,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         // belongs to its requester so disconnect can release its admission fence.
         const cancelOnDisconnect =
           req.method === "sessions.companion.ask" ||
+          req.method === "sessions.companion.askScoped" ||
           (req.method === "plugins.reload" &&
             asOptionalRecord(req.params)?.waitForDrain === true) ||
           (req.method === "node.invoke" &&

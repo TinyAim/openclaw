@@ -24,18 +24,26 @@ export function resolveSessionCompanionModel(params: {
   cfg: OpenClawConfig;
   agentId: string;
   modelRef: string;
+  modelOverride?: boolean;
   operatorAuthority?: AdmittedRunOperatorAuthority;
 }) {
   let selection = resolveSimpleCompletionSelectionForAgent({
     cfg: params.cfg,
     agentId: params.agentId,
     modelRef: params.modelRef,
-    useUtilityModel: true,
+    useUtilityModel: !params.modelOverride,
   });
   if (!selection) {
     throw new Error("No utility model is configured for this session.");
   }
   const policy = params.operatorAuthority?.modelPolicy;
+  if (params.modelOverride) {
+    assertOperatorModelAllowed(params.operatorAuthority, {
+      provider: selection.provider,
+      model: selection.modelId,
+    });
+    return selection;
+  }
   if (policy && !policy.allows({ provider: selection.provider, model: selection.modelId })) {
     const permitted = policy.models[0];
     assertOperatorModelAllowed(params.operatorAuthority, permitted);

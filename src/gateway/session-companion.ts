@@ -14,7 +14,9 @@ type SessionCompanionTarget = { sessionKey: string; agentId: string };
 
 export type SessionCompanionService = {
   ask: ReturnType<typeof createSessionCompanionAskRuntime>["ask"];
-  state: (target: SessionCompanionTarget) => SessionsCompanionStateResult;
+  state: (
+    target: SessionCompanionTarget & { cacheNamespace?: string },
+  ) => SessionsCompanionStateResult;
   reset: (target: SessionCompanionTarget) => void;
   dispose: () => void;
 };
@@ -91,7 +93,9 @@ export function createSessionCompanion(deps: SessionCompanionDeps): SessionCompa
   return {
     ask: askRuntime.ask,
     state(target) {
-      const key = sessionObserverScopeKey(target.sessionKey.trim(), target.agentId.trim());
+      const baseKey = sessionObserverScopeKey(target.sessionKey.trim(), target.agentId.trim());
+      const namespace = target.cacheNamespace?.trim();
+      const key = namespace ? `${namespace}::${baseKey}` : baseKey;
       const thread = threads.get(key);
       if (!thread) {
         return { exchanges: [] };

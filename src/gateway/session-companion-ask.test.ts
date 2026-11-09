@@ -14,6 +14,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import * as attachmentProcessor from "../media/attachment-processor.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import { resolveSessionCompanionModel } from "./session-companion-policy.js";
 import { sessionCompanionHandlers } from "./session-companion-rpc.js";
 import { createSessionCompanion } from "./session-companion.js";
 
@@ -136,6 +137,39 @@ describe("session companion embedded invocation", () => {
     });
   });
 
+  it("refuses an explicitly selected model outside the authenticated operator policy", async () => {
+    const cfg: OpenClawConfig = { agents: { defaults: { model: "test/model-a" } } };
+    const companion = createCompanion(cfg);
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "restricted-observer",
+      scopes: ["operator.read"],
+      assertCurrent: () => {},
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg,
+        policy: { sourceAgent: "main", allow: ["test/model-a"] },
+        manifestPlugins: [],
+      }),
+    });
+    resolveSelection.mockReturnValue({ provider: "test", modelId: "model-b" });
+    try {
+      expect(() =>
+        resolveSessionCompanionModel({
+          cfg,
+          agentId: "main",
+          modelRef: "test/model-b",
+          modelOverride: true,
+          operatorAuthority,
+        }),
+      ).toThrow("Your operator role cannot use this model");
+      await expect(
+        companion.ask({ ...question, model: "model-b", provider: "test", operatorAuthority }),
+      ).rejects.toMatchObject({ reason: "unavailable" });
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+    } finally {
+      companion.dispose();
+    }
+  });
+
   it("passes a selected-text comment to the model without persisting it as a file", async () => {
     const companion = createCompanion();
     const respond = vi.fn();
@@ -162,7 +196,11 @@ describe("session companion embedded invocation", () => {
       );
       expect(runEmbeddedAgent.mock.calls[0]?.[0].prompt).toContain("User comment:\nCheck this.");
       expect(
-        companion.state({ sessionKey: question.sessionKey, agentId: "main" }).exchanges,
+        companion.state({
+          sessionKey: question.sessionKey,
+          agentId: "main",
+          cacheNamespace: "selection-connection",
+        }).exchanges,
       ).toEqual([
         { question: "What changed?", answer: expect.any(String), ts: expect.any(Number) },
       ]);

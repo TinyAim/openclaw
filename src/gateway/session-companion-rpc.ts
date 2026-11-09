@@ -3,9 +3,11 @@ import {
   errorShape,
   GatewayErrorDetailCodes,
   validateSessionsCompanionAskParams,
+  validateSessionsCompanionAskScopedParams,
   validateSessionsCompanionResetParams,
   validateSessionsCompanionStateParams,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { SessionsCompanionAskScopedParams } from "../../packages/gateway-protocol/src/schema/sessions.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   releaseSessionSourceAuthorities,
@@ -14,7 +16,7 @@ import {
 } from "../config/sessions/session-source-authority.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
-import type { GatewayRequestHandlers } from "./server-methods/types.js";
+import type { GatewayRequestHandler, GatewayRequestHandlers } from "./server-methods/types.js";
 import { defineValidatedGatewayHandler } from "./server-methods/validation.js";
 import { SessionCompanionAskError } from "./session-companion-errors.js";
 import { SessionMutationAuthorizationChangedError } from "./session-mutation-authorization-error.js";
@@ -75,207 +77,218 @@ function companionTargetIsVisible(
   );
 }
 
+const askSessionCompanion: GatewayRequestHandler = async ({
+  params: requestParams,
+  respond,
+  client,
+  context,
+  signal,
+  hasCurrentClientAuthority,
+}) => {
+  const params = requestParams as SessionsCompanionAskScopedParams;
+  const { sessionKey, agentId, question, selectionContext, attachments } = params;
+  if (!question.trim()) {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.INVALID_REQUEST, "question must contain non-whitespace text"),
+    );
+    return;
+  }
+  if (!client?.connId) {
+    respond(
+      false,
+      undefined,
+      errorShape(ErrorCodes.FORBIDDEN, "Side chat questions require a connected client."),
+    );
+    return;
+  }
+  const target = resolveCompanionTarget({ sessionKey, agentId }, context);
+  if (!target.ok) {
+    respond(false, undefined, target.error);
+    return;
+  }
+  const sourceCfg = context.getRuntimeConfig();
+  const initialSharingTarget = resolveSessionSharingTarget({
+    cfg: sourceCfg,
+    sessionKey: target.sessionKey,
+    agentId: target.agentId,
+  });
+  if (!companionTargetIsVisible(target, client, context, { target: initialSharingTarget })) {
+    respond(false, undefined, hiddenSessionNotFound(target.sessionKey));
+    return;
+  }
+  const companion = target.companion;
+  const connId = client.connId;
+  const originalAttachments = attachments?.length ? structuredClone(attachments) : undefined;
+  const assertInputCurrent = captureGatewayClientUploadCommitGuard({
+    method: "sessions.companion.ask",
+    requestParams: { attachments: originalAttachments },
+    client,
+    context,
+  });
+  const sourceTarget = initialSharingTarget ?? {
+    agentId: target.agentId,
+    canonicalKey: target.sessionKey,
+    storeKey: target.sessionKey,
+    storePath: resolveSessionStorePathCore(sourceCfg.session?.store, {
+      agentId: target.agentId,
+    }),
+  };
+  const sourceStore = sourceCfg.session?.store;
+  const sourceMainKey = sourceCfg.session?.mainKey;
+  const sourceScope = sourceCfg.session?.scope;
+  const assertLifetimeCurrent = () => {
+    signal?.throwIfAborted();
+    if (
+      context.sessionCompanion !== companion ||
+      client.connId !== connId ||
+      client.invalidated ||
+      hasCurrentClientAuthority?.() === false ||
+      context.isConnectionActive?.(connId) === false
+    ) {
+      throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
+    }
+  };
+  const refuseSource = (): never => {
+    throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
+  };
+  const assertSourceCurrent: SessionSourceAssertion = Object.assign(
+    () => {
+      assertLifetimeCurrent();
+      if (!companionTargetIsVisible(target, client, context)) {
+        refuseSource();
+      }
+    },
+    // The source may be incognito even when Side chat's private execution is durable.
+    isIncognitoSessionKey(target.sessionKey)
+      ? { nativeSource: true }
+      : {
+          async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
+            assertLifetimeCurrent();
+            const read = await prepareSessionSharingSource(sourceTarget, assertLifetimeCurrent);
+            const assertCurrent = () => {
+              assertLifetimeCurrent();
+              read.assertCurrent();
+              const cfg = context.getRuntimeConfig();
+              if (
+                cfg.session?.store !== sourceStore ||
+                cfg.session?.mainKey !== sourceMainKey ||
+                cfg.session?.scope !== sourceScope ||
+                (read.target
+                  ? prepareSessionSharing({ client, cfg }).entryFilter?.(
+                      read.target.storeKey,
+                      read.target.entry,
+                    ) === false
+                  : cfg.gateway?.roles !== undefined)
+              ) {
+                refuseSource();
+              }
+            };
+            try {
+              assertCurrent();
+            } catch (error) {
+              await releaseSessionSourceAuthorities([read], [error]);
+              throw error;
+            }
+            return {
+              assertCurrent,
+              checks: [
+                {
+                  predicate: {
+                    source: read.source,
+                    sessionKey: sourceTarget.storeKey,
+                    fields: ["sessionId", "createdActor", "visibility", "incognito"],
+                    expected: read.target?.entry,
+                  },
+                  refuse: refuseSource,
+                },
+              ],
+              release: read.release,
+            };
+          },
+        },
+  );
+  let capturedOperator: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
+  try {
+    assertInputCurrent?.();
+    capturedOperator = await captureGatewayOperatorRunAuthority({
+      client,
+      context,
+      hasCurrentClientAuthority,
+      invocationAuthority: { assertCurrent: assertSourceCurrent, signal },
+    });
+    assertSourceCurrent();
+    assertInputCurrent?.();
+    const rawParams = params as Record<string, unknown>;
+    const cacheNamespace =
+      typeof rawParams.cacheNamespace === "string" && rawParams.cacheNamespace.trim()
+        ? rawParams.cacheNamespace.trim()
+        : typeof rawParams.scopeKeyHash === "string" && rawParams.scopeKeyHash.trim()
+          ? rawParams.scopeKeyHash.trim()
+          : client.connId;
+    const quote =
+      typeof rawParams.quote === "string" && rawParams.quote.trim()
+        ? rawParams.quote.trim()
+        : selectionContext;
+    const result = await companion.ask({
+      sessionKey: target.sessionKey,
+      agentId: target.agentId,
+      question,
+      ...(params.model ? { model: params.model } : {}),
+      ...(params.provider ? { provider: params.provider } : {}),
+      ...(quote ? { selectionContext: quote } : {}),
+      cacheNamespace,
+      ...(originalAttachments ? { attachments: originalAttachments } : {}),
+      connId,
+      assertSourceCurrent,
+      ...(assertInputCurrent ? { assertInputCurrent } : {}),
+      ...(capturedOperator ? { operatorAuthority: capturedOperator.authority } : {}),
+      ...(signal ? { signal } : {}),
+    });
+    capturedOperator?.authority.assertCurrent();
+    respond(true, result);
+  } catch (error) {
+    if (error instanceof SessionMutationAuthorizationChangedError) {
+      respond(false, undefined, error.error);
+      return;
+    }
+    if (!(error instanceof SessionCompanionAskError)) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "Side chat could not answer right now."),
+      );
+      return;
+    }
+    respond(
+      false,
+      undefined,
+      errorShape(
+        ErrorCodes.UNAVAILABLE,
+        error.message,
+        error.reason === "busy"
+          ? {
+              details: { code: GatewayErrorDetailCodes.SESSION_COMPANION_BUSY },
+              retryable: true,
+            }
+          : {
+              details: { reason: error.reason },
+              retryable: error.reason === "rate-limited" || error.reason === "context-unavailable",
+              ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
+            },
+      ),
+    );
+  } finally {
+    capturedOperator?.release();
+  }
+};
+
 export const sessionCompanionHandlers: GatewayRequestHandlers = {
   "sessions.companion.ask": defineValidatedGatewayHandler(
     "sessions.companion.ask",
     validateSessionsCompanionAskParams,
-    async ({ params, respond, client, context, signal, hasCurrentClientAuthority }) => {
-      const { sessionKey, agentId, question, selectionContext, attachments } = params;
-      if (!question.trim()) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "question must contain non-whitespace text"),
-        );
-        return;
-      }
-      if (!client?.connId) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.FORBIDDEN, "Side chat questions require a connected client."),
-        );
-        return;
-      }
-      const target = resolveCompanionTarget({ sessionKey, agentId }, context);
-      if (!target.ok) {
-        respond(false, undefined, target.error);
-        return;
-      }
-      const sourceCfg = context.getRuntimeConfig();
-      const initialSharingTarget = resolveSessionSharingTarget({
-        cfg: sourceCfg,
-        sessionKey: target.sessionKey,
-        agentId: target.agentId,
-      });
-      if (!companionTargetIsVisible(target, client, context, { target: initialSharingTarget })) {
-        respond(false, undefined, hiddenSessionNotFound(target.sessionKey));
-        return;
-      }
-      const companion = target.companion;
-      const connId = client.connId;
-      const originalAttachments = attachments?.length ? structuredClone(attachments) : undefined;
-      const assertInputCurrent = captureGatewayClientUploadCommitGuard({
-        method: "sessions.companion.ask",
-        requestParams: { attachments: originalAttachments },
-        client,
-        context,
-      });
-      const sourceTarget = initialSharingTarget ?? {
-        agentId: target.agentId,
-        canonicalKey: target.sessionKey,
-        storeKey: target.sessionKey,
-        storePath: resolveSessionStorePathCore(sourceCfg.session?.store, {
-          agentId: target.agentId,
-        }),
-      };
-      const sourceStore = sourceCfg.session?.store;
-      const sourceMainKey = sourceCfg.session?.mainKey;
-      const sourceScope = sourceCfg.session?.scope;
-      const assertLifetimeCurrent = () => {
-        signal?.throwIfAborted();
-        if (
-          context.sessionCompanion !== companion ||
-          client.connId !== connId ||
-          client.invalidated ||
-          hasCurrentClientAuthority?.() === false ||
-          context.isConnectionActive?.(connId) === false
-        ) {
-          throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
-        }
-      };
-      const refuseSource = (): never => {
-        throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
-      };
-      const assertSourceCurrent: SessionSourceAssertion = Object.assign(
-        () => {
-          assertLifetimeCurrent();
-          if (!companionTargetIsVisible(target, client, context)) {
-            refuseSource();
-          }
-        },
-        // The source may be incognito even when Side chat's private execution is durable.
-        isIncognitoSessionKey(target.sessionKey)
-          ? { nativeSource: true }
-          : {
-              async prepareSessionSource(): Promise<PreparedSessionSourceAuthority> {
-                assertLifetimeCurrent();
-                const read = await prepareSessionSharingSource(sourceTarget, assertLifetimeCurrent);
-                const assertCurrent = () => {
-                  assertLifetimeCurrent();
-                  read.assertCurrent();
-                  const cfg = context.getRuntimeConfig();
-                  if (
-                    cfg.session?.store !== sourceStore ||
-                    cfg.session?.mainKey !== sourceMainKey ||
-                    cfg.session?.scope !== sourceScope ||
-                    (read.target
-                      ? prepareSessionSharing({ client, cfg }).entryFilter?.(
-                          read.target.storeKey,
-                          read.target.entry,
-                        ) === false
-                      : cfg.gateway?.roles !== undefined)
-                  ) {
-                    refuseSource();
-                  }
-                };
-                try {
-                  assertCurrent();
-                } catch (error) {
-                  await releaseSessionSourceAuthorities([read], [error]);
-                  throw error;
-                }
-                return {
-                  assertCurrent,
-                  checks: [
-                    {
-                      predicate: {
-                        source: read.source,
-                        sessionKey: sourceTarget.storeKey,
-                        fields: ["sessionId", "createdActor", "visibility", "incognito"],
-                        expected: read.target?.entry,
-                      },
-                      refuse: refuseSource,
-                    },
-                  ],
-                  release: read.release,
-                };
-              },
-            },
-      );
-      let capturedOperator: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
-      try {
-        assertInputCurrent?.();
-        capturedOperator = await captureGatewayOperatorRunAuthority({
-          client,
-          context,
-          hasCurrentClientAuthority,
-          invocationAuthority: { assertCurrent: assertSourceCurrent, signal },
-        });
-        assertSourceCurrent();
-        assertInputCurrent?.();
-        const rawParams = params as Record<string, unknown>;
-        const cacheNamespace =
-          typeof rawParams.cacheNamespace === "string" && rawParams.cacheNamespace.trim()
-            ? rawParams.cacheNamespace.trim()
-            : typeof rawParams.scopeKeyHash === "string" && rawParams.scopeKeyHash.trim()
-              ? rawParams.scopeKeyHash.trim()
-              : client.connId;
-        const quote =
-          typeof rawParams.quote === "string" && rawParams.quote.trim()
-            ? rawParams.quote.trim()
-            : selectionContext;
-        const result = await companion.ask({
-          sessionKey: target.sessionKey,
-          agentId: target.agentId,
-          question,
-          ...(quote ? { selectionContext: quote } : {}),
-          cacheNamespace,
-          ...(originalAttachments ? { attachments: originalAttachments } : {}),
-          connId,
-          assertSourceCurrent,
-          ...(assertInputCurrent ? { assertInputCurrent } : {}),
-          ...(capturedOperator ? { operatorAuthority: capturedOperator.authority } : {}),
-          ...(signal ? { signal } : {}),
-        });
-        capturedOperator?.authority.assertCurrent();
-        respond(true, result);
-      } catch (error) {
-        if (error instanceof SessionMutationAuthorizationChangedError) {
-          respond(false, undefined, error.error);
-          return;
-        }
-        if (!(error instanceof SessionCompanionAskError)) {
-          respond(
-            false,
-            undefined,
-            errorShape(ErrorCodes.UNAVAILABLE, "Side chat could not answer right now."),
-          );
-          return;
-        }
-        respond(
-          false,
-          undefined,
-          errorShape(
-            ErrorCodes.UNAVAILABLE,
-            error.message,
-            error.reason === "busy"
-              ? {
-                  details: { code: GatewayErrorDetailCodes.SESSION_COMPANION_BUSY },
-                  retryable: true,
-                }
-              : {
-                  details: { reason: error.reason },
-                  retryable:
-                    error.reason === "rate-limited" || error.reason === "context-unavailable",
-                  ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
-                },
-          ),
-        );
-      } finally {
-        capturedOperator?.release();
-      }
-    },
+    askSessionCompanion,
   ),
   "sessions.companion.state": defineValidatedGatewayHandler(
     "sessions.companion.state",
@@ -296,6 +309,7 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
         target.companion.state({
           agentId: target.agentId,
           sessionKey: target.sessionKey,
+          ...(client?.connId ? { cacheNamespace: client.connId } : {}),
         }),
       );
     },
@@ -319,5 +333,8 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
   ),
 };
 
-sessionCompanionHandlers["sessions.companion.askScoped"] =
-  sessionCompanionHandlers["sessions.companion.ask"]!;
+sessionCompanionHandlers["sessions.companion.askScoped"] = defineValidatedGatewayHandler(
+  "sessions.companion.askScoped",
+  validateSessionsCompanionAskScopedParams,
+  askSessionCompanion,
+);

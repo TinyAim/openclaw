@@ -16,6 +16,7 @@ const uploads: Array<[string, Record<string, unknown>]> = [
     "sessions.send",
     "sessions.steer",
     "sessions.companion.ask",
+    "sessions.companion.askScoped",
   ].map((method): [string, Record<string, unknown>] => [method, { attachments: [attachment] }]),
   ["terminal.upload", { name: "report.txt", contentBase64: "aGVsbG8=" }],
   ["users.setAvatar", { avatarBase64: "cGljdHVyZQ==" }],

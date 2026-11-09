@@ -41,6 +41,51 @@ async function invoke(
 }
 
 describe("session companion RPC", () => {
+  it("preserves scoped model/provider and namespace without the legacy 400 character limit", async () => {
+    const ask = vi.fn(async () => ({ answer: "Scoped answer", ts: 1 }));
+    const question = "quoted context ".repeat(40) + "hi";
+    const respond = await invoke(
+      "sessions.companion.askScoped",
+      {
+        sessionKey: "agent:main:main",
+        question,
+        model: "gemma4:31b-cloud",
+        provider: "ollama",
+        cacheNamespace: "wisclaw:side-chat:scoped-user",
+        scopeKeyHash: "scoped-user",
+        allowReadOnlyTools: true,
+        mutateSessionHistory: false,
+      },
+      { ask },
+    );
+    expect(ask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        question,
+        model: "gemma4:31b-cloud",
+        provider: "ollama",
+        cacheNamespace: "wisclaw:side-chat:scoped-user",
+      }),
+    );
+    expect(respond).toHaveBeenCalledWith(true, { answer: "Scoped answer", ts: 1 });
+  });
+
+  it("rejects writable scoped flags before invoking the companion", async () => {
+    const ask = vi.fn();
+    const respond = await invoke(
+      "sessions.companion.askScoped",
+      {
+        sessionKey: "agent:main:main",
+        question: "hi",
+        cacheNamespace: "scope",
+        allowReadOnlyTools: true,
+        mutateSessionHistory: true,
+      },
+      { ask },
+    );
+    expect(ask).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(false, undefined, expect.any(Object));
+  });
+
   it("keeps an incognito source native through captured operator authority for durable side chat writes", async () => {
     expect(isMainThread).toBe(true);
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -223,6 +268,7 @@ describe("session companion RPC", () => {
       agentId: "main",
       sessionKey: "agent:main:main",
       question: "Who owns this ask?",
+      cacheNamespace: "conn-1",
       connId: "conn-1",
       assertSourceCurrent: expect.any(Function),
       signal: controller.signal,
@@ -283,6 +329,7 @@ describe("session companion RPC", () => {
       expect(companion[operation]).toHaveBeenCalledWith({
         agentId: "main",
         sessionKey: "agent:main:main",
+        ...(operation === "state" ? { cacheNamespace: "conn-1" } : {}),
       });
       expect(respond).toHaveBeenCalledWith(true, operation === "state" ? state : { ok: true });
 
@@ -347,7 +394,11 @@ describe("session companion RPC", () => {
       undefined,
       config,
     );
-    expect(state).toHaveBeenCalledWith({ agentId: "work", sessionKey: "global" });
+    expect(state).toHaveBeenCalledWith({
+      agentId: "work",
+      sessionKey: "global",
+      cacheNamespace: "conn-1",
+    });
     expect(selected).toHaveBeenCalledWith(true, { exchanges: [] });
 
     state.mockClear();

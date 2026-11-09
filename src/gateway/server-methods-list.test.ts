@@ -9,6 +9,15 @@ import { LEGACY_ADVERTISED_GATEWAY_METHODS } from "./server-methods-list.test-fi
 import { coreGatewayHandlers } from "./server-methods.js";
 
 describe("listGatewayMethods", () => {
+  it("advertises scoped companion with the original read-only session policy", () => {
+    expect(listGatewayMethods()).toContain("sessions.companion.askScoped");
+    expect(coreGatewayHandlers["sessions.companion.askScoped"]).toBeTypeOf("function");
+    const descriptors = createCoreGatewayMethodDescriptors(coreGatewayHandlers);
+    expect(descriptors.find((row) => row.name === "sessions.companion.askScoped")).toMatchObject({
+      scope: "operator.read",
+    });
+  });
+
   it("preserves the frozen legacy advertised method prefix", () => {
     expect(listGatewayMethods().slice(0, LEGACY_ADVERTISED_GATEWAY_METHODS.length)).toEqual(
       LEGACY_ADVERTISED_GATEWAY_METHODS,
